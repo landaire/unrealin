@@ -285,13 +285,12 @@ fn read_file_table<'i>(input: &mut &'i [u8]) -> winnow::Result<FileTable<'i>> {
     let file_table: Vec<FileEntry<'_>> =
         repeat(file_entry_count as usize, read_file_entry).parse_next(input)?;
 
-    println!("{:#X?}", file_table);
-
     Ok(FileTable { files: file_table })
 }
 
 fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<PackageHeader<'i>> {
     let version = le_u32(input)?;
+    println!("Version: {:#X}", version);
     let flags = le_u32(input)?;
     let name_count = le_u32(input)?;
     let name_offset = le_u32(input)?;
@@ -343,11 +342,9 @@ struct Package<'i> {
 }
 
 fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<Package<'i>> {
-    let tag = le_u32(input)?;
-
-    assert_eq!(tag, 0x9e2a83c1, "package tag mismatch");
-
     let header = read_package_header(input).expect("failed to read package header");
+
+    println!("{:#02X?}", header);
 
     let names: Vec<_> = repeat(header.name_count as usize, read_name)
         .parse_next(input)
@@ -479,27 +476,57 @@ fn main() -> Result<()> {
     let name = read_var_string(&mut input).expect("failed to read lin name");
     println!("{}", name);
 
-    let tag = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
-    println!("{:#X}", unk2);
+    let mut packages = Vec::new();
 
-    match tag {
-        0x9FE3C5A3 => {
-            let file_table = read_file_table(&mut input).expect("failed to read file table");
+    let mut file_count = 0;
+    while !input.is_empty() {
+        if file_count > 0 {
+            println!("Processing package file {file_count}");
         }
-        0x9e2a83c1 => {
-            let unk = le_u32::<_, ContextError>(&mut input).unwrap();
-            let name = read_var_string(&mut input).unwrap();
-        }
-        _ => {
-            return Err(eyre!("Unexpected package tag: {:#X}", tag));
+
+        let tag = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
+        println!("Processing at {:#02X?}", &input[..16]);
+
+        match tag {
+            0x9FE3C5A3 => {
+                let file_table = read_file_table(&mut input).expect("failed to read file table");
+            }
+            0x9e2a83c1 => {
+                file_count += 1;
+                let package = read_package(&mut input).expect("failed to read package");
+                println!("{:#X?}", &package.header);
+                let exports_size = package
+                    .exports
+                    .iter()
+                    .fold(0, |acc, ex| acc + ex.serial_size);
+                println!("Exports size: {exports_size:#X}");
+
+                packages.push(package);
+            }
+            _ => {
+                return Err(eyre!("Unexpected package tag: {:#X}", tag));
+            }
         }
     }
+    return Ok(());
 
-    let package = read_package(&mut input).expect("failed to read package");
+    let package = &packages[0];
     println!("{:#X?}", package);
 
     for import in &package.imports {
-        println!("Import: {:?}", package.names[import.object_name as usize]);
+        println!("Import:");
+        println!(
+            "\tClassPackage: {:?}",
+            package.names[import.class_package as usize]
+        );
+        println!(
+            "\tClassName: {:?}",
+            package.names[import.class_name as usize]
+        );
+        println!(
+            "\tObjName: {:?}",
+            package.names[import.object_name as usize]
+        );
     }
 
     Ok(())
