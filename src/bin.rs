@@ -128,7 +128,7 @@ struct FileEntry<'i> {
     unk: u32,
 }
 
-fn read_file_table<'i>(input: &mut &'i [u8]) -> winnow::Result<FileEntry<'i>> {
+fn read_file_entry<'i>(input: &mut &'i [u8]) -> winnow::Result<FileEntry<'i>> {
     let name = read_var_string(input)?;
     let offset = le_u32(input)?;
     let len = le_u32(input)?;
@@ -147,8 +147,7 @@ fn read_file_table<'i>(input: &mut &'i [u8]) -> winnow::Result<FileEntry<'i>> {
 }
 
 #[derive(Debug)]
-struct Package<'i> {
-    tag: u32,
+struct PackageHeader<'i> {
     version: u32,
     flags: u32,
     name_count: u32,
@@ -267,8 +266,31 @@ fn read_generation_info(input: &mut &[u8]) -> winnow::Result<GenerationInfo> {
     })
 }
 
-fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<Package<'i>> {
-    let tag = le_u32(input)?;
+enum HeaderKind<'i> {
+    FileTable(FileTable<'i>),
+    Package(Package<'i>),
+}
+
+#[derive(Debug)]
+struct FileTable<'i> {
+    files: Vec<FileEntry<'i>>,
+}
+
+fn read_file_table<'i>(input: &mut &'i [u8]) -> winnow::Result<FileTable<'i>> {
+    // Reset input to skip past most of the header
+    let _ = take(0x10 as usize).parse_next(input)?;
+
+    let file_entry_count = decode_compact_index(input)?;
+
+    let file_table: Vec<FileEntry<'_>> =
+        repeat(file_entry_count as usize, read_file_entry).parse_next(input)?;
+
+    println!("{:#X?}", file_table);
+
+    Ok(FileTable { files: file_table })
+}
+
+fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<PackageHeader<'i>> {
     let version = le_u32(input)?;
     let flags = le_u32(input)?;
     let name_count = le_u32(input)?;
@@ -295,8 +317,7 @@ fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<Package<'i>> 
     let generations: Vec<_> =
         repeat(generation_count as usize, read_generation_info).parse_next(input)?;
 
-    Ok(Package {
-        tag,
+    Ok(PackageHeader {
         version,
         flags,
         name_count,
@@ -310,6 +331,41 @@ fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<Package<'i>> 
         guid_b,
         guid_c,
         guid_d,
+    })
+}
+
+#[derive(Debug)]
+struct Package<'i> {
+    header: PackageHeader<'i>,
+    names: Vec<Name<'i>>,
+    imports: Vec<Import>,
+    exports: Vec<ObjectExport>,
+}
+
+fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<Package<'i>> {
+    let tag = le_u32(input)?;
+
+    assert_eq!(tag, 0x9e2a83c1, "package tag mismatch");
+
+    let header = read_package_header(input).expect("failed to read package header");
+
+    let names: Vec<_> = repeat(header.name_count as usize, read_name)
+        .parse_next(input)
+        .expect("failed to parse names");
+
+    let imports: Vec<_> = repeat(header.import_count as usize, read_import)
+        .parse_next(input)
+        .expect("failed to parse import");
+
+    let exports: Vec<_> = repeat(header.export_count as usize, read_export)
+        .parse_next(input)
+        .expect("failed to parse export");
+
+    Ok(Package {
+        header,
+        names,
+        imports,
+        exports,
     })
 }
 
@@ -414,108 +470,37 @@ fn main() -> Result<()> {
     std::io::copy(&mut out_data_slice, &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
 
-    let data = [0x42, 0x01, 0x9C, 0x90, 0x92];
-    let mut data = data.as_slice();
-    println!("test decode_compact: {:?}", decode_compact_index(&mut data));
-
     let mut input = &out_data[..];
 
-    // if true {
-    println!("{:#X?}", &input[..5]);
-    let unk1 = decode_compact_index(&mut input);
-    println!("unk1={unk1:#X?}");
+    let unk = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
 
-    input = &out_data[1..];
-    println!("{:#X?}", &input[..5]);
-    let unk2 = decode_compact_index(&mut input);
-    println!("unk2 (version?)={unk2:#X?}");
+    println!("{:#X}", unk);
 
-    input = &out_data[9..];
-    println!("{:#X?}", &input[..5]);
-    let unk3 = decode_compact_index(&mut input);
-    println!("unk3={unk3:#X?}");
+    let name = read_var_string(&mut input).expect("failed to read lin name");
+    println!("{}", name);
 
-    let mut input = &out_data[0x19..];
-    let file_entry_count =
-        decode_compact_index(&mut input).map_err(|_| eyre!("failed to read file entry count"))?;
+    let tag = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
+    println!("{:#X}", unk2);
 
-    let mut file_table: Vec<FileEntry<'_>> = repeat(file_entry_count as usize, read_file_table)
-        .parse_next(&mut input)
-        .map_err(|_| eyre!("failed to read file table"))?;
-
-    let total_size = file_table.iter().fold(0, |accum, a| {
-        if a.name.starts_with(b"System\\") {
-            accum + a.len
-        } else {
-            accum
+    match tag {
+        0x9FE3C5A3 => {
+            let file_table = read_file_table(&mut input).expect("failed to read file table");
         }
-    });
-    println!("total size: {total_size:#x}");
-    file_table.sort_by_key(|a| a.offset);
-
-    println!("file table count: {0:#X} ({0})", file_table.len());
-    println!("{:#X?}", file_table);
-    // } else {
-    //     // let unk = le_u32::<_, ContextError>(&mut input).unwrap();
-    //     // let name = read_var_string(&mut input).unwrap();
-    // }
-
-    let header = read_package_header(&mut input).expect("failed to read package header");
-    println!("header={:#X?}", header);
-
-    let names: Vec<_> = repeat(header.name_count as usize, read_name)
-        .parse_next(&mut input)
-        .expect("failed to parse names");
-    println!("{:#X?}", names);
-
-    let imports: Vec<_> = repeat(header.import_count as usize, read_import)
-        .parse_next(&mut input)
-        .expect("failed to parse import");
-
-    println!("{:#X?}", imports);
-
-    for import in &imports {
-        println!("Import: {:?}", names[import.object_name as usize]);
+        0x9e2a83c1 => {
+            let unk = le_u32::<_, ContextError>(&mut input).unwrap();
+            let name = read_var_string(&mut input).unwrap();
+        }
+        _ => {
+            return Err(eyre!("Unexpected package tag: {:#X}", tag));
+        }
     }
 
-    let exports: Vec<_> = repeat(header.export_count as usize, read_export)
-        .parse_next(&mut input)
-        .expect("failed to parse export");
+    let package = read_package(&mut input).expect("failed to read package");
+    println!("{:#X?}", package);
 
-    println!("{:#X?}", exports);
-
-    println!("{:#X?}", &input[..10]);
-
-    // for file in &file_table {
-    //     let Some(file_name_str) = std::str::from_utf8(file.name).ok() else {
-    //         println!(
-    //             "Ignoring {:?} as its name cannot be converted to UTF-8",
-    //             file.name
-    //         );
-    //         continue;
-    //     };
-
-    //     println!("Dumping {file:#X?}");
-
-    //     // Replace the path separator
-    //     let file_name_str = file_name_str.replace('\\', std::path::MAIN_SEPARATOR_STR);
-
-    //     let output_file_path = output_dir.join(file_name_str);
-    //     let _ = std::fs::create_dir_all(
-    //         output_file_path
-    //             .parent()
-    //             .expect("output file has no parent file"),
-    //     );
-
-    //     let mut output_file = std::fs::File::create(&output_file_path)
-    //         .wrap_err_with(|| format!("failed to create output file: {output_file_path:?}"))?;
-
-    //     let offset = file.offset as usize;
-    //     let end_offset = offset + file.len as usize;
-    //     let mut file_data = &input[offset..end_offset];
-
-    //     std::io::copy(&mut file_data, &mut output_file)?;
-    // }
+    for import in &package.imports {
+        println!("Import: {:?}", package.names[import.object_name as usize]);
+    }
 
     Ok(())
 }
