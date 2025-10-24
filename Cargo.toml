@@ -1,0 +1,20 @@
+[package]
+name = "unrealin"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "unrealin"
+path = "src/bin.rs"
+required-features = ["bin"]
+features = ["bin"]
+
+[dependencies]
+clap = { version = "4.5.50", features = ["derive"], optional = true }
+color-eyre = { version = "0.6.5", optional = true }
+flate2 = "1.1.4"
+memmap2 = "0.9.8"
+winnow = "0.7.13"
+
+[features]
+bin = ["dep:clap", "dep:color-eyre"]
