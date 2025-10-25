@@ -194,6 +194,27 @@ struct Import {
     object_name: i32,
 }
 
+impl Import {
+    pub fn full_name(&self, package: &Package<'_>) -> String {
+        format!(
+            "{}.{}.{}",
+            package.names[self.class_package as usize].name,
+            package.names[self.class_package as usize].name,
+            package.names[self.object_name as usize].name
+        )
+    }
+
+    pub fn resolve_export<'i>(&self, container: &'i Package<'_>) -> &'i ObjectExport {
+        let normalized_index = if (self.package_index as i32) < 0 {
+            (-(self.package_index as i32) - 1) as usize
+        } else {
+            self.package_index as usize
+        };
+
+        &container.exports[normalized_index]
+    }
+}
+
 fn read_import<'i>(input: &mut &'i [u8]) -> winnow::Result<Import> {
     let class_package = decode_compact_index(input)?;
 
@@ -476,7 +497,7 @@ fn main() -> Result<()> {
     let name = read_var_string(&mut input).expect("failed to read lin name");
     println!("{}", name);
 
-    let mut packages = Vec::new();
+    let mut packages: Vec<Package<'_>> = Vec::new();
 
     let mut file_count = 0;
     while !input.is_empty() {
@@ -495,11 +516,47 @@ fn main() -> Result<()> {
                 file_count += 1;
                 let package = read_package(&mut input).expect("failed to read package");
                 println!("{:#X?}", &package.header);
-                let exports_size = package
-                    .exports
-                    .iter()
-                    .fold(0, |acc, ex| acc + ex.serial_size);
-                println!("Exports size: {exports_size:#X}");
+
+                println!("Imports:");
+                for i in &package.imports {
+                    println!("{}", i.full_name(&package));
+                }
+
+                if let Some(last) = packages.last() {
+                    let mut size = 0;
+                    for import in &last.imports {
+                        let name = &last.names[import.class_package as usize];
+                        if name.name == b"Core".as_slice() && import.package_index != u32::MAX {
+                            let export = import.resolve_export(&package);
+                            println!("class_index: {}", export.class_index);
+
+                            println!("Export: {:#X?}", export);
+                        }
+                    }
+
+                    println!("Exports size: {:#X}", size);
+                    // let exports_size = package.exports.iter().fold(0, |acc, ex| {
+                    //     let name =
+                    //     if ex.object_flags & 0x00000200 != 0 {
+                    //         acc + ex.serial_size
+                    //     } else {
+                    //         acc
+                    //     }
+                    // });
+                }
+
+                println!("All exports");
+
+                // println!("Exports size: {exports_size:#X}");
+
+                for export in &package.exports {
+                    if export.object_flags & 0x00000200 == 0 {
+                        continue;
+                    }
+
+                    println!("Export:");
+                    println!("\t{:#X?}", export);
+                }
 
                 packages.push(package);
             }
