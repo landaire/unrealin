@@ -24,6 +24,7 @@ fn main() -> Result<()> {
         .wrap_err_with(|| format!("failed to open {:?}", &args.input))?;
 
     let mut mmap = unsafe { memmap2::Mmap::map(&input_file)? };
+
     let mut raw_linear_file = &mmap[..];
 
     let mut output_dir = if let Some(output_dir) = args.output.take() {
@@ -47,7 +48,17 @@ fn main() -> Result<()> {
     let mut out_file = std::fs::File::create(&output_path)
         .wrap_err_with(|| format!("failed to create output file {output_path:?}"))?;
 
-    let out_data = unrealin::de::decompress_linear_file(raw_linear_file);
+    let out_data = if args
+        .input
+        .extension()
+        .as_ref()
+        .map(|ext| ext.to_str().unwrap() == "lin")
+        .unwrap_or_default()
+    {
+        unrealin::de::decompress_linear_file(raw_linear_file)
+    } else {
+        raw_linear_file.to_vec()
+    };
 
     std::io::copy(&mut out_data.as_slice(), &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;

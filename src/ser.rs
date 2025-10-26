@@ -143,6 +143,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
         class_name,
         package_index,
         object_name,
+        object,
     } in imports
     {
         write_packed_int(&mut writer, *class_package)?;

@@ -1,4 +1,8 @@
-use std::{io::Cursor, rc::Rc};
+use std::{
+    collections::{HashMap, VecDeque},
+    io::{BufRead, Cursor},
+    rc::Rc,
+};
 
 use flate2::read::ZlibDecoder;
 use winnow::{
@@ -9,7 +13,8 @@ use winnow::{
     token::take,
 };
 
-use crate::PKG_TAG;
+use crate::{PKG_TAG, object::UnrealObject};
+use crate::{common::normalize_index, object::RcUnrealObject};
 
 struct Block<'a> {
     uncompressed_len: u32,
@@ -175,6 +180,7 @@ pub(crate) struct Import {
     pub class_name: i32,
     pub package_index: i32,
     pub object_name: i32,
+    pub(crate) object: Option<RcUnrealObject>,
 }
 
 impl Import {
@@ -211,6 +217,7 @@ fn read_import(input: &mut &[u8]) -> winnow::Result<Import> {
         class_name,
         package_index,
         object_name,
+        object: None,
     })
 }
 
@@ -226,11 +233,14 @@ pub(crate) struct ObjectExport<'i> {
     pub data: Option<&'i [u8]>,
 }
 
-fn normalize_index(index: i32) -> usize {
-    match index {
-        i if i < 0 => (-index) as usize - 1,
-        i if i > 0 => index as usize - 1,
-        _ => 0,
+impl ObjectExport<'_> {
+    fn partially_eq(&self, other: &Self) -> bool {
+        self.class_index == other.class_index
+            && self.super_index == other.super_index
+            && self.package_index == other.package_index
+            && self.object_flags == other.object_flags
+            && self.serial_size == other.serial_size
+            && self.serial_offset == other.serial_offset
     }
 }
 
@@ -363,6 +373,7 @@ pub(crate) struct RawPackage<'i> {
 }
 
 fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<RawPackage<'i>> {
+    let orig_input = *input;
     let len_before = input.len();
 
     let header = read_package_header(input).expect("failed to read package header");
@@ -378,6 +389,8 @@ fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<RawPackage<'i>> {
     let exports: Vec<_> = repeat(header.export_count as usize, read_export)
         .parse_next(input)
         .expect("failed to parse export");
+
+    println!("Exports start at: {:#X}", orig_input.len() - input.len());
 
     Ok(RawPackage {
         header,
@@ -404,10 +417,9 @@ impl<'i> LinearFile<'i> {
 
 pub struct UnrealPackage<'i> {
     pub(crate) raw_package: RawPackage<'i>,
+    pub(crate) class_types: HashMap<&'i BStr, ()>,
     pub(crate) objects: Vec<Rc<UnrealObject>>,
 }
-
-struct UnrealObject {}
 
 pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
     let mut out_data = Vec::new();
@@ -455,6 +467,11 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
         u32::from_le_bytes(bytes)
     };
 
+    println!("uncompressed_data_size: {uncompressed_data_size:#X}");
+    println!("compressed_data_size: {compressed_data_size:#X}");
+    println!("unk1: {unk1:#X}");
+    println!("unk2: {unk2:#X}");
+
     while !input.is_empty() {
         let block = read_block(&mut input).expect("failed to read block");
         let mut reader = ZlibDecoder::new(block.compressed_data);
@@ -466,57 +483,160 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
 }
 
 pub fn decode_linear_file<'i>(mut input: &'i [u8]) -> LinearFile<'i> {
-    let unk = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
+    let orig_input = input;
 
-    println!("{:#X}", unk);
+    // let unk = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
 
-    let name = read_var_string(&mut input).expect("failed to read lin name");
-    println!("{}", name);
+    // println!("{:#X}", unk);
 
-    let mut file_table = None;
+    // let name = read_var_string(&mut input).expect("failed to read lin name");
+    // println!("{}", name);
+
+    // let mut file_table = None;
     let mut raw_packages: Vec<RawPackage<'_>> = Vec::new();
     let unreal_packages = Vec::new();
 
-    while !input.is_empty() {
+    let mut offsets: VecDeque<_> = std::fs::read("/Users/lander/Downloads/menu.txt")
+        .expect("failed to open register_log")
+        .lines()
+        .filter_map(|line| {
+            let line = line.ok()?;
+
+            // let mut parts = line.strip_prefix("Export offset: ")?.split(',');
+            let mut parts = line.strip_prefix("Read complete: ")?.split(',');
+
+            Some(ObjectExport {
+                class_index: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                super_index: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                package_index: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                object_name: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                object_flags: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset"),
+                serial_size: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                serial_offset: u32::from_str_radix(
+                    parts.next().unwrap().strip_prefix("0x").unwrap(),
+                    16,
+                )
+                .expect("failed to parse start offset") as i32,
+                data: None,
+            })
+        })
+        .collect();
+
+    let sum = offsets
+        .iter()
+        .fold(0, |accum, expor| accum + expor.serial_size);
+
+    // println!("Size of offsets: {sum:#X}");
+
+    'parser_loop: while !input.is_empty() {
+        let input_before = input;
         let tag = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
-        println!("Processing at {:#02X?}", &input[..16]);
+        // println!("Processing at {:#02X?}", &input[..16]);
 
         match tag {
-            0x9FE3C5A3 => {
-                file_table = Some(read_file_table(&mut input).expect("failed to read file table"));
-                continue;
-            }
+            // 0x9FE3C5A3 => {
+            //     file_table = Some(read_file_table(&mut input).expect("failed to read file table"));
+            //     println!(
+            //         "File table length: {:#X}",
+            //         file_table.as_ref().map(|t| t.len()).unwrap_or_default()
+            //     );
+            //     println!("{file_table:#X?}");
+            //     continue;
+            // }
             PKG_TAG => {
                 let package = read_package(&mut input).expect("failed to read package");
                 println!("{:#X?}", &package.header);
 
+                println!("Import count: {}", package.imports.len());
                 println!("Imports:");
                 for i in &package.imports {
-                    println!("{}", i.full_name(&package));
+                    //println!("{}", i.full_name(&package));
                     println!("{:X?}", i);
                 }
 
+                println!(
+                    "Export size: {:#X}",
+                    package
+                        .exports
+                        .iter()
+                        .fold(0, |accum, e| accum + e.serial_size)
+                );
                 println!("All exports");
 
-                // println!("Exports size: {exports_size:#X}");
-
+                println!("Export count: {}", package.exports.len());
                 println!("Export:");
                 for (i, export) in package.exports.iter().enumerate() {
                     println!("({i:#X}) {:#X?}", export);
                     println!("\t{}", export.object_name(&package));
-                    println!("\t{}", export.class_name(&package));
+                    //println!("\t{}", export.class_name(&package));
                 }
 
                 raw_packages.push(package);
             }
             tag => {
-                panic!("Unexpeced tag {tag:#08X}");
+                input = &input_before[1..];
+                // input = input_before;
+                continue;
+
+                println!("Unexpected tag at: {:#X}", orig_input.len() - input.len());
+
+                let expected_export = offsets.pop_front().expect("no next export?");
+                for raw_package in &mut raw_packages {
+                    for export in &mut raw_package.exports {
+                        if export.partially_eq(&expected_export) {
+                            export.data = Some(
+                                take::<_, _, ContextError>(export.serial_size as usize)
+                                    .parse_next(&mut input)
+                                    .expect("failed to read export data"),
+                            );
+                            continue 'parser_loop;
+                        }
+                    }
+                }
+
+                for raw_package in &mut raw_packages {
+                    for export in &mut raw_package.exports {
+                        if export.serial_offset == expected_export.serial_offset {
+                            println!("Possible? {:#X?}", export);
+                        }
+                    }
+                }
+
+                println!("Expected: {:#X?}", expected_export);
+                panic!(
+                    "Unexpeced tag {tag:#08X} at {:#X}",
+                    orig_input.len() - input.len()
+                );
             }
         }
     }
 
     LinearFile {
-        file_table,
+        file_table: None, //file_table,
         packages: unreal_packages,
     }
 }
