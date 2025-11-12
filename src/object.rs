@@ -23,7 +23,7 @@ pub(crate) fn create_import_object<'i>(export: &Import, input: &mut &'i [u8]) ->
 
 pub(crate) fn create_export_object<'i>(
     index: i32,
-    export: &ObjectExport<'i>,
+    export: &ObjectExport,
     input: &mut &'i [u8],
 ) -> RcUnrealObject {
     if export.package_index == 0 {

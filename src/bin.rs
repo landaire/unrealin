@@ -5,6 +5,8 @@ use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
+use unrealin::de;
+use winnow::{binary::le_u32, error::ContextError};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -15,27 +17,32 @@ struct Args {
     output: Option<PathBuf>,
 
     /// File to extract
-    input: PathBuf,
+    common_lin: PathBuf,
+
+    map_lin: PathBuf,
 }
 fn main() -> Result<()> {
     let mut args = Args::parse();
 
-    let mut input_file = std::fs::File::open(&args.input)
-        .wrap_err_with(|| format!("failed to open {:?}", &args.input))?;
+    let mut common_file = std::fs::File::open(&args.common_lin)
+        .wrap_err_with(|| format!("failed to open {:?}", &args.common_lin))?;
+    let mut common_mmap = unsafe { memmap2::Mmap::map(&common_file)? };
+    let mut raw_common_file = &common_mmap[..];
 
-    let mut mmap = unsafe { memmap2::Mmap::map(&input_file)? };
-
-    let mut raw_linear_file = &mmap[..];
+    let mut map_file = std::fs::File::open(&args.map_lin)
+        .wrap_err_with(|| format!("failed to open {:?}", &args.map_lin))?;
+    let mut map_mmap = unsafe { memmap2::Mmap::map(&map_file)? };
+    let mut raw_map_file = &map_mmap[..];
 
     let mut output_dir = if let Some(output_dir) = args.output.take() {
         output_dir
     } else {
-        let Some(parent) = args.input.parent() else {
-            return Err(eyre!("Input path {:?} has no parent", args.input));
+        let Some(parent) = args.common_lin.parent() else {
+            return Err(eyre!("Input path {:?} has no parent", args.common_lin));
         };
 
-        let Some(stem) = args.input.file_stem() else {
-            return Err(eyre!("Input path {:?} has no file stem", args.input));
+        let Some(stem) = args.common_lin.file_stem() else {
+            return Err(eyre!("Input path {:?} has no file stem", args.common_lin));
         };
 
         parent.join(stem)
@@ -48,26 +55,53 @@ fn main() -> Result<()> {
     let mut out_file = std::fs::File::create(&output_path)
         .wrap_err_with(|| format!("failed to create output file {output_path:?}"))?;
 
-    let out_data = if args
-        .input
+    let common_lin_data = if args
+        .common_lin
         .extension()
         .as_ref()
         .map(|ext| ext.to_str().unwrap() == "lin")
         .unwrap_or_default()
     {
-        unrealin::de::decompress_linear_file(raw_linear_file)
+        unrealin::de::decompress_linear_file(raw_common_file)
     } else {
-        raw_linear_file.to_vec()
+        raw_common_file.to_vec()
     };
 
-    std::io::copy(&mut out_data.as_slice(), &mut out_file)
+    let map_lin_data = if args
+        .common_lin
+        .extension()
+        .as_ref()
+        .map(|ext| ext.to_str().unwrap() == "lin")
+        .unwrap_or_default()
+    {
+        unrealin::de::decompress_linear_file(raw_map_file)
+    } else {
+        raw_common_file.to_vec()
+    };
+
+    std::io::copy(&mut common_lin_data.as_slice(), &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
 
-    let linear_file = unrealin::de::decode_linear_file(out_data.as_slice());
+    let mut linear_file =
+        unrealin::de::decode_linear_file(common_lin_data.as_slice(), map_lin_data.as_slice());
 
-    for (i, package) in linear_file.packages().iter().enumerate() {
-        let mut writer = std::fs::File::create(output_dir.join(format!("{i}.bin")))?;
-        unrealin::ser::serialize_unreal_package(writer, package);
+    for (i, package) in linear_file.packages_mut().iter_mut().enumerate() {
+        let out_path = output_dir.join(format!("{i}.bin"));
+        println!("Rewriting {:?}", out_path);
+        let mut writer = std::fs::File::create(&out_path)?;
+        unrealin::ser::serialize_unreal_package(writer, package)
+            .expect("failed to serialize package");
+
+        let reader = std::fs::read(&out_path).unwrap();
+        let mut input = reader.as_ref();
+        le_u32::<_, ContextError>(&mut input);
+        let res = de::read_package(&mut input).unwrap();
+        for (i, export) in res.exports.iter().enumerate() {
+            if export.object_name < 0 || export.object_name as usize >= res.names.len() {
+                println!("Prev: {:#X?}", res.exports[i - 1]);
+                panic!("Bad export: {i} {:#X?}", export);
+            }
+        }
     }
 
     Ok(())

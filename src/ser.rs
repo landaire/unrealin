@@ -43,20 +43,21 @@ fn write_var_string<W: Write>(writer: &mut W, value: &BStr) -> io::Result<()> {
     }
     write_packed_int(writer, (value.len() + 1) as i32)?;
     writer.write_all(value)?;
+    writer.write_u8(0x0)?;
 
     Ok(())
 }
 
 pub fn serialize_unreal_package<W: Write + Seek>(
     mut writer: W,
-    package: &UnrealPackage<'_>,
+    package: &mut RawPackage<'_>,
 ) -> io::Result<()> {
     let RawPackage {
         header,
         names,
         imports,
         exports,
-    } = &package.raw_package;
+    } = package;
 
     let PackageHeader {
         version,
@@ -79,6 +80,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     struct Correction {
         offset: u64,
         value: u32,
+        packed: bool,
     }
 
     let mut offset_corrections = Vec::new();
@@ -125,6 +127,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     offset_corrections.push(Correction {
         offset: name_offset_offset,
         value: names_offset as u32,
+        packed: false,
     });
 
     // Write out the name table
@@ -137,6 +140,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     offset_corrections.push(Correction {
         offset: import_offset_offset,
         value: imports_position as u32,
+        packed: false,
     });
     for Import {
         class_package,
@@ -156,9 +160,60 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     offset_corrections.push(Correction {
         offset: export_offset_offset,
         value: exports_position as u32,
+        packed: false,
     });
 
-    let mut object_export_fixups = Vec::with_capacity(exports.len());
+    for (
+        i,
+        ObjectExport {
+            class_index,
+            super_index,
+            package_index,
+            object_name,
+            object_flags,
+            serial_size,
+            serial_offset,
+            data,
+        },
+    ) in exports.iter_mut().enumerate()
+    {
+        write_packed_int(&mut writer, *class_index)?;
+
+        write_packed_int(&mut writer, *super_index)?;
+
+        writer.write_i32::<LE>(*package_index)?;
+
+        write_packed_int(&mut writer, *object_name)?;
+
+        writer.write_u32::<LE>(*object_flags)?;
+
+        let new_serial_size = data.iter().fold(0, |accum, data| accum + data.len());
+        println!("Export index: {i:#X}. Old size={serial_size:#X}, new size={new_serial_size:#X}");
+        *serial_size = new_serial_size as i32;
+
+        write_packed_int(&mut writer, *serial_size)?;
+
+        if *serial_size > 0 {
+            // Write out a fix-sized placeholder
+            writer.write_all([0x0, 0x0, 0x0, 0x0, 0x0].as_slice())?;
+        }
+    }
+
+    for export in exports.iter_mut() {
+        let new_serial_size = export.data.iter().fold(0, |accum, data| accum + data.len());
+        if new_serial_size == 0 {
+            continue;
+        }
+
+        export.serial_offset = writer.stream_position()? as i32;
+        for data in &export.data {
+            writer.write_all(data)?;
+        }
+    }
+
+    writer.seek(SeekFrom::Start(exports_position))?;
+
+    // Go update the exports table
     for ObjectExport {
         class_index,
         super_index,
@@ -171,7 +226,9 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     } in exports
     {
         write_packed_int(&mut writer, *class_index)?;
+
         write_packed_int(&mut writer, *super_index)?;
+
         writer.write_i32::<LE>(*package_index)?;
 
         write_packed_int(&mut writer, *object_name)?;
@@ -179,31 +236,19 @@ pub fn serialize_unreal_package<W: Write + Seek>(
         writer.write_u32::<LE>(*object_flags)?;
 
         write_packed_int(&mut writer, *serial_size)?;
+
         if *serial_size > 0 {
-            object_export_fixups.push(Some(writer.stream_position()?));
             write_packed_int(&mut writer, *serial_offset)?;
-        } else {
-            object_export_fixups.push(None);
         }
-    }
-
-    for (i, export) in exports.iter().enumerate() {
-        if export.serial_size == 0 {
-            continue;
-        }
-
-        let offset = writer.stream_position()?;
-        writer.write_all(export.data.expect("export has no data associated?"))?;
-
-        offset_corrections.push(Correction {
-            offset: object_export_fixups[i].expect("no fixup?"),
-            value: offset as u32,
-        });
     }
 
     for correction in offset_corrections {
         writer.seek(SeekFrom::Start(correction.offset))?;
-        writer.write_u32::<LE>(correction.value)?;
+        if correction.packed {
+            write_packed_int(&mut writer, correction.value as i32)?;
+        } else {
+            writer.write_u32::<LE>(correction.value)?;
+        }
     }
 
     Ok(())
