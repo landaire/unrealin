@@ -131,7 +131,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     });
 
     // Write out the name table
-    for Name { name, flags } in names {
+    for Name { name, flags } in names.iter() {
         write_var_string(&mut writer, name)?;
         writer.write_u32::<LE>(*flags)?;
     }
@@ -148,7 +148,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
         package_index,
         object_name,
         object,
-    } in imports
+    } in imports.iter()
     {
         write_packed_int(&mut writer, *class_package)?;
         write_packed_int(&mut writer, *class_name)?;
@@ -187,7 +187,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
 
         writer.write_u32::<LE>(*object_flags)?;
 
-        let new_serial_size = data.iter().fold(0, |accum, data| accum + data.len());
+        let new_serial_size = data.iter().fold(0, |accum, (_offset, data)| accum + data.len());
         println!("Export index: {i:#X}. Old size={serial_size:#X}, new size={new_serial_size:#X}");
         *serial_size = new_serial_size as i32;
 
@@ -200,14 +200,70 @@ pub fn serialize_unreal_package<W: Write + Seek>(
     }
 
     for export in exports.iter_mut() {
-        let new_serial_size = export.data.iter().fold(0, |accum, data| accum + data.len());
+        let new_serial_size = export.data.iter().fold(0, |accum, (offset, data)| accum + data.len());
         if new_serial_size == 0 {
             continue;
         }
 
+        let offset_before = export.serial_offset;
         export.serial_offset = writer.stream_position()? as i32;
-        for data in &export.data {
-            writer.write_all(data)?;
+        let mut normalized_offset = 0u32;
+        for (data_idx, (offset, data)) in export.data.iter().enumerate() {
+            normalized_offset += data.len() as u32;
+
+            let class_name = if export.class_index < 0 {
+                let idx = (-export.class_index) as usize - 1;
+                names[imports[idx].object_name as usize].name
+            } else  {
+                BStr::new(b"Class".as_slice())
+            };
+
+            if class_name == "Texture" {
+                if offset_before == 0x4431C0{
+                    println!("BLOCK START");
+                }
+
+                let mut ranges: Vec<(u32, std::ops::Range<usize>)> = Vec::new();
+                if let Some((next_offset, next_data)) = export.data.get(data_idx + 1) {
+                    let normalized_next_offset = normalized_offset + next_data.len() as u32;
+
+                    let next_offset = (*next_offset + next_data.len() as u64) as u32;
+                    let next_offset_bytes = next_offset.to_le_bytes();
+
+                    for (i, window) in data.windows(4).enumerate() {
+                        // if offset_before == 0x4431C0  {
+                        //     println!("{window:X?}, {next_offset_bytes:X?}");
+                        // }
+                        if window == next_offset_bytes {
+                            if let Some((last_off, last_range)) = ranges.last() {
+                                let last_range_end = last_range.end + 4;
+                                ranges.push((normalized_next_offset, (last_range_end)..(last_range_end + i)));
+                            } else {
+                                ranges.push((normalized_next_offset, 0..i));
+                            }
+                        }
+                    }
+                }
+
+                if ranges.is_empty() {
+                    writer.write_all(data)?;
+                } else {
+                    for (next_offset, range) in ranges.iter().cloned() {
+                        writer.write_all(&data[range])?;
+
+                        // Write out zero so it skips zero bytes
+                        // TODO: I tried putting in the offset here but it broke things...
+                        // so leaving this as zeroes for now
+                        writer.write_all(&[0, 0, 0, 0])?;
+                    }
+                    // Write out the final bit of data
+                    let final_range_start = ranges.last().unwrap().1.end + 4;
+                    let final_range = final_range_start..data.len();
+                    writer.write_all(&data[final_range])?;
+                }
+            } else {
+                writer.write_all(data)?;
+            }
         }
     }
 

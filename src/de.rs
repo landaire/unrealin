@@ -236,7 +236,7 @@ pub struct ObjectExport<'i> {
     pub serial_size: i32,
     pub serial_offset: i32,
     #[serde(skip)]
-    pub data: Vec<&'i [u8]>,
+    pub data: Vec<(u64, &'i [u8])>,
 }
 
 impl ObjectExport<'_> {
@@ -251,18 +251,22 @@ impl ObjectExport<'_> {
 }
 
 impl ObjectExport<'_> {
-    fn object_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
+    pub fn object_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
         package.names[self.object_name as usize].name
     }
 
-    fn class_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
-        let normalized_index = normalize_index(self.class_index);
+    pub fn class_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
+        let index = self.class_index;
 
-        if normalized_index == 0 {
+        if index == 0 {
             return BStr::new(b"Class".as_slice());
         }
 
-        package.names[package.exports[normalized_index].object_name as usize].name
+        if index < 0 {
+            package.names[package.imports[normalize_index(index)].object_name as usize].name
+        } else {
+            package.names[package.exports[normalize_index(index)].object_name as usize].name
+        }
     }
 }
 
@@ -508,7 +512,6 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
         .file_reads
         .iter_mut()
         .for_each(|(_k, v)| v.reverse());
-    metadata.file_load_order.reverse();
 
     let mut offsets = metadata.file_reads;
 
@@ -543,6 +546,7 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
                 }
                 PKG_TAG => {
                     let package = read_package(&mut input).expect("failed to read package");
+                    println!("Name: {}", metadata.file_load_order[raw_packages.len()]);
                     println!("{:#X?}", &package.header);
 
                     println!("Import count: {}", package.imports.len());
@@ -552,6 +556,7 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
                         println!("{:X?}", i);
                     }
 
+                    println!("Name table: {:?}", &package.names);
                     println!(
                         "Export size: {:#X}",
                         package
@@ -566,7 +571,7 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
                     for (i, export) in package.exports.iter().enumerate() {
                         println!("({i:#X}) {:#X?}", export);
                         println!("\t{}", export.object_name(&package));
-                        //println!("\t{}", export.class_name(&package));
+                        println!("\t{}", export.class_name(&package));
                     }
 
                     println!("End of export table {:#X}", orig_input.len() - input.len());
@@ -581,13 +586,17 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
 
                     // println!("Unexpected tag at: {:#X}", orig_input.len() - input.len());
 
-                    let Some(read_info) = offsets.get_mut(&current_file).unwrap().pop() else {
+                    let Some(read_info) = offsets.get_mut(&current_file).and_then(|reads| reads.pop()) else {
                         break;
                     };
 
                     for raw_package in &mut raw_packages {
                         for export in &mut raw_package.exports {
                             if export.partially_eq(&read_info.export) {
+                                if read_info.export.serial_offset == 0x19C03B {
+                                    panic!("{:#X?}", read_info);
+                                }
+
                                 println!("Reading {:#X} bytes", read_info.len);
                                 let data = take::<_, _, ContextError>(read_info.len)
                                     .parse_next(&mut input)
@@ -601,7 +610,7 @@ pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -
                                 );
 
                                 if !read_info.ignore {
-                                    export.data.push(data);
+                                    export.data.push((read_info.start_offset, data));
                                 }
 
                                 continue 'parser_loop;
