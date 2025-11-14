@@ -1,4 +1,5 @@
 use byteorder::*;
+use std::collections::HashMap;
 use std::io::{self, Seek};
 use std::io::{SeekFrom, Write};
 use winnow::BStr;
@@ -208,6 +209,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
         let offset_before = export.serial_offset;
         export.serial_offset = writer.stream_position()? as i32;
         let mut normalized_offset = 0u32;
+        let data_start = writer.stream_position()? as u32;
         for (data_idx, (offset, data)) in export.data.iter().enumerate() {
             normalized_offset += data.len() as u32;
 
@@ -235,7 +237,7 @@ pub fn serialize_unreal_package<W: Write + Seek>(
                         //     println!("{window:X?}, {next_offset_bytes:X?}");
                         // }
                         if window == next_offset_bytes {
-                            if let Some((last_off, last_range)) = ranges.last() {
+                            if let Some((last_end_off, last_range)) = ranges.last() {
                                 let last_range_end = last_range.end + 4;
                                 ranges.push((normalized_next_offset, (last_range_end)..(last_range_end + i)));
                             } else {
@@ -250,6 +252,9 @@ pub fn serialize_unreal_package<W: Write + Seek>(
                 } else {
                     for (next_offset, range) in ranges.iter().cloned() {
                         writer.write_all(&data[range])?;
+
+                        let position = writer.stream_position()?;
+                        offset_corrections.push(Correction { offset: position, value: data_start + next_offset, packed: false });
 
                         // Write out zero so it skips zero bytes
                         // TODO: I tried putting in the offset here but it broke things...
