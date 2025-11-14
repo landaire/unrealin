@@ -1,10 +1,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use winnow::BStr;
-
 use crate::{
     common::normalize_index,
-    de::{Import, ObjectExport, UnrealPackage},
+    de::{Import, ObjectExport},
 };
 
 pub type RcUnrealObject = Rc<RefCell<UnrealObject>>;

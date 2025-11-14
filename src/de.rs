@@ -1,36 +1,40 @@
 use std::{
-    collections::{HashMap, VecDeque},
-    io::{BufRead, Cursor},
-    rc::Rc,
+    cell::RefCell, collections::{HashMap, VecDeque}, io::{BufRead, Cursor, ErrorKind, Read, Seek}, marker::PhantomData, rc::Rc
 };
 
 use flate2::read::ZlibDecoder;
 use serde::Deserialize;
-use winnow::{
-    BStr, Parser as _,
-    binary::{le_i32, le_u32, u8},
-    combinator::repeat,
-    error::ContextError,
-    token::take,
-};
+use std::io;
+use byteorder::{ByteOrder, ReadBytesExt};
+use crate::reader::{CheckedLinReader, LinRead, LinReader, UnrealReadExt};
 
 use crate::{
     LIN_FILE_TABLE_TAG, PKG_TAG,
-    common::{ExportRead, ExportedData},
+    common::{ExportRead, ExportedData, IoOp},
     object::UnrealObject,
 };
 use crate::{common::normalize_index, object::RcUnrealObject};
 
-struct Block<'a> {
-    uncompressed_len: u32,
-    compressed_len: u32,
-    compressed_data: &'a [u8],
+struct UnrealRuntime {
+    linkers: Vec<Linker>,
 }
 
-fn read_block<'i>(input: &mut &'i [u8]) -> winnow::Result<Block<'i>> {
-    let uncompressed_len = le_u32(input)?;
-    let compressed_len = le_u32(input)?;
-    let compressed_data = take(compressed_len).parse_next(input)?;
+struct Linker {
+    objects: Vec<()>,
+    package: RawPackage,
+}
+
+struct Block {
+    uncompressed_len: u32,
+    compressed_len: u32,
+    compressed_data: Vec<u8>,
+}
+
+fn read_block<E, R>(reader: &mut R) -> io::Result<Block> where R: Read, E: ByteOrder {
+    let uncompressed_len = reader.read_u32::<E>()?;
+    let compressed_len = reader.read_u32::<E>()?;
+    let mut compressed_data = vec![0u8; compressed_len as usize];
+    reader.read_exact(&mut compressed_data)?;
 
     Ok(Block {
         uncompressed_len,
@@ -39,93 +43,19 @@ fn read_block<'i>(input: &mut &'i [u8]) -> winnow::Result<Block<'i>> {
     })
 }
 
-/// Decodes the packed integer from the byte stream.
-/// Assumes `u8(input)` reads one byte from `input`.
-pub fn read_packed_int(input: &mut &[u8]) -> winnow::Result<i32> {
-    const CONTINUE_BIT: u8 = 0x40;
-    const NEGATE_BIT: u8 = 0x80;
-
-    let b0 = u8(input)?;
-
-    // Build up the unsigned magnitude.
-    let mut value: u32 = 0;
-
-    if (b0 & CONTINUE_BIT) != 0 {
-        let b1 = u8(input)?;
-        if (b1 & NEGATE_BIT) != 0 {
-            let b2 = u8(input)?;
-            if (b2 & NEGATE_BIT) != 0 {
-                let b3 = u8(input)?;
-                if (b3 & NEGATE_BIT) != 0 {
-                    let b4 = u8(input)?;
-                    value = b4 as u32;
-                }
-                value = (value << 7) + ((b3 & (NEGATE_BIT - 1)) as u32);
-            }
-            value = (value << 7) + ((b2 & (NEGATE_BIT - 1)) as u32);
-        }
-        value = (value << 7) + ((b1 & (NEGATE_BIT - 1)) as u32);
-    }
-
-    value = (value << 6) + ((b0 & (CONTINUE_BIT - 1)) as u32);
-
-    // Apply sign bit from B0.
-    let mut result = value as i32;
-    if (b0 & 0x80) != 0 {
-        result = -result;
-    }
-
-    Ok(result)
-}
-
-fn decode_compact_index2(input: &mut &[u8]) -> winnow::Result<i32> {
-    const CONTINUE_BIT: u8 = 0x40;
-    const NEGATE_BIT: u8 = 0x80;
-    const MAX_ADDITIONAL_BYTES: usize = 4;
-
-    let b0 = u8(input)?;
-
-    let negative = (b0 & NEGATE_BIT) != 0;
-    let mut value: i32 = (b0 & (CONTINUE_BIT - 1)) as i32; // 6 data bits from first byte
-    let mut shift = 6;
-
-    let mut byte_count = 1;
-    // if continue bit set in first byte, keep pulling 7-bit groups
-    if (b0 & CONTINUE_BIT) != 0 {
-        for i in 0..MAX_ADDITIONAL_BYTES {
-            byte_count += 1;
-            let bi = u8(input)?;
-
-            let data = if i < 3 { bi & (CONTINUE_BIT - 1) } else { bi }; // last (5th) byte uses all 8 bits
-            value |= (data as i32) << shift;
-            shift += 7;
-
-            if i < (MAX_ADDITIONAL_BYTES - 1) && (bi & CONTINUE_BIT) == 0 {
-                break;
-            }
-        }
-    }
-
-    let result = if negative { -value } else { value };
-
-    Ok(result)
-}
-
 #[derive(Debug)]
-pub(crate) struct FileEntry<'i> {
-    pub name: &'i BStr,
+pub(crate) struct FileEntry {
+    pub name: String,
     pub offset: u32,
     pub len: u32,
     pub unk: u32,
 }
 
-fn read_file_entry<'i>(input: &mut &'i [u8]) -> winnow::Result<FileEntry<'i>> {
-    let name = read_var_string(input)?;
-    let offset = le_u32(input)?;
-    let len = le_u32(input)?;
-    let unk = le_u32(input)?;
-
-    assert_eq!(unk, 0, "unknown value is not zero");
+fn read_file_entry<E, R>(reader: &mut R) -> io::Result<FileEntry> where R: Read, E: ByteOrder {
+    let name = reader.read_string()?;
+    let offset = reader.read_u32::<E>()?;
+    let len = reader.read_u32::<E>()?;
+    let unk = reader.read_u32::<E>()?;
 
     let entry = FileEntry {
         name,
@@ -138,7 +68,7 @@ fn read_file_entry<'i>(input: &mut &'i [u8]) -> winnow::Result<FileEntry<'i>> {
 }
 
 #[derive(Debug)]
-pub struct PackageHeader<'i> {
+pub struct PackageHeader {
     pub version: u32,
     pub flags: u32,
     pub name_count: u32,
@@ -148,7 +78,7 @@ pub struct PackageHeader<'i> {
     pub import_count: u32,
     pub import_offset: u32,
     pub unk: u32,
-    pub unknown_data: &'i [u8],
+    pub unknown_data: Vec<u8>,
     pub guid_a: u32,
     pub guid_b: u32,
     pub guid_c: u32,
@@ -156,26 +86,16 @@ pub struct PackageHeader<'i> {
     pub generations: Vec<GenerationInfo>,
 }
 
-fn read_var_string<'i>(input: &mut &'i [u8]) -> winnow::Result<&'i BStr> {
-    let name_len = read_packed_int(input)?;
-    let name = take((name_len as usize).saturating_sub(1)).parse_next(input)?;
-    if name_len > 0 {
-        let _null_term = u8(input)?;
-    }
-
-    Ok(BStr::new(name))
-}
-
 #[derive(Debug)]
-pub struct Name<'i> {
-    pub name: &'i BStr,
+pub struct Name {
+    pub name: String,
     pub flags: u32,
 }
 
-fn read_name<'i>(input: &mut &'i [u8]) -> winnow::Result<Name<'i>> {
+fn read_name<E, R>(reader: &mut R) -> io::Result<Name> where R: Read, E: ByteOrder {
     Ok(Name {
-        name: read_var_string(input)?,
-        flags: le_u32(input)?,
+        name: reader.read_string()?,
+        flags: reader.read_u32::<E>()?,
     })
 }
 
@@ -189,33 +109,33 @@ pub(crate) struct Import {
 }
 
 impl Import {
-    pub fn class_name<'i>(&self, package: &'i RawPackage<'_>) -> &'i BStr {
-        package.names[self.class_name as usize].name
+    pub fn class_name<'p>(&self, package: &'p Linker) -> &'p str {
+        package.package.names[self.class_name as usize].name.as_str()
     }
 
-    pub fn full_name(&self, package: &RawPackage<'_>) -> String {
-        format!(
-            "{} {}.{}",
-            package.names[self.class_name as usize].name,
-            package.names[self.class_package as usize].name,
-            package.names[self.object_name as usize].name
-        )
-    }
+    // pub fn full_name(&self, package: &RawPackage<'_>) -> String {
+    //     format!(
+    //         "{} {}.{}",
+    //         package.names[self.class_name as usize].name,
+    //         package.names[self.class_package as usize].name,
+    //         package.names[self.object_name as usize].name
+    //     )
+    // }
 
-    pub fn resolve_export<'i>(&self, container: &'i RawPackage<'_>) -> &'i ObjectExport<'i> {
-        let normalized_index = normalize_index(self.package_index);
-        &container.exports[normalized_index]
-    }
+    // pub fn resolve_export<'i>(&self, container: &'i RawPackage<'_>) -> &'i ObjectExport<'i> {
+    //     let normalized_index = normalize_index(self.package_index);
+    //     &container.exports[normalized_index]
+    // }
 }
 
-fn read_import(input: &mut &[u8]) -> winnow::Result<Import> {
-    let class_package = read_packed_int(input)?;
+fn read_import<E, R>(reader: &mut R) -> io::Result<Import> where R: Read, E: ByteOrder {
+    let class_package = reader.read_packed_int()?;
 
-    let class_name = read_packed_int(input)?;
+    let class_name = reader.read_packed_int()?;
 
-    let package_index = le_i32(input)?;
+    let package_index = reader.read_i32::<E>()?;
 
-    let object_name = read_packed_int(input)?;
+    let object_name = reader.read_packed_int()?;
 
     Ok(Import {
         class_package,
@@ -227,7 +147,7 @@ fn read_import(input: &mut &[u8]) -> winnow::Result<Import> {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ObjectExport<'i> {
+pub struct ObjectExport {
     pub class_index: i32,
     pub super_index: i32,
     pub package_index: i32,
@@ -235,11 +155,9 @@ pub struct ObjectExport<'i> {
     pub object_flags: u32,
     pub serial_size: i32,
     pub serial_offset: i32,
-    #[serde(skip)]
-    pub data: Vec<(u64, &'i [u8])>,
 }
 
-impl ObjectExport<'_> {
+impl ObjectExport {
     fn partially_eq(&self, other: &Self) -> bool {
         self.class_index == other.class_index
             && self.super_index == other.super_index
@@ -250,40 +168,43 @@ impl ObjectExport<'_> {
     }
 }
 
-impl ObjectExport<'_> {
-    pub fn object_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
-        package.names[self.object_name as usize].name
+impl ObjectExport {
+    pub fn object_name<'p>(&self, linker: &'p Linker) -> &'p str {
+        linker.package.names[self.object_name as usize].name.as_str()
     }
 
-    pub fn class_name<'p>(&self, package: &'p RawPackage<'_>) -> &'p BStr {
+    pub fn class_name<'p>(&self, linker: &'p Linker) -> &'p str{
         let index = self.class_index;
 
         if index == 0 {
-            return BStr::new(b"Class".as_slice());
+            return "Class";
         }
 
+        let header = &linker.package;
         if index < 0 {
-            package.names[package.imports[normalize_index(index)].object_name as usize].name
+            header.names[header.imports[normalize_index(index)].object_name as usize].name.as_str()
         } else {
-            package.names[package.exports[normalize_index(index)].object_name as usize].name
+            header.names[header.exports[normalize_index(index)].object_name as usize].name.as_str()
         }
     }
 }
 
-fn read_export<'i>(input: &mut &'i [u8]) -> winnow::Result<ObjectExport<'i>> {
-    let class_index = read_packed_int(input)?;
-    let super_index = read_packed_int(input)?;
+fn read_export<E, R>(reader: &mut R) -> io::Result<ObjectExport> where R: Read, E: ByteOrder {
+    let class_index = reader.read_packed_int()?;
+    let super_index = reader.read_packed_int()?;
 
-    let package_index = le_i32(input)?;
+    let package_index = reader.read_i32::<E>()?;
 
-    let object_name = read_packed_int(input)?;
+    let object_name = reader.read_packed_int()?;
 
-    let object_flags = le_u32(input)?;
+    let object_flags = reader.read_u32::<E>()?;
 
-    let serial_size = read_packed_int(input)?;
+    let serial_size = reader.read_packed_int()?;
 
-    let serial_offset = if serial_size != 0 {
-        read_packed_int(input)?
+    assert!(serial_size >= 0, "serial_size cannot be negative");
+
+    let serial_offset = if serial_size > 0 {
+        reader.read_packed_int()?
     } else {
         0
     };
@@ -295,7 +216,6 @@ fn read_export<'i>(input: &mut &'i [u8]) -> winnow::Result<ObjectExport<'i>> {
         object_flags,
         serial_size,
         serial_offset,
-        data: Vec::new(),
     })
 }
 
@@ -305,9 +225,9 @@ pub(crate) struct GenerationInfo {
     pub name_count: u32,
 }
 
-fn read_generation_info(input: &mut &[u8]) -> winnow::Result<GenerationInfo> {
-    let export_count = le_u32(input)?;
-    let name_count = le_u32(input)?;
+fn read_generation_info<E, R>(reader: &mut R) -> io::Result<GenerationInfo> where R: Read, E: ByteOrder {
+    let export_count = reader.read_u32::<E>()?;
+    let name_count = reader.read_u32::<E>()?;
 
     Ok(GenerationInfo {
         export_count,
@@ -315,46 +235,47 @@ fn read_generation_info(input: &mut &[u8]) -> winnow::Result<GenerationInfo> {
     })
 }
 
-fn read_file_table<'i>(input: &mut &'i [u8]) -> winnow::Result<Vec<FileEntry<'i>>> {
+fn read_file_table<E, R>(reader: &mut R) -> io::Result<Vec<FileEntry>> where R: Read, E: ByteOrder {
     // Reset input to skip past most of the header
-    let _ = take(0x10_usize).parse_next(input)?;
+    let mut garbage = [0u8; 0x10];
+    reader.read_exact(&mut garbage)?;
 
-    let file_entry_count = read_packed_int(input)?;
-
-    let file_table: Vec<FileEntry<'_>> =
-        repeat(file_entry_count as usize, read_file_entry).parse_next(input)?;
+    let file_entry_count = reader.read_packed_int()? as usize;
+    let mut file_table: Vec<FileEntry> = Vec::with_capacity(file_entry_count);
+    for _ in 0..file_entry_count {
+        file_table.push(read_file_entry::<E, _>(reader)?);
+    }
 
     Ok(file_table)
 }
 
-fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<PackageHeader<'i>> {
-    let version = le_u32(input)?;
+fn read_package_header<E, R>(reader: &mut R) ->io::Result<PackageHeader> where R: Read, E: ByteOrder {
+    let version = reader.read_u32::<E>()?;
     println!("Version: {:#X}", version);
-    let flags = le_u32(input)?;
-    let name_count = le_u32(input)?;
+    let flags = reader.read_u32::<E>()?;
+    let name_count = reader.read_u32::<E>()?;
     println!("name_count: {:#X}", name_count);
-    let name_offset = le_u32(input)?;
-    let export_count = le_u32(input)?;
-    let export_offset = le_u32(input)?;
-    let import_count = le_u32(input)?;
-    let import_offset = le_u32(input)?;
+    let name_offset = reader.read_u32::<E>()?;
+    let export_count = reader.read_u32::<E>()?;
+    let export_offset = reader.read_u32::<E>()?;
+    let import_count = reader.read_u32::<E>()?;
+    let import_offset = reader.read_u32::<E>()?;
 
-    let unk = le_u32(input)?;
+    let unk = reader.read_u32::<E>()?;
     println!("Unknown value: {:#X}", unk);
 
-    let unk_data_count = read_packed_int(input)?;
-    println!("data count: {:#X}", unk_data_count);
+    let unknown_data = reader.read_array()?;
 
-    let unknown_data = take(unk_data_count as usize).parse_next(input)?;
+    let guid_a = reader.read_u32::<E>()?;
+    let guid_b = reader.read_u32::<E>()?;
+    let guid_c = reader.read_u32::<E>()?;
+    let guid_d = reader.read_u32::<E>()?;
 
-    let guid_a = le_u32(input)?;
-    let guid_b = le_u32(input)?;
-    let guid_c = le_u32(input)?;
-    let guid_d = le_u32(input)?;
-
-    let generation_count = le_u32(input)?;
-    let generations: Vec<_> =
-        repeat(generation_count as usize, read_generation_info).parse_next(input)?;
+    let generation_count = reader.read_u32::<E>()? as usize;
+    let mut generations = Vec::with_capacity(generation_count);
+    for _ in 0..generation_count {
+        generations.push(read_generation_info::<E, _>(reader)?);
+    }
 
     Ok(PackageHeader {
         version,
@@ -376,35 +297,30 @@ fn read_package_header<'i>(input: &mut &'i [u8]) -> winnow::Result<PackageHeader
 }
 
 #[derive(Debug)]
-pub struct RawPackage<'i> {
-    pub header: PackageHeader<'i>,
-    pub names: Vec<Name<'i>>,
+pub struct RawPackage {
+    pub header: PackageHeader,
+    pub names: Vec<Name>,
     pub imports: Vec<Import>,
-    pub exports: Vec<ObjectExport<'i>>,
+    pub exports: Vec<ObjectExport>,
 }
 
-pub fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<RawPackage<'i>> {
-    let orig_input = *input;
-    let len_before = input.len();
+pub fn read_package<E, R>(reader: &mut R) -> io::Result<RawPackage> where R: Read, E: ByteOrder {
+    let header = read_package_header::<E, _>(reader)?;
 
-    let header = read_package_header(input).expect("failed to read package header");
+    let mut names = Vec::with_capacity(header.name_count as usize);
+    for _ in 0..header.name_count as usize {
+        names.push(read_name::<E, _>(reader)?);
+    }
 
-    let names: Vec<_> = repeat(header.name_count as usize, read_name)
-        .parse_next(input)
-        .expect("failed to parse names");
+    let mut imports = Vec::with_capacity(header.import_count as usize);
+    for _ in 0..header.import_count as usize {
+        imports.push(read_import::<E, _>(reader)?);
+    }
 
-    let imports: Vec<_> = repeat(header.import_count as usize, read_import)
-        .parse_next(input)
-        .expect("failed to parse import");
-
-    println!(
-        "Exports start at: {:#X}, {:#X?}",
-        orig_input.len() - input.len(),
-        &input[..0x10.min(input.len())]
-    );
-    let exports: Vec<_> = repeat(header.export_count as usize, read_export)
-        .parse_next(input)
-        .expect("failed to parse export");
+    let mut exports = Vec::with_capacity(header.export_count as usize);
+    for _ in 0..header.export_count as usize {
+        exports.push(read_export::<E, _>(reader)?);
+    }
 
     Ok(RawPackage {
         header,
@@ -414,38 +330,13 @@ pub fn read_package<'i>(input: &mut &'i [u8]) -> winnow::Result<RawPackage<'i>> 
     })
 }
 
-pub struct LinearFile<'i> {
-    pub file_table: Option<Vec<FileEntry<'i>>>,
-    pub packages: Vec<RawPackage<'i>>,
-}
-
-impl<'i> LinearFile<'i> {
-    pub fn file_table(&self) -> Option<&Vec<FileEntry<'i>>> {
-        self.file_table.as_ref()
-    }
-
-    pub fn packages_mut(&mut self) -> &mut [RawPackage<'i>] {
-        &mut self.packages
-    }
-
-    pub fn packages(&self) -> &[RawPackage<'i>] {
-        &self.packages
-    }
-}
-
-pub struct UnrealPackage<'i> {
-    pub(crate) raw_package: RawPackage<'i>,
-    pub(crate) class_types: HashMap<&'i BStr, ()>,
-    pub(crate) objects: Vec<Rc<UnrealObject>>,
-}
-
-pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
+pub fn decompress_linear_file<E, R>(reader: &mut R) -> io::Result<Vec<u8>> where R: Read, E: ByteOrder {
     let mut out_data = Vec::new();
 
     // Read the first data block to get the decompressed size
     let uncompressed_data_size = {
-        let block = read_block(&mut input).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data);
+        let block = read_block::<E, _>(reader).expect("failed to read block");
+        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
         let mut bytes = [0u8; 4];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data ");
@@ -456,8 +347,8 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
     out_data.reserve(uncompressed_data_size as usize);
 
     let compressed_data_size = {
-        let block = read_block(&mut input).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data);
+        let block = read_block::<E, _>(reader).expect("failed to read block");
+        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
         let mut bytes = [0u8; 4];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
@@ -466,8 +357,8 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
     };
 
     let unk1 = {
-        let block = read_block(&mut input).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data);
+        let block = read_block::<E, _>(reader).expect("failed to read block");
+        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
         let mut bytes = [0u8; 4];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
@@ -476,8 +367,8 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
     };
 
     let unk2 = {
-        let block = read_block(&mut input).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data);
+        let block = read_block::<E, _>(reader).expect("failed to read block");
+        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
         let mut bytes = [0u8; 4];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
         std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
@@ -490,154 +381,124 @@ pub fn decompress_linear_file(mut input: &[u8]) -> Vec<u8> {
     println!("unk1: {unk1:#X}");
     println!("unk2: {unk2:#X}");
 
-    while !input.is_empty() {
-        let block = read_block(&mut input).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data);
+    // Read until EOF
+    loop {
+        let block = match read_block::<E, _>(reader) {
+            Ok(block) =>block,
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
+                break;
+            },
+            Err(e) => {
+                // Unexpected error
+                return Err(e);
+            }
+        };
+        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
 
         std::io::copy(&mut reader, &mut out_data).expect("failed to read zlib data");
     }
 
-    out_data
+    Ok(out_data)
 }
 
-pub fn decode_linear_file<'i>(common_lin_input: &'i [u8], map_input: &'i [u8]) -> LinearFile<'i> {
-    let mut file_table = None;
-    let mut raw_packages: Vec<RawPackage<'_>> = Vec::new();
+pub struct LinearFileDecoder<E, R> {
+    sources: VecDeque<R>,
+    metadata: ExportedData,
+    _endian: PhantomData<E>,
+}
 
-    let mut reader = std::fs::File::open("/var/tmp/reads.json").expect("failed to open reads file");
+impl<E, R> LinearFileDecoder<E, LinReader<R>> where E: ByteOrder, R: Read {
+    pub fn new(sources: Vec<R>, metadata: ExportedData) -> Self  {
+        Self {
+            sources: VecDeque::from_iter(sources.into_iter().map(LinReader::new)),
+            metadata,
+            _endian: PhantomData,
+        }
+    }
+}
 
-    let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
-    metadata.file_ptr_order.reverse();
-    metadata
-        .file_reads
-        .iter_mut()
-        .for_each(|(_k, v)| v.reverse());
+impl<E, R> LinearFileDecoder<E, CheckedLinReader<R>> where E: ByteOrder, R: Read {
+    pub fn new_checked(sources: Vec<R>, mut metadata: ExportedData) -> Self {
+        let io_ops = Rc::new(RefCell::new(metadata.raw_io_ops.drain(..).collect()));
+        Self {
+            sources: VecDeque::from_iter(sources.into_iter().map(|reader| CheckedLinReader::new(reader, Rc::clone(&io_ops)))),
+            metadata,
+            _endian: PhantomData,
+        }
+    }
+}
 
-    let mut offsets = metadata.file_reads;
+impl<E, R> LinearFileDecoder<E, R> where E: ByteOrder, R: LinRead {
+    pub fn decode_linear_file(&mut self) -> io::Result<()> {
+        let mut file_table = None;
+        let mut raw_packages: Vec<RawPackage> = Vec::new();
 
-    for mut input in [common_lin_input, map_input] {
-        let orig_input = input;
+        while let Some(mut reader) = self.sources.pop_front() {
+            reader.set_reading_linker_header(true);
 
-        let unk = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
+            let unk = reader.read_u32::<E>()?;
+            let name = reader.read_string()?;
+            println!("{}", name);
 
-        println!("{:#X}", unk);
+            let mut current_file = self.metadata.file_ptr_order.pop().unwrap();
 
-        let name = read_var_string(&mut input).expect("failed to read lin name");
-        println!("{}", name);
+            'parser_loop: loop {
+                let tag = reader.read_u32::<E>()?;
+                // println!("Processing at {:#02X?}", &input[..16]);
 
-        let mut current_file = metadata.file_ptr_order.pop().unwrap();
-        println!("offsets count: {}", offsets.len());
-
-        'parser_loop: while input.len() > 4 {
-            let input_before = input;
-            let tag = le_u32::<_, ContextError>(&mut input).expect("failed to parse tag");
-            // println!("Processing at {:#02X?}", &input[..16]);
-
-            match tag {
-                LIN_FILE_TABLE_TAG => {
-                    file_table =
-                        Some(read_file_table(&mut input).expect("failed to read file table"));
-                    println!(
-                        "File table length: {:#X}",
-                        file_table.as_ref().map(|t| t.len()).unwrap_or_default()
-                    );
-                    println!("{file_table:#X?}");
-                    continue;
-                }
-                PKG_TAG => {
-                    let package = read_package(&mut input).expect("failed to read package");
-                    println!("Name: {}", metadata.file_load_order[raw_packages.len()]);
-                    println!("{:#X?}", &package.header);
-
-                    println!("Import count: {}", package.imports.len());
-                    println!("Imports:");
-                    for i in &package.imports {
-                        //println!("{}", i.full_name(&package));
-                        println!("{:X?}", i);
+                match tag {
+                    LIN_FILE_TABLE_TAG => {
+                        file_table =
+                            Some(read_file_table::<E, _>(&mut reader).expect("failed to read file table"));
+                        println!(
+                            "File table length: {:#X}",
+                            file_table.as_ref().map(|t| t.len()).unwrap_or_default()
+                        );
+                        println!("{file_table:#X?}");
+                        continue;
                     }
+                    PKG_TAG => {
+                        let package = read_package::<E, _>(&mut reader).expect("failed to read package");
+                        let linker = Linker {
+                            objects: Default::default(),
+                            package,
+                        };
 
-                    println!("Name table: {:?}", &package.names);
-                    println!(
-                        "Export size: {:#X}",
-                        package
-                            .exports
-                            .iter()
-                            .fold(0, |accum, e| accum + e.serial_size)
-                    );
-                    println!("All exports");
+                        println!("Name: {}", self.metadata.file_load_order[raw_packages.len()]);
+                        println!("{:#X?}", &linker.package.header);
 
-                    println!("Export count: {}", package.exports.len());
-                    println!("Export:");
-                    for (i, export) in package.exports.iter().enumerate() {
-                        println!("({i:#X}) {:#X?}", export);
-                        println!("\t{}", export.object_name(&package));
-                        println!("\t{}", export.class_name(&package));
-                    }
-
-                    println!("End of export table {:#X}", orig_input.len() - input.len());
-
-                    raw_packages.push(package);
-                }
-                tag => {
-                    let current_offset = orig_input.len() - input_before.len();
-                    // input = &input_before[1..];
-                    input = input_before;
-                    // continue;
-
-                    // println!("Unexpected tag at: {:#X}", orig_input.len() - input.len());
-
-                    let Some(read_info) = offsets.get_mut(&current_file).and_then(|reads| reads.pop()) else {
-                        break;
-                    };
-
-                    for raw_package in &mut raw_packages {
-                        for export in &mut raw_package.exports {
-                            if export.partially_eq(&read_info.export) {
-                                if read_info.export.serial_offset == 0x19C03B {
-                                    panic!("{:#X?}", read_info);
-                                }
-
-                                println!("Reading {:#X} bytes", read_info.len);
-                                let data = take::<_, _, ContextError>(read_info.len)
-                                    .parse_next(&mut input)
-                                    .expect("failed to read export data");
-
-                                println!(
-                                    "Export {:#X} @ {:#X} start bytes {:#X?}",
-                                    export.serial_offset,
-                                    orig_input.len() - input_before.len(),
-                                    &data[..data.len().min(4)]
-                                );
-
-                                if !read_info.ignore {
-                                    export.data.push((read_info.start_offset, data));
-                                }
-
-                                continue 'parser_loop;
-                            }
+                        println!("Import count: {}", linker.package.imports.len());
+                        println!("Imports:");
+                        for i in &linker.package.imports {
+                            //println!("{}", i.full_name(&package));
+                            println!("{:X?}", i);
                         }
-                    }
 
-                    for raw_package in &mut raw_packages {
-                        for export in &mut raw_package.exports {
-                            if export.serial_offset == read_info.export.serial_offset {
-                                println!("Possible? {:#X?}", export);
-                            }
+                        println!("Name table: {:?}", &linker.package.names);
+                        println!(
+                            "Export size: {:#X}",
+                            linker.package
+                                .exports
+                                .iter()
+                                .fold(0, |accum, e| accum + e.serial_size)
+                        );
+                        println!("All exports");
+
+                        println!("Export count: {}", linker.package.exports.len());
+                        println!("Export:");
+                        for (i, export) in linker.package.exports.iter().enumerate() {
+                            println!("({i:#X}) {:#X?}", export);
+                            println!("\t{}", export.object_name(&linker));
+                            println!("\t{}", export.class_name(&linker));
                         }
-                    }
 
-                    println!("Expected: {:#X?}", read_info);
-                    panic!(
-                        "Unexpeced tag {tag:#08X} at {:#X}",
-                        orig_input.len() - input.len()
-                    );
+                        panic!("");
+                    }
+                    _ => todo!("")
                 }
             }
         }
-    }
 
-    LinearFile {
-        file_table: file_table,
-        packages: raw_packages,
+        Ok(())
     }
 }

@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+use std::{io::Cursor, path::PathBuf};
 
+use byteorder::LittleEndian;
 use clap::Parser;
 use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
-use unrealin::de;
-use winnow::{binary::le_u32, error::ContextError};
+use unrealin::{ExportedData, de::{self, LinearFileDecoder}};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
         .map(|ext| ext.to_str().unwrap() == "lin")
         .unwrap_or_default()
     {
-        unrealin::de::decompress_linear_file(raw_common_file)
+        unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_common_file)?
     } else {
         raw_common_file.to_vec()
     };
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
         .map(|ext| ext.to_str().unwrap() == "lin")
         .unwrap_or_default()
     {
-        unrealin::de::decompress_linear_file(raw_map_file)
+        unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_map_file)?
     } else {
         raw_common_file.to_vec()
     };
@@ -82,27 +82,36 @@ fn main() -> Result<()> {
     std::io::copy(&mut common_lin_data.as_slice(), &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
 
-    let mut linear_file =
-        unrealin::de::decode_linear_file(common_lin_data.as_slice(), map_lin_data.as_slice());
+    let mut reader = std::fs::File::open("/var/tmp/reads.json").expect("failed to open reads file");
 
-    for (i, package) in linear_file.packages_mut().iter_mut().enumerate() {
-        let out_path = output_dir.join(format!("{i}.bin"));
-        println!("Rewriting {:?}", out_path);
-        let mut writer = std::fs::File::create(&out_path)?;
-        unrealin::ser::serialize_unreal_package(writer, package)
-            .expect("failed to serialize package");
+    let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
+    metadata.file_ptr_order.reverse();
+    metadata
+        .file_reads
+        .iter_mut()
+        .for_each(|(_k, v)| v.reverse());
 
-        let reader = std::fs::read(&out_path).unwrap();
-        let mut input = reader.as_ref();
-        le_u32::<_, ContextError>(&mut input);
-        let res = de::read_package(&mut input).unwrap();
-        for (i, export) in res.exports.iter().enumerate() {
-            if export.object_name < 0 || export.object_name as usize >= res.names.len() {
-                println!("Prev: {:#X?}", res.exports[i - 1]);
-                panic!("Bad export: {i} {:#X?}", export);
-            }
-        }
-    }
+    let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)], metadata);
+    lin_decoder.decode_linear_file().expect("failed to decode lienar file");
+
+    // for (i, package) in linear_file.packages_mut().iter_mut().enumerate() {
+    //     let out_path = output_dir.join(format!("{i}.bin"));
+    //     println!("Rewriting {:?}", out_path);
+    //     let mut writer = std::fs::File::create(&out_path)?;
+    //     unrealin::ser::serialize_unreal_package(writer, package)
+    //         .expect("failed to serialize package");
+
+    //     let reader = std::fs::read(&out_path).unwrap();
+    //     let mut input = reader.as_ref();
+    //     le_u32::<_, ContextError>(&mut input);
+    //     let res = de::read_package(&mut input).unwrap();
+    //     for (i, export) in res.exports.iter().enumerate() {
+    //         if export.object_name < 0 || export.object_name as usize >= res.names.len() {
+    //             println!("Prev: {:#X?}", res.exports[i - 1]);
+    //             panic!("Bad export: {i} {:#X?}", export);
+    //         }
+    //     }
+    // }
 
     Ok(())
 }
