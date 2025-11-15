@@ -88,7 +88,10 @@ where
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.source.read(buf)
+        let bytes_read = self.source.read(buf)?;
+        self.pos += bytes_read as u64;
+
+        Ok(bytes_read)
     }
 }
 
@@ -153,7 +156,10 @@ where
             }
         }
 
-        self.source.read(buf)
+        let bytes_read = self.source.read(buf)?;
+        self.pos += bytes_read as u64;
+
+        Ok(bytes_read)
     }
 }
 

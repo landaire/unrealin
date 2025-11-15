@@ -1,6 +1,11 @@
+use std::io;
+
 use byteorder::ByteOrder;
 
-use crate::object::{DeserializeUnrealObject, UObjectKind, UnrealObject};
+use crate::{
+    de::{Linker, ObjectExport},
+    object::{DeserializeUnrealObject, UObjectKind, UnrealObject},
+};
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Object {
@@ -11,10 +16,15 @@ pub struct Object {
 }
 
 impl DeserializeUnrealObject for Object {
-    fn deserialize<E, R>(&self, reader: R, linker: &crate::de::Linker) -> std::io::Result<()>
+    fn deserialize<E, R>(
+        &self,
+        export: &ObjectExport,
+        linker: &Linker,
+        reader: &mut R,
+    ) -> io::Result<()>
     where
         E: ByteOrder,
-        R: std::io::Read,
+        R: io::Read + io::Seek,
     {
         todo!()
     }

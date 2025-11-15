@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    io::{BufRead, Cursor, ErrorKind, Read, Seek},
+    io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom},
     marker::PhantomData,
     rc::Rc,
 };
@@ -138,7 +138,7 @@ impl UnrealRuntime {
             .find_export_by_name(object_name)
             .expect("failed to find export");
 
-        deserialize_object::<E, _>(constructed_object.as_mut(), reader, linker)?;
+        deserialize_object::<E, _>(constructed_object.as_mut(), export, linker, reader)?;
 
         // TODO: Refcount the export
         linker.objects.insert(export.clone(), constructed_object);
@@ -149,30 +149,31 @@ impl UnrealRuntime {
 
 fn deserialize_object<E, R>(
     object: &mut dyn UnrealObject,
-    reader: &mut R,
+    export: &ObjectExport,
     linker: &Linker,
+    reader: &mut R,
 ) -> io::Result<()>
 where
-    R: Read,
+    R: Read + Seek,
     E: ByteOrder,
 {
     macro_rules! deserialize_as {
-        ($obj:ident, $reader:ident, $linker:ident, $kind:ty) => {{
-            let concrete_ty = $obj
+        ($kind:ty) => {{
+            let concrete_ty = object
                 .as_any_mut()
                 .downcast_mut::<$kind>()
                 .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($kind)));
 
-            concrete_ty.deserialize::<E, _>($reader, $linker)
+            concrete_ty.deserialize::<E, _>(export, linker, reader)
         }};
     }
     match object.kind() {
         UObjectKind::Object => {
-            deserialize_as!(object, reader, linker, Object)
+            deserialize_as!(Object)
         }
         UObjectKind::Struct => todo!("struct!"),
         UObjectKind::Class => {
-            deserialize_as!(object, reader, linker, Class)
+            deserialize_as!(Class)
         }
     }
 }
@@ -394,6 +395,14 @@ impl ObjectExport {
             && self.serial_size == other.serial_size
             && self.serial_offset == other.serial_offset
     }
+
+    pub fn serial_offset(&self) -> u64 {
+        self.serial_offset as u64
+    }
+
+    pub fn serial_size(&self) -> usize {
+        self.serial_size as usize
+    }
 }
 
 impl ObjectExport {
@@ -563,21 +572,25 @@ pub struct RawPackage {
 
 pub fn read_package<E, R>(reader: &mut R) -> io::Result<RawPackage>
 where
-    R: Read,
+    R: Read + Seek,
     E: ByteOrder,
 {
     let header = read_package_header::<E, _>(reader)?;
+
+    reader.seek(SeekFrom::Start(header.name_offset as u64))?;
 
     let mut names = Vec::with_capacity(header.name_count as usize);
     for _ in 0..header.name_count as usize {
         names.push(read_name::<E, _>(reader)?);
     }
 
+    reader.seek(SeekFrom::Start(header.import_offset as u64))?;
     let mut imports = Vec::with_capacity(header.import_count as usize);
     for _ in 0..header.import_count as usize {
         imports.push(read_import::<E, _>(reader)?);
     }
 
+    reader.seek(SeekFrom::Start(header.export_offset as u64))?;
     let mut exports = Vec::with_capacity(header.export_count as usize);
     for _ in 0..header.export_count as usize {
         exports.push(read_export::<E, _>(reader)?);

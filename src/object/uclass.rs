@@ -1,4 +1,10 @@
-use crate::object::{DeserializeUnrealObject, UnrealObject, ustruct::Struct};
+use std::io::{self, SeekFrom};
+
+use crate::{
+    de::{Linker, ObjectExport},
+    object::{DeserializeUnrealObject, UnrealObject, ustruct::Struct},
+};
+use byteorder::ReadBytesExt;
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Class {
@@ -6,11 +12,19 @@ pub struct Class {
 }
 
 impl DeserializeUnrealObject for Class {
-    fn deserialize<E, R>(&self, reader: R, linker: &crate::de::Linker) -> std::io::Result<()>
+    fn deserialize<E, R>(
+        &self,
+        export: &ObjectExport,
+        linker: &Linker,
+        reader: &mut R,
+    ) -> io::Result<()>
     where
         E: byteorder::ByteOrder,
-        R: std::io::Read,
+        R: io::Read + io::Seek,
     {
+        reader.seek(SeekFrom::Start(export.serial_offset()));
+
+        reader.read_u32::<E>();
         todo!("class deserialization")
     }
 }

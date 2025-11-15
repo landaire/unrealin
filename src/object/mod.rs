@@ -3,7 +3,7 @@ mod test_common;
 mod uclass;
 mod uobject;
 mod ustruct;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 
 use byteorder::ByteOrder;
 use paste::paste;
@@ -15,7 +15,7 @@ pub mod builtins {
 
 use builtins::*;
 
-use crate::de::Linker;
+use crate::de::{Linker, ObjectExport};
 
 pub trait UnrealObject {
     fn name(&self) -> &str;
@@ -28,10 +28,15 @@ pub trait UnrealObject {
 }
 
 pub trait DeserializeUnrealObject {
-    fn deserialize<E, R>(&self, reader: R, linker: &Linker) -> io::Result<()>
+    fn deserialize<E, R>(
+        &self,
+        export: &ObjectExport,
+        linker: &Linker,
+        reader: &mut R,
+    ) -> io::Result<()>
     where
         E: ByteOrder,
-        R: Read;
+        R: Read + Seek;
 }
 
 macro_rules! register_builtins {
