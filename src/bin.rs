@@ -6,7 +6,10 @@ use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
-use unrealin::{ExportedData, de::{self, LinearFileDecoder}};
+use unrealin::{
+    ExportedData,
+    de::{self, LinearFileDecoder},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -91,8 +94,13 @@ fn main() -> Result<()> {
         .iter_mut()
         .for_each(|(_k, v)| v.reverse());
 
-    let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)], metadata);
-    lin_decoder.decode_linear_file().expect("failed to decode lienar file");
+    let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+        vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
+        metadata,
+    );
+    lin_decoder
+        .decode_linear_file()
+        .expect("failed to decode lienar file");
 
     // for (i, package) in linear_file.packages_mut().iter_mut().enumerate() {
     //     let out_path = output_dir.join(format!("{i}.bin"));

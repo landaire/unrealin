@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -26,15 +26,11 @@ pub struct ExportedData {
     pub file_reads: HashMap<u32, Vec<ExportRead>>,
     pub file_ptr_order: Vec<u32>,
     pub raw_io_ops: Vec<IoOp>,
+    pub object_load_order: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub enum IoOp {
-    Seek {
-        to: u64,
-        from: u64,
-    },
-    Read {
-        len: u64,
-    }
+    Seek { to: u64, from: u64 },
+    Read { len: u64 },
 }

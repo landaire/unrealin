@@ -1,4 +1,9 @@
-use std::{cell::RefCell, collections::VecDeque, io::{self, Read, Seek}, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    io::{self, Read, Seek},
+    rc::Rc,
+};
 
 use byteorder::ReadBytesExt;
 
@@ -7,7 +12,7 @@ use crate::common::IoOp;
 pub trait UnrealReadExt: std::io::Read {
     /// Decodes the packed integer from the byte stream.
     /// Assumes `u8(input)` reads one byte from `input`.
-    fn read_packed_int(&mut self) -> io::Result<i32>  {
+    fn read_packed_int(&mut self) -> io::Result<i32> {
         const CONTINUE_BIT: u8 = 0x40;
         const NEGATE_BIT: u8 = 0x80;
 
@@ -62,7 +67,7 @@ pub trait UnrealReadExt: std::io::Read {
     }
 }
 
-impl <R: io::Read + ?Sized> UnrealReadExt for R {}
+impl<R: io::Read + ?Sized> UnrealReadExt for R {}
 
 pub struct LinReader<R> {
     source: R,
@@ -71,11 +76,17 @@ pub struct LinReader<R> {
 
 impl<R> LinReader<R> {
     pub fn new(reader: R) -> Self {
-        LinReader { source: reader, pos: 0 }
+        LinReader {
+            source: reader,
+            pos: 0,
+        }
     }
 }
 
-impl<R> Read for LinReader<R> where R: Read {
+impl<R> Read for LinReader<R>
+where
+    R: Read,
+{
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.source.read(buf)
     }
@@ -87,11 +98,10 @@ impl<R> Seek for LinReader<R> {
             std::io::SeekFrom::Start(pos) => {
                 self.pos = pos;
                 Ok(pos)
-            },
+            }
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         }
-
     }
 }
 
@@ -105,20 +115,41 @@ pub struct CheckedLinReader<R> {
 
 impl<R> CheckedLinReader<R> {
     pub fn new(reader: R, io_ops: Rc<RefCell<VecDeque<IoOp>>>) -> Self {
-        CheckedLinReader { source: reader, pos: 0, reading_linker_header: false, io_ops }
+        CheckedLinReader {
+            source: reader,
+            pos: 0,
+            reading_linker_header: false,
+            io_ops,
+        }
     }
 }
 
-impl<R> Read for CheckedLinReader<R> where R: Read {
+impl<R> Read for CheckedLinReader<R>
+where
+    R: Read,
+{
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if !self.reading_linker_header {
             let mut ops = self.io_ops.borrow_mut();
 
-            match ops.pop_front().expect("conducting an IO op but there are no more IO ops") {
+            match ops
+                .pop_front()
+                .expect("conducting an IO op but there are no more IO ops")
+            {
                 IoOp::Read { len } => {
-                    assert_eq!(buf.len() as u64, len, "Expected a read of {:#X} bytes, got read of {:#X} instead", len, buf.len());
-                },
-                other => panic!("unexpected IO op during a read of {:#X} bytes: {:#X?}", buf.len(), other),
+                    assert_eq!(
+                        buf.len() as u64,
+                        len,
+                        "Expected a read of {:#X} bytes, got read of {:#X} instead",
+                        len,
+                        buf.len()
+                    );
+                }
+                other => panic!(
+                    "unexpected IO op during a read of {:#X} bytes: {:#X?}",
+                    buf.len(),
+                    other
+                ),
             }
         }
 
@@ -128,29 +159,36 @@ impl<R> Read for CheckedLinReader<R> where R: Read {
 
 impl<R> Seek for CheckedLinReader<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-
         match pos {
             std::io::SeekFrom::Start(pos) => {
                 if !self.reading_linker_header {
                     let mut ops = self.io_ops.borrow_mut();
 
-                    match ops.pop_front().expect("conducting an IO op but there are no more IO ops") {
+                    match ops
+                        .pop_front()
+                        .expect("conducting an IO op but there are no more IO ops")
+                    {
                         IoOp::Seek { to, from } => {
                             if self.pos != from || to != pos {
-                                panic!("Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}", self.pos, pos, from, to);
+                                panic!(
+                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}",
+                                    self.pos, pos, from, to
+                                );
                             }
-                        },
-                        other => panic!("unexpected IO op during a seek from {:#X} to {:#X}: {other:#X?}", self.pos, pos),
+                        }
+                        other => panic!(
+                            "unexpected IO op during a seek from {:#X} to {:#X}: {other:#X?}",
+                            self.pos, pos
+                        ),
                     }
                 }
 
                 self.pos = pos;
                 Ok(pos)
-            },
+            }
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         }
-
     }
 }
 
@@ -158,13 +196,19 @@ pub trait LinRead: io::Read + io::Seek {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool);
 }
 
-impl<R> LinRead for LinReader<R> where R: Read {
+impl<R> LinRead for LinReader<R>
+where
+    R: Read,
+{
     fn set_reading_linker_header(&mut self, _reading_linker_header: bool) {
         // Do nothing
     }
 }
 
-impl<R> LinRead for CheckedLinReader<R> where R: Read {
+impl<R> LinRead for CheckedLinReader<R>
+where
+    R: Read,
+{
     fn set_reading_linker_header(&mut self, reading_linker_header: bool) {
         self.reading_linker_header = reading_linker_header;
     }
