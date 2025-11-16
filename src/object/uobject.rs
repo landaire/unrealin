@@ -1,10 +1,14 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::{
+    cell::RefCell,
+    io,
+    rc::{Rc, Weak},
+};
 
 use byteorder::ByteOrder;
 use tracing::{Level, debug, event, span, trace};
 
 use crate::{
-    de::{Linker, ObjectExport},
+    de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker},
     object::{
         DeserializeUnrealObject, NAME_NONE, ObjectFlags, UObjectKind, UnrealObject,
         internal::property::PropertyTag,
@@ -19,9 +23,27 @@ pub struct Object {
     pub flags: ObjectFlags,
     /// The concrete type of this object
     pub concrete_object_kind: Option<UObjectKind>,
+    pub needs_load: bool,
+    pub needs_post_load: bool,
+    pub linker: Option<WeakLinker>,
+    pub export_index: Option<ExportIndex>,
     // package_index: usize,
     // class: i32,
     // outer: i32, //RcUnrealObject,
+}
+
+impl Default for Object {
+    fn default() -> Self {
+        Self {
+            name: "None".to_owned(),
+            flags: ObjectFlags::empty(),
+            concrete_object_kind: None,
+            needs_load: true,
+            needs_post_load: true,
+            linker: Default::default(),
+            export_index: Default::default(),
+        }
+    }
 }
 
 impl Object {
@@ -48,15 +70,45 @@ impl Object {
     pub fn concrete_object_kind(&self) -> UObjectKind {
         self.concrete_object_kind.expect("object_kind not set")
     }
-}
 
-impl Default for Object {
-    fn default() -> Self {
-        Self {
-            name: "None".to_owned(),
-            flags: ObjectFlags::empty(),
-            concrete_object_kind: None,
-        }
+    pub fn needs_load(&self) -> bool {
+        self.needs_load
+    }
+
+    pub fn loaded(&mut self) {
+        self.needs_load = false;
+    }
+
+    pub fn needs_post_load(&self) -> bool {
+        self.needs_post_load
+    }
+
+    pub fn post_loaded(&mut self) {
+        self.needs_load = false;
+    }
+
+    pub fn set_linker(&mut self, linker: WeakLinker) {
+        assert!(self.linker.is_none());
+
+        self.linker = Some(linker);
+    }
+
+    pub fn linker(&self) -> RcLinker {
+        self.linker
+            .as_ref()
+            .expect("linker is not set")
+            .upgrade()
+            .expect("could not upgrade WeakLinker")
+    }
+
+    pub fn set_export_index(&mut self, export_index: ExportIndex) {
+        assert!(self.export_index.is_none());
+
+        self.export_index = Some(export_index);
+    }
+
+    pub fn export_index(&self) -> ExportIndex {
+        self.export_index.expect("export_index is not set")
     }
 }
 
@@ -64,7 +116,7 @@ impl DeserializeUnrealObject for Object {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
         reader: &mut R,
     ) -> io::Result<()>
     where
@@ -88,7 +140,7 @@ impl DeserializeUnrealObject for Object {
             loop {
                 trace!("Deserializing property");
                 let mut tag = PropertyTag::default();
-                tag.deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
+                tag.deserialize::<E, _>(runtime, linker, reader)?;
 
                 if tag.name as usize == NAME_NONE {
                     break;
@@ -137,18 +189,19 @@ impl UnrealObject for Object {
 }
 
 #[cfg(test)]
-mod tests {
-    use byteorder::LittleEndian;
-
+pub(crate) mod tests {
     use crate::object::{UnrealObject, test_common::test_object_is_a};
 
     use super::*;
 
+    pub fn expected_uobjectkind() -> impl IntoIterator<Item = UObjectKind> {
+        [UObjectKind::Object].iter().cloned()
+    }
+
     #[test]
     fn test_is_a() {
-        let expected_kinds = [UObjectKind::Object];
         let test_obj = Object::default();
 
-        test_object_is_a(&test_obj as &dyn UnrealObject, expected_kinds.as_slice());
+        test_object_is_a(&test_obj as &dyn UnrealObject, expected_uobjectkind());
     }
 }

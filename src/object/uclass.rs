@@ -6,11 +6,12 @@ use std::{
 
 use crate::{
     de::{Linker, ObjectExport},
-    object::{DeserializeUnrealObject, UnrealObject, state::State, ustruct::Struct},
+    object::{DeserializeUnrealObject, UnrealObject, ustate::State, ustruct::Struct},
     reader::LinRead,
     runtime::UnrealRuntime,
 };
 use byteorder::ReadBytesExt;
+use tracing::{Level, span};
 
 #[derive(Default, Debug)]
 pub struct Class {
@@ -21,13 +22,16 @@ impl DeserializeUnrealObject for Class {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
         reader: &mut R,
     ) -> io::Result<()>
     where
         E: byteorder::ByteOrder,
         R: LinRead,
     {
+        let span = span!(Level::DEBUG, "deserialize_field");
+        let _enter = span.enter();
+
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
@@ -37,22 +41,22 @@ impl DeserializeUnrealObject for Class {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
 
     use super::*;
 
+    pub fn expected_uobjectkind() -> impl IntoIterator<Item = UObjectKind> {
+        [UObjectKind::Class]
+            .iter()
+            .cloned()
+            .chain(crate::object::ustate::tests::expected_uobjectkind())
+    }
+
     #[test]
     fn test_is_a() {
-        let expected_kinds = [
-            UObjectKind::Object,
-            UObjectKind::Struct,
-            UObjectKind::Class,
-            UObjectKind::Field,
-            UObjectKind::State,
-        ];
         let test_obj = Class::default();
 
-        test_object_is_a(&test_obj as &dyn UnrealObject, expected_kinds.as_slice());
+        test_object_is_a(&test_obj as &dyn UnrealObject, expected_uobjectkind());
     }
 }

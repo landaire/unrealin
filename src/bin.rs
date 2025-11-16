@@ -1,4 +1,7 @@
-use std::{io::Cursor, path::PathBuf};
+use std::{
+    io::{BufReader, BufWriter, Cursor},
+    path::PathBuf,
+};
 
 use byteorder::LittleEndian;
 use clap::Parser;
@@ -60,8 +63,10 @@ fn main() -> Result<()> {
         .wrap_err_with(|| format!("failed to create output dir {:?}", &output_dir))?;
 
     let output_path = output_dir.join("complete.bin");
-    let mut out_file = std::fs::File::create(&output_path)
-        .wrap_err_with(|| format!("failed to create output file {output_path:?}"))?;
+    let mut out_file = BufWriter::new(
+        std::fs::File::create(&output_path)
+            .wrap_err_with(|| format!("failed to create output file {output_path:?}"))?,
+    );
 
     let common_lin_data = if args
         .common_lin
@@ -90,7 +95,9 @@ fn main() -> Result<()> {
     std::io::copy(&mut common_lin_data.as_slice(), &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
 
-    let mut reader = std::fs::File::open("/var/tmp/reads.json").expect("failed to open reads file");
+    let reader = BufReader::new(
+        std::fs::File::open("/var/tmp/reads.json").expect("failed to open reads file"),
+    );
 
     let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
     metadata.file_ptr_order.reverse();

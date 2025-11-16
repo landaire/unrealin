@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom},
     marker::PhantomData,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use crate::{
@@ -35,7 +35,7 @@ impl ImportIndex {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ExportIndex(usize);
 
 impl ExportIndex {
@@ -46,7 +46,8 @@ impl ExportIndex {
     }
 }
 
-pub type RcLinker = Rc<RefCell<Linker>>;
+pub(crate) type WeakLinker = Weak<RefCell<Linker>>;
+pub(crate) type RcLinker = Rc<RefCell<Linker>>;
 
 pub(crate) struct Linker {
     pub objects: HashMap<ExportIndex, RcUnrealObject>,
@@ -65,6 +66,10 @@ impl Linker {
 
     pub fn version(&self) -> u16 {
         (self.package.header.version & 0xFFFF) as u16
+    }
+
+    pub fn licensee_version(&self) -> u16 {
+        ((self.package.header.version & 0xFFFF_0000) >> 16) as u16
     }
 
     pub fn find_export_by_name(&self, name: &str) -> Option<(ExportIndex, &ObjectExport)> {
@@ -603,8 +608,11 @@ where
         for object in &self.metadata.object_load_order {
             let reader = self.sources.front_mut().expect("no file reader available?");
             println!("Loading {object}");
-            self.runtime
-                .load_object_by_full_name::<E, _>(object, reader)?;
+            self.runtime.load_object_by_full_name::<E, _>(
+                object,
+                crate::runtime::LoadKind::Load,
+                reader,
+            )?;
         }
 
         Ok(())
@@ -639,45 +647,6 @@ where
 
         reader.set_reading_linker_header(false);
 
-        // }
-        // PKG_TAG => {
-        //     let package = read_package::<E, _>(&mut reader).expect("failed to read package");
-        //     let linker = Linker {
-        //         objects: Default::default(),
-        //         package,
-        //     };
-
-        //     println!("Name: {}", self.metadata.file_load_order[self.linkers.len()]);
-        //     println!("{:#X?}", &linker.package.header);
-
-        //     println!("Import count: {}", linker.package.imports.len());
-        //     println!("Imports:");
-        //     for i in &linker.package.imports {
-        //         //println!("{}", i.full_name(&package));
-        //         println!("{:X?}", i);
-        //     }
-
-        //     println!("Name table: {:?}", &linker.package.names);
-        //     println!(
-        //         "Export size: {:#X}",
-        //         linker.package
-        //             .exports
-        //             .iter()
-        //             .fold(0, |accum, e| accum + e.serial_size)
-        //     );
-        //     println!("All exports");
-
-        //     println!("Export count: {}", linker.package.exports.len());
-        //     println!("Export:");
-        //     for (i, export) in linker.package.exports.iter().enumerate() {
-        //         println!("({i:#X}) {:#X?}", export);
-        //         println!("\t{}", export.object_name(&linker));
-        //         println!("\t{}", export.class_name(&linker));
-        //     }
-
-        //     panic!("");
-        // }
-        // _ => todo!("")
         Ok(())
     }
 }

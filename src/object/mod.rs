@@ -1,13 +1,14 @@
 /// Internal types that are not directly exposed to the scripting engine
 mod internal;
-mod state;
 #[cfg(test)]
 mod test_common;
-mod text_buffer;
 mod uclass;
 mod ufield;
+mod ufunction;
 mod uobject;
+mod ustate;
 mod ustruct;
+mod utext_buffer;
 
 use std::cell::RefCell;
 use std::io::{self, Read, Seek};
@@ -19,17 +20,18 @@ use bitflags::bitflags;
 use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
-    pub use super::state::State;
     pub use super::uclass::Class;
     pub use super::ufield::Field;
+    pub use super::ufunction::Function;
     pub use super::uobject::Object;
+    pub use super::ustate::State;
     pub use super::ustruct::Struct;
 }
 
 use builtins::*;
 
-use crate::de::{Linker, ObjectExport, RcLinker};
-use crate::object::text_buffer::TextBuffer;
+use crate::de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker};
+use crate::object::utext_buffer::TextBuffer;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -50,7 +52,7 @@ pub trait DeserializeUnrealObject {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
         reader: &mut R,
     ) -> io::Result<()>
     where
@@ -76,12 +78,18 @@ macro_rules! register_builtins {
                 ].as_slice()
             }
 
-            pub fn construct(&self) -> Rc<RefCell<dyn UnrealObject>>  {
+            pub fn construct(&self, linker: WeakLinker, export_index: ExportIndex) -> Rc<RefCell<dyn UnrealObject>>  {
                 match self {
                     $(
                         Self::$name => {
                             let mut obj = $name::default();
-                            obj.base_object_mut().set_concrete_object_kind(UObjectKind::$name);
+                            {
+                                let mut base = obj.base_object_mut();
+                                base.set_concrete_object_kind(UObjectKind::$name);
+                                base.set_linker(linker);
+                                base.set_export_index(export_index);
+                            }
+
 
                             Rc::new(RefCell::new(obj))
                         }
@@ -129,7 +137,7 @@ macro_rules! register_builtins {
         pub(crate) fn deserialize_object<E, R>(
             runtime: &mut UnrealRuntime,
             object: RcUnrealObject,
-            linker: RcLinker,
+            linker: &RcLinker,
             reader: &mut R,
         ) -> io::Result<()>
         where
@@ -157,7 +165,7 @@ macro_rules! register_builtins {
     };
 }
 
-register_builtins!(Object, Struct, State, Class, Field, TextBuffer);
+register_builtins!(Object, Struct, State, Class, Field, TextBuffer, Function);
 
 macro_rules! make_inherited_object {
     ($($name:ident),*) => {
@@ -222,7 +230,7 @@ macro_rules! make_inherited_object {
     };
 }
 
-make_inherited_object!(Struct, State, Class, Field, TextBuffer);
+make_inherited_object!(Struct, State, Class, Field, TextBuffer, Function);
 
 bitflags! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]

@@ -6,8 +6,9 @@ use std::{
 };
 
 use byteorder::ByteOrder;
+use tracing::{Level, debug, info, span, trace};
 
-use crate::object::{DeserializeUnrealObject, deserialize_object};
+use crate::object::{DeserializeUnrealObject, RcUnrealObject, deserialize_object};
 use crate::{
     de::{ExportIndex, ImportIndex, Linker, read_package},
     object::builtins::*,
@@ -18,7 +19,14 @@ use crate::{
 type RcLinker = Rc<RefCell<Linker>>;
 
 pub struct UnrealRuntime {
-    pub linkers: HashMap<String, Rc<RefCell<Linker>>>,
+    pub linkers: HashMap<String, RcLinker>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum LoadKind {
+    Load,
+    Create,
+    Full,
 }
 
 impl UnrealRuntime {
@@ -43,7 +51,7 @@ impl UnrealRuntime {
         self.linkers.get(name).map(Rc::clone)
     }
 
-    fn find_object(&self, name: &str) -> Option<Rc<RefCell<dyn UnrealObject>>> {
+    fn find_object(&self, name: &str) -> Option<RcUnrealObject> {
         self.linkers.values().find_map(|linker| {
             linker
                 .borrow()
@@ -74,7 +82,8 @@ impl UnrealRuntime {
     pub fn load_object_by_raw_index<E, R>(
         &mut self,
         raw_index: i32,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
+        load_kind: LoadKind,
         reader: &mut R,
     ) -> io::Result<Option<Rc<RefCell<dyn UnrealObject>>>>
     where
@@ -85,6 +94,7 @@ impl UnrealRuntime {
             self.load_object_by_export_index::<E, _>(
                 ExportIndex::from_raw(raw_index),
                 linker,
+                load_kind,
                 reader,
             )
             .map(Some)
@@ -98,7 +108,7 @@ impl UnrealRuntime {
                 .expect("failed to find import");
             let import_full_name = import.full_name(&linker_inner);
 
-            self.load_object_by_full_name::<E, _>(import_full_name.as_str(), reader)
+            self.load_object_by_full_name::<E, _>(import_full_name.as_str(), load_kind, reader)
                 .map(Some)
         } else {
             Ok(None)
@@ -109,20 +119,18 @@ impl UnrealRuntime {
     pub fn load_object_by_export_index<E, R>(
         &mut self,
         export_index: ExportIndex,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
+        load_kind: LoadKind,
         reader: &mut R,
     ) -> io::Result<Rc<RefCell<dyn UnrealObject>>>
     where
         R: LinRead,
         E: ByteOrder,
     {
-        let linker_inner = linker.borrow();
+        let span = span!(Level::INFO, "load_object_by_export_index");
+        let _enter = span.enter();
 
-        // Check if this object has already been loaded
-        if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
-            panic!("object already loaded?");
-            return Ok(Rc::clone(loaded_obj));
-        }
+        let linker_inner = linker.borrow();
 
         let export = linker_inner
             .find_export_by_index(export_index)
@@ -130,66 +138,89 @@ impl UnrealRuntime {
         let export_offset = export.serial_offset();
         let export_size = export.serial_size();
 
-        println!("Loading object: {}", export.full_name(&linker.borrow()));
-        println!("{:#X?}", export);
+        // Check if this object has already been loaded
+        let obj = if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
+            let loaded_obj_inner = loaded_obj.borrow();
+            if loaded_obj_inner.base_object().needs_load() {}
 
-        let class_name = export.class_name(&linker_inner);
-        let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
-            .unwrap_or_else(|_| panic!("could not find object kind {}", class_name));
+            Rc::clone(loaded_obj)
+        } else {
+            // Object has not yet been loaded
 
-        let constructed_object = object_kind.construct();
-        let mut object = constructed_object.borrow_mut();
-        object.base_object_mut().set_flags(
-            ObjectFlags::from_bits(export.object_flags).expect("failed to construct ObjectFlags"),
-        );
-        object
-            .base_object_mut()
-            .set_name(export.object_name(&linker_inner).to_owned());
+            info!("Loading object: {}", export.full_name(&linker.borrow()));
+            trace!("{:#X?}", export);
 
-        // If this is a struct, load the dependencies
-        if object.is_a(UObjectKind::Struct) {
+            let class_name = export.class_name(&linker_inner);
+            let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
+                .unwrap_or_else(|_| panic!("could not find object kind {}", class_name));
+
+            let constructed_object = object_kind.construct(Rc::downgrade(linker), export_index);
+            let mut object = constructed_object.borrow_mut();
+            object.base_object_mut().set_flags(
+                ObjectFlags::from_bits(export.object_flags)
+                    .expect("failed to construct ObjectFlags"),
+            );
+            object
+                .base_object_mut()
+                .set_name(export.object_name(&linker_inner).to_owned());
+
             let parent_index = export.super_index;
-
-            if parent_index != 0 {
+            drop(linker_inner);
+            // If this is a struct, load the dependencies
+            if object.is_a(UObjectKind::Struct) && parent_index != 0 {
                 // Load dependent types
-                drop(linker_inner);
 
-                self.load_object_by_raw_index::<E, _>(parent_index, Rc::clone(&linker), reader)?;
+                self.load_object_by_raw_index::<E, _>(
+                    parent_index,
+                    linker,
+                    LoadKind::Full,
+                    reader,
+                )?;
+            }
+
+            linker
+                .borrow_mut()
+                .objects
+                .insert(export_index, Rc::clone(&constructed_object));
+
+            drop(object);
+
+            constructed_object
+        };
+
+        match load_kind {
+            LoadKind::Load => {
+                todo!("load/post-load");
+            }
+            LoadKind::Create => {
+                // Nothing needs to happen here
+            }
+            LoadKind::Full => {
+                let saved_pos = reader.stream_position()?;
+                reader.seek(SeekFrom::Start(export_offset))?;
+
+                deserialize_object::<E, _>(self, Rc::clone(&obj), linker, reader)?;
+
+                let current_pos = reader.stream_position()?;
+                let read_size = (current_pos - export_offset) as usize;
+                assert_eq!(
+                    read_size, export_size,
+                    "Data read for export does not match expected. Read {read_size:#X} bytes, expected {export_size:#X}",
+                );
+
+                reader.seek(SeekFrom::Start(saved_pos))?;
             }
         }
 
-        drop(object);
+        obj.borrow_mut().base_object_mut().loaded();
 
-        let saved_pos = reader.stream_position()?;
-        reader.seek(SeekFrom::Start(export_offset))?;
-
-        deserialize_object::<E, _>(
-            self,
-            Rc::clone(&constructed_object),
-            Rc::clone(&linker),
-            reader,
-        )?;
-
-        let current_pos = reader.stream_position()?;
-        let read_size = (current_pos - export_offset) as usize;
-        assert_eq!(
-            read_size, export_size,
-            "Data read for export does not match expected. Read {read_size:#X} bytes, expected {export_size:#X}",
-        );
-
-        reader.seek(SeekFrom::Start(saved_pos))?;
-
-        linker
-            .borrow_mut()
-            .objects
-            .insert(export_index, Rc::clone(&constructed_object));
-
-        Ok(constructed_object)
+        Ok(obj)
     }
 
     pub fn load_object_by_full_name<E, R>(
         &mut self,
         full_name: &str,
+        load_kind: LoadKind,
         reader: &mut R,
     ) -> io::Result<Rc<RefCell<dyn UnrealObject>>>
     where
@@ -220,6 +251,6 @@ impl UnrealRuntime {
 
         drop(linker_inner);
 
-        self.load_object_by_export_index::<E, _>(export_index, linker, reader)
+        self.load_object_by_export_index::<E, _>(export_index, &linker, load_kind, reader)
     }
 }

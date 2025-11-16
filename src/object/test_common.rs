@@ -1,6 +1,11 @@
 use crate::object::{UObjectKind, UnrealObject};
 
-pub fn test_object_is_a(test_obj: &dyn UnrealObject, expected_kinds: &[UObjectKind]) {
+pub fn test_object_is_a(
+    test_obj: &dyn UnrealObject,
+    expected_kinds: impl IntoIterator<Item = UObjectKind>,
+) {
+    let expected_kinds = expected_kinds.into_iter().collect::<Vec<_>>();
+
     for kind in UObjectKind::all() {
         if expected_kinds.contains(kind) {
             assert!(

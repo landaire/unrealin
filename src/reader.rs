@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io::{self, Read, Seek},
     rc::Rc,
 };
@@ -12,14 +12,14 @@ use crate::{
     common::IoOp,
     de::{ExportIndex, ImportIndex, Linker},
     object::UnrealObject,
-    runtime::UnrealRuntime,
+    runtime::{LoadKind, UnrealRuntime},
 };
 
 pub trait UnrealReadExt: LinRead + Sized {
     fn read_object<E>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
     ) -> io::Result<Option<Rc<RefCell<dyn UnrealObject>>>>
     where
         E: ByteOrder,
@@ -33,7 +33,7 @@ pub trait UnrealReadExt: LinRead + Sized {
 
         trace!("Read {} bytes ({:#X})", after - pos, index);
 
-        runtime.load_object_by_raw_index::<E, _>(index, linker, self)
+        runtime.load_object_by_raw_index::<E, _>(index, linker, LoadKind::Create, self)
     }
 
     /// Decodes the packed integer from the byte stream.
@@ -241,6 +241,7 @@ impl<R> Seek for CheckedLinReader<R> {
 
 pub trait LinRead: io::Read + io::Seek {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool);
+    fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()>;
 }
 
 impl<R> LinRead for LinReader<R>
@@ -250,6 +251,11 @@ where
     fn set_reading_linker_header(&mut self, _reading_linker_header: bool) {
         // Do nothing
     }
+
+    fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        // We have no IO ops to cheat
+        self.read_exact(buf)
+    }
 }
 
 impl<R> LinRead for CheckedLinReader<R>
@@ -258,5 +264,31 @@ where
 {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool) {
         self.reading_linker_header = reading_linker_header;
+    }
+
+    fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        // Remove however many io ops are part of this read
+        let mut remove_len = 0;
+
+        let mut io_ops = self.io_ops.borrow_mut();
+        while remove_len < buf.len() {
+            match io_ops.pop_front().expect("no io op?") {
+                IoOp::Seek { to, from } => panic!("unexpected seek op while cheating reads"),
+                IoOp::Read { len } => {
+                    remove_len += len as usize;
+                }
+            }
+        }
+
+        assert_eq!(remove_len, buf.len());
+
+        // Insert a fake read of this exact size
+        io_ops.push_front(IoOp::Read {
+            len: buf.len() as u64,
+        });
+
+        drop(io_ops);
+
+        self.read_exact(buf)
     }
 }

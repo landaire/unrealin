@@ -17,7 +17,7 @@ impl DeserializeUnrealObject for PropertyTag {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: &Rc<RefCell<Linker>>,
         reader: &mut R,
     ) -> std::io::Result<()>
     where

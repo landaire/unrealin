@@ -1,70 +1,64 @@
-use std::{
-    cell::RefCell,
-    io::{Read, Seek},
-    rc::Rc,
-};
+use std::{cell::RefCell, io, rc::Rc};
 
 use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span, trace};
 
 use crate::{
     de::Linker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uobject::Object},
+    object::{DeserializeUnrealObject, uobject::Object},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
 
 #[derive(Default, Debug)]
-pub struct Field {
+pub struct TextBuffer {
     pub parent_object: Object,
 
-    super_field: Option<RcUnrealObject>,
-    next: Option<RcUnrealObject>,
+    pub position: u32,
+    pub top: u32,
+    pub text: String,
 }
 
-impl Field {
-    pub(crate) fn super_field(&self) -> Option<RcUnrealObject> {
-        self.super_field.clone()
-    }
-}
-
-impl DeserializeUnrealObject for Field {
+impl DeserializeUnrealObject for TextBuffer {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
         linker: &Rc<RefCell<Linker>>,
         reader: &mut R,
-    ) -> std::io::Result<()>
+    ) -> io::Result<()>
     where
         E: byteorder::ByteOrder,
         R: LinRead,
     {
-        let span = span!(Level::DEBUG, "deserialize_field");
+        let span = span!(Level::DEBUG, "deserialize_text_buffer");
         let _enter = span.enter();
 
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
-        trace!("deserializing super_field");
-        self.super_field = reader.read_object::<E>(runtime, linker)?;
+        debug!("Reading position");
+        self.position = reader.read_u32::<E>()?;
 
-        trace!("deserializing next");
-        self.next = reader.read_object::<E>(runtime, linker)?;
+        debug!("Reading top");
+        self.top = reader.read_u32::<E>()?;
 
-        debug!("{:?}", self);
+        debug!("Reading text");
+        self.text = reader.read_string()?;
+
+        trace!("{:?}", self);
 
         Ok(())
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
 
     use super::*;
 
     pub fn expected_uobjectkind() -> impl IntoIterator<Item = UObjectKind> {
-        [UObjectKind::Field]
+        [UObjectKind::TextBuffer]
             .iter()
             .cloned()
             .chain(crate::object::uobject::tests::expected_uobjectkind())
@@ -72,7 +66,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_is_a() {
-        let test_obj = Field::default();
+        let test_obj = TextBuffer::default();
 
         test_object_is_a(&test_obj as &dyn UnrealObject, expected_uobjectkind());
     }
