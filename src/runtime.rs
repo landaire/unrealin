@@ -140,10 +140,10 @@ impl UnrealRuntime {
 
         // Check if this object has already been loaded
         let obj = if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
-            let loaded_obj_inner = loaded_obj.borrow();
-            if loaded_obj_inner.base_object().needs_load() {}
+            let obj = Rc::clone(loaded_obj);
+            drop(linker_inner);
 
-            Rc::clone(loaded_obj)
+            obj
         } else {
             // Object has not yet been loaded
 
@@ -183,19 +183,26 @@ impl UnrealRuntime {
                 .objects
                 .insert(export_index, Rc::clone(&constructed_object));
 
+            // TODO: for experimentation
+            object.base_object_mut().post_loaded();
+
             drop(object);
 
             constructed_object
         };
 
+        if obj.borrow().base_object().is_fully_loaded() {
+            return Ok(obj);
+        }
+
         match load_kind {
-            LoadKind::Load => {
-                todo!("load/post-load");
-            }
+            // LoadKind::Load => {
+            //     todo!("load/post-load");
+            // }
             LoadKind::Create => {
                 // Nothing needs to happen here
             }
-            LoadKind::Full => {
+            LoadKind::Full | LoadKind::Load => {
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(export_offset))?;
 
@@ -209,10 +216,10 @@ impl UnrealRuntime {
                 );
 
                 reader.seek(SeekFrom::Start(saved_pos))?;
+
+                obj.borrow_mut().base_object_mut().loaded();
             }
         }
-
-        obj.borrow_mut().base_object_mut().loaded();
 
         Ok(obj)
     }

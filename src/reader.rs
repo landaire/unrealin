@@ -282,10 +282,14 @@ where
 
         assert_eq!(remove_len, buf.len());
 
-        // Insert a fake read of this exact size
-        io_ops.push_front(IoOp::Read {
-            len: buf.len() as u64,
-        });
+        // Insert a fake read of this exact size. 0-sized reads are short-circuited
+        // by read_exact, so don't add this read if the data size is zero since the IO op
+        // will never be popped.
+        if remove_len > 0 {
+            io_ops.push_front(IoOp::Read {
+                len: buf.len() as u64,
+            });
+        }
 
         drop(io_ops);
 

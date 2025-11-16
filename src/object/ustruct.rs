@@ -58,10 +58,16 @@ impl DeserializeUnrealObject for Struct {
             self.flags = reader.read_u32::<E>()?;
         }
 
+        debug!("deserializing line");
         self.line = reader.read_u32::<E>()?;
+
+        debug!("deserializing text_pos");
         self.text_pos = reader.read_u32::<E>()?;
+
+        debug!("deserializing script_size");
         self.script_size = reader.read_u32::<E>()?;
 
+        debug!("deserializing script");
         // We don't need to actually parse this
         self.script = vec![0u8; self.script_size as usize];
         reader.cheat(self.script.as_mut_slice())?;
@@ -86,6 +92,35 @@ impl DeserializeUnrealObject for Struct {
                 crate::runtime::LoadKind::Load,
                 reader,
             )?;
+        }
+
+        let mut child_ptr = self.children.clone();
+        while let Some(child) = child_ptr {
+            let span = span!(Level::DEBUG, "ustruct_property");
+            let _enter = span.enter();
+
+            let (linker, export_index) = {
+                let super_field = child.borrow();
+                (
+                    super_field.base_object().linker(),
+                    super_field.base_object().export_index(),
+                )
+            };
+
+            runtime.load_object_by_export_index::<E, _>(
+                export_index,
+                &linker,
+                crate::runtime::LoadKind::Load,
+                reader,
+            )?;
+
+            let child_inner = child.borrow();
+            let child_any = child_inner.as_any();
+            let child_as_field = child_any
+                .downcast_ref::<Field>()
+                .expect("failed to cast child as Field");
+
+            child_ptr = child_as_field.next();
         }
 
         todo!("struct")

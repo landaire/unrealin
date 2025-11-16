@@ -87,6 +87,10 @@ impl Object {
         self.needs_load = false;
     }
 
+    pub fn is_fully_loaded(&self) -> bool {
+        !self.needs_load() && !self.needs_post_load()
+    }
+
     pub fn set_linker(&mut self, linker: WeakLinker) {
         assert!(self.linker.is_none());
 

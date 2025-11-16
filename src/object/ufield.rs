@@ -26,6 +26,10 @@ impl Field {
     pub(crate) fn super_field(&self) -> Option<RcUnrealObject> {
         self.super_field.clone()
     }
+
+    pub fn next(&self) -> Option<RcUnrealObject> {
+        self.next.clone()
+    }
 }
 
 impl DeserializeUnrealObject for Field {
