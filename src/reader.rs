@@ -5,11 +5,29 @@ use std::{
     rc::Rc,
 };
 
-use byteorder::ReadBytesExt;
+use byteorder::{ByteOrder, ReadBytesExt};
 
-use crate::common::IoOp;
+use crate::{
+    common::IoOp,
+    de::{ExportIndex, ImportIndex, Linker},
+    object::UnrealObject,
+    runtime::UnrealRuntime,
+};
 
-pub trait UnrealReadExt: std::io::Read {
+pub trait UnrealReadExt: LinRead + Sized {
+    fn read_object<E>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: Rc<RefCell<Linker>>,
+    ) -> io::Result<Option<Rc<RefCell<dyn UnrealObject>>>>
+    where
+        E: ByteOrder,
+    {
+        let index = self.read_packed_int()?;
+
+        runtime.load_object_by_raw_index::<E, _>(index, linker, self)
+    }
+
     /// Decodes the packed integer from the byte stream.
     /// Assumes `u8(input)` reads one byte from `input`.
     fn read_packed_int(&mut self) -> io::Result<i32> {
@@ -67,11 +85,12 @@ pub trait UnrealReadExt: std::io::Read {
     }
 }
 
-impl<R: io::Read + ?Sized> UnrealReadExt for R {}
+impl<R: LinRead + Sized> UnrealReadExt for R {}
 
 pub struct LinReader<R> {
     source: R,
     pos: u64,
+    version: u16,
 }
 
 impl<R> LinReader<R> {
@@ -79,6 +98,7 @@ impl<R> LinReader<R> {
         LinReader {
             source: reader,
             pos: 0,
+            version: 0,
         }
     }
 }
@@ -103,6 +123,7 @@ impl<R> Seek for LinReader<R> {
                 Ok(pos)
             }
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
+            std::io::SeekFrom::Current(0) => Ok(self.pos),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         }
     }
@@ -111,6 +132,7 @@ impl<R> Seek for LinReader<R> {
 pub struct CheckedLinReader<R> {
     source: R,
     pos: u64,
+    version: u16,
     /// Package headers are not included in the raw IO ops
     reading_linker_header: bool,
     io_ops: Rc<RefCell<VecDeque<IoOp>>>,
@@ -123,6 +145,7 @@ impl<R> CheckedLinReader<R> {
             pos: 0,
             reading_linker_header: false,
             io_ops,
+            version: 0,
         }
     }
 }
@@ -193,6 +216,7 @@ impl<R> Seek for CheckedLinReader<R> {
                 Ok(pos)
             }
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
+            std::io::SeekFrom::Current(0) => Ok(self.pos),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         }
     }

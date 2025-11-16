@@ -1,20 +1,24 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    io::{Read, Seek},
+    rc::Rc,
+};
 
 use byteorder::ReadBytesExt;
 
 use crate::{
     de::Linker,
-    object::{DeserializeUnrealObject, ufield::Field, uobject::Object},
+    object::{DeserializeUnrealObject, uobject::Object},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Struct {
-    pub parent_object: Field,
+pub struct Field {
+    pub parent_object: Object,
 }
 
-impl DeserializeUnrealObject for Struct {
+impl DeserializeUnrealObject for Field {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
@@ -26,28 +30,26 @@ impl DeserializeUnrealObject for Struct {
         R: LinRead,
     {
         self.parent_object
-            .deserialize::<E, _>(runtime, linker, reader)?;
+            .deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
 
-        let script_text = reader.read_u32::<E>()?;
-        let children = reader.read_u32::<E>()?;
-        let friendly_name = reader.read_packed_int()?;
+        let super_field = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
+        panic!("{:#?}", super_field);
+        let next = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
 
-        todo!()
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use byteorder::LittleEndian;
-
     use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
 
     use super::*;
 
     #[test]
     fn test_is_a() {
-        let expected_kinds = [UObjectKind::Object, UObjectKind::Field, UObjectKind::Struct];
-        let test_obj = Struct::default();
+        let expected_kinds = [UObjectKind::Object, UObjectKind::Field];
+        let test_obj = Field::default();
 
         test_object_is_a(&test_obj as &dyn UnrealObject, expected_kinds.as_slice());
     }

@@ -7,8 +7,9 @@ use std::{
 };
 
 use crate::{
-    object::{DeserializeUnrealObject, UObjectKind, UnrealObject, builtins::*},
+    object::{DeserializeUnrealObject, ObjectFlags, UObjectKind, UnrealObject, builtins::*},
     reader::{CheckedLinReader, LinRead, LinReader, UnrealReadExt},
+    runtime::UnrealRuntime,
 };
 use byteorder::{ByteOrder, ReadBytesExt};
 use flate2::read::ZlibDecoder;
@@ -21,164 +22,8 @@ use crate::{
     common::{ExportRead, ExportedData, IoOp},
 };
 
-struct UnrealRuntime {
-    linkers: HashMap<String, Linker>,
-}
-
-impl UnrealRuntime {
-    fn load_linker<E, R>(&mut self, expected_name: String, reader: &mut R) -> io::Result<()>
-    where
-        R: LinRead,
-        E: ByteOrder,
-    {
-        reader.set_reading_linker_header(true);
-        let package = read_package::<E, _>(reader)?;
-        reader.set_reading_linker_header(false);
-
-        self.linkers
-            .insert(expected_name.clone(), Linker::new(expected_name, package));
-
-        Ok(())
-    }
-
-    fn linker(&self, name: &str) -> Option<&Linker> {
-        self.linkers.get(name)
-    }
-
-    fn linker_mut(&mut self, name: &str) -> Option<&mut Linker> {
-        self.linkers.get_mut(name)
-    }
-
-    fn find_object(&self, name: &str) -> Option<&dyn UnrealObject> {
-        self.linkers.values().find_map(|linker| {
-            linker
-                .objects
-                .values()
-                .find(|obj| obj.name() == name)
-                .map(|obj| obj.as_ref())
-        })
-    }
-
-    fn linker_by_export_name_mut(&mut self, name: &str) -> Option<&mut Linker> {
-        let key = self
-            .linkers
-            .iter()
-            .find_map(|(name, linker)| linker.find_export_by_name(name).map(|_| name.clone()));
-
-        key.and_then(|k| self.linkers.get_mut(&k))
-    }
-
-    fn load_object_full_name<E, R>(&mut self, full_name: &str, reader: &mut R) -> io::Result<()>
-    where
-        R: LinRead,
-        E: ByteOrder,
-    {
-        let mut parts = full_name.split('.');
-        let module = parts.next().expect("object name does not have a module");
-        let object_name = parts.next().expect("object is not a full name");
-
-        println!("Looking up {object_name}");
-
-        let linker = if module == "None" {
-            self.linker_by_export_name_mut(object_name)
-                .expect("failed to find linker by export name -- these should be loaded by now")
-        } else if let Some(linker) = self.linker_mut(module) {
-            linker
-        } else {
-            self.load_linker::<E, _>(module.to_owned(), reader)?;
-
-            self.linker_mut(module)
-                .expect("failed to force load linker")
-        };
-
-        let export = linker
-            .find_export_by_name(object_name)
-            .expect("failed to find export");
-
-        println!("{:#X?}", export);
-
-        let object_kind =
-            UObjectKind::try_from(export.class_name(linker)).expect("could not find object kind");
-
-        let mut constructed_object = object_kind.construct();
-
-        // If this is a struct, load the dependencies
-        if constructed_object.is_a(UObjectKind::Struct) {
-            if export.super_index < 0 {
-                let parent_import = linker
-                    .find_import_by_index(ImportIndex::from_raw(export.super_index))
-                    .expect("failed to find parent object export");
-
-                let import_full_name = parent_import.full_name(linker);
-
-                self.load_object_full_name::<E, _>(&import_full_name, reader)?;
-            } else if export.super_index > 0 {
-                let parent_export = linker
-                    .find_export_by_index(ExportIndex::from_raw(export.super_index))
-                    .expect("failed to find parent object export");
-
-                let parent_full_name = parent_export.full_name(linker);
-
-                self.load_object_full_name::<E, _>(&parent_full_name, reader)?;
-            }
-        }
-
-        // Grab the linker/export again so we can deserialize its data
-
-        let linker = if module == "None" {
-            self.linker_by_export_name_mut(object_name)
-                .expect("failed to find linker by export name -- these should be loaded by now")
-        } else if let Some(linker) = self.linker_mut(module) {
-            linker
-        } else {
-            panic!("lost a linker somehow?");
-        };
-
-        let export = linker
-            .find_export_by_name(object_name)
-            .expect("failed to find export");
-
-        deserialize_object::<E, _>(constructed_object.as_mut(), export, linker, reader)?;
-
-        // TODO: Refcount the export
-        linker.objects.insert(export.clone(), constructed_object);
-
-        Ok(())
-    }
-}
-
-fn deserialize_object<E, R>(
-    object: &mut dyn UnrealObject,
-    export: &ObjectExport,
-    linker: &Linker,
-    reader: &mut R,
-) -> io::Result<()>
-where
-    R: Read + Seek,
-    E: ByteOrder,
-{
-    macro_rules! deserialize_as {
-        ($kind:ty) => {{
-            let concrete_ty = object
-                .as_any_mut()
-                .downcast_mut::<$kind>()
-                .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($kind)));
-
-            concrete_ty.deserialize::<E, _>(export, linker, reader)
-        }};
-    }
-    match object.kind() {
-        UObjectKind::Object => {
-            deserialize_as!(Object)
-        }
-        UObjectKind::Struct => todo!("struct!"),
-        UObjectKind::Class => {
-            deserialize_as!(Class)
-        }
-    }
-}
-
-struct ImportIndex(usize);
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub(crate) struct ImportIndex(usize);
 impl ImportIndex {
     pub fn from_raw(idx: i32) -> Self {
         assert!(idx < 0, "Invalid import index");
@@ -187,7 +32,9 @@ impl ImportIndex {
     }
 }
 
-struct ExportIndex(usize);
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ExportIndex(usize);
+
 impl ExportIndex {
     pub fn from_raw(idx: i32) -> Self {
         assert!(idx > 0, "Invalid export index");
@@ -196,32 +43,40 @@ impl ExportIndex {
     }
 }
 
-pub struct Linker {
-    pub objects: HashMap<ObjectExport, Box<dyn UnrealObject>>,
+pub(crate) struct Linker {
+    pub objects: HashMap<ExportIndex, Rc<RefCell<dyn UnrealObject>>>,
     pub name: String,
     pub package: RawPackage,
 }
 
 impl Linker {
-    fn new(name: String, package: RawPackage) -> Linker {
+    pub fn new(name: String, package: RawPackage) -> Linker {
         Linker {
             objects: Default::default(),
             name,
             package,
         }
     }
-    fn find_export_by_name(&self, name: &str) -> Option<&ObjectExport> {
-        self.package
-            .exports
-            .iter()
-            .find(|export| export.object_name(self) == name)
+
+    pub fn version(&self) -> u16 {
+        (self.package.header.version & 0xFFFF) as u16
     }
 
-    fn find_import_by_index(&self, index: ImportIndex) -> Option<&Import> {
+    pub fn find_export_by_name(&self, name: &str) -> Option<(ExportIndex, &ObjectExport)> {
+        let index = self
+            .package
+            .exports
+            .iter()
+            .position(|export| export.object_name(self) == name)?;
+
+        Some((ExportIndex(index), &self.package.exports[index]))
+    }
+
+    pub fn find_import_by_index(&self, index: ImportIndex) -> Option<&Import> {
         self.package.imports.get(index.0)
     }
 
-    fn find_export_by_index(&self, index: ExportIndex) -> Option<&ObjectExport> {
+    pub fn find_export_by_index(&self, index: ExportIndex) -> Option<&ObjectExport> {
         self.package.exports.get(index.0)
     }
 }
@@ -259,7 +114,7 @@ pub(crate) struct FileEntry {
 
 fn read_file_entry<E, R>(reader: &mut R) -> io::Result<FileEntry>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     let name = reader.read_string()?;
@@ -304,7 +159,7 @@ pub struct Name {
 
 fn read_name<E, R>(reader: &mut R) -> io::Result<Name>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     Ok(Name {
@@ -356,7 +211,7 @@ impl Import {
 
 fn read_import<E, R>(reader: &mut R) -> io::Result<Import>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     let class_package = reader.read_packed_int()?;
@@ -438,7 +293,7 @@ impl ObjectExport {
 
 fn read_export<E, R>(reader: &mut R) -> io::Result<ObjectExport>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     let class_index = reader.read_packed_int()?;
@@ -492,7 +347,7 @@ where
 
 fn read_file_table<E, R>(reader: &mut R) -> io::Result<Vec<FileEntry>>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     // Reset input to skip past most of the header
@@ -510,7 +365,7 @@ where
 
 fn read_package_header<E, R>(reader: &mut R) -> io::Result<PackageHeader>
 where
-    R: Read,
+    R: LinRead,
     E: ByteOrder,
 {
     let tag = reader.read_u32::<E>()?;
@@ -572,7 +427,7 @@ pub struct RawPackage {
 
 pub fn read_package<E, R>(reader: &mut R) -> io::Result<RawPackage>
 where
-    R: Read + Seek,
+    R: LinRead,
     E: ByteOrder,
 {
     let header = read_package_header::<E, _>(reader)?;
@@ -743,7 +598,8 @@ where
         for object in &self.metadata.object_load_order {
             let reader = self.sources.front_mut().expect("no file reader available?");
             println!("Loading {object}");
-            self.runtime.load_object_full_name::<E, _>(object, reader)?;
+            self.runtime
+                .load_object_by_full_name::<E, _>(object, reader)?;
         }
 
         Ok(())
@@ -769,8 +625,7 @@ where
         let tag = reader.read_u32::<E>()?;
         assert_eq!(tag, LIN_FILE_TABLE_TAG, "LIN file table tag mismatch");
 
-        let file_table =
-            Some(read_file_table::<E, _>(&mut reader).expect("failed to read file table"));
+        let file_table = Some(read_file_table::<E, _>(reader).expect("failed to read file table"));
         println!(
             "File table length: {:#X}",
             file_table.as_ref().map(|t| t.len()).unwrap_or_default()

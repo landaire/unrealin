@@ -1,32 +1,63 @@
-use std::io;
+use std::{cell::RefCell, io, rc::Rc};
 
 use byteorder::ByteOrder;
 
 use crate::{
     de::{Linker, ObjectExport},
-    object::{DeserializeUnrealObject, UObjectKind, UnrealObject},
+    object::{
+        DeserializeUnrealObject, NAME_NONE, ObjectFlags, UObjectKind, UnrealObject,
+        internal::property::PropertyTag,
+    },
+    reader::LinRead,
+    runtime::UnrealRuntime,
 };
 
-#[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Object {
     pub name: String,
+    pub flags: ObjectFlags,
     // package_index: usize,
     // class: i32,
     // outer: i32, //RcUnrealObject,
 }
 
+impl Default for Object {
+    fn default() -> Self {
+        Self {
+            name: "None".to_owned(),
+            flags: ObjectFlags::empty(),
+        }
+    }
+}
+
 impl DeserializeUnrealObject for Object {
     fn deserialize<E, R>(
-        &self,
-        export: &ObjectExport,
-        linker: &Linker,
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: Rc<RefCell<Linker>>,
         reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
-        R: io::Read + io::Seek,
+        R: LinRead,
     {
-        todo!()
+        if self.flags.contains(ObjectFlags::HAS_STACK) {
+            todo!("UObject HAS_STACK path");
+        }
+
+        let mut properties = Vec::new();
+        loop {
+            let mut tag = PropertyTag::default();
+            tag.deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
+
+            if tag.name as usize == NAME_NONE {
+                break;
+            }
+
+            properties.push(tag);
+        }
+
+        Ok(())
     }
 }
 
@@ -57,6 +88,26 @@ impl UnrealObject for Object {
 
     fn is_a(&self, kind: UObjectKind) -> bool {
         self.kind() == kind
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    fn flags(&self) -> ObjectFlags {
+        self.flags
+    }
+
+    fn set_flags(&mut self, flags: ObjectFlags) {
+        self.flags = flags;
+    }
+
+    fn parent_object_mut(&mut self) -> Option<&mut dyn UnrealObject> {
+        None
+    }
+
+    fn base_object_mut(&mut self) -> &mut Object {
+        self
     }
 }
 

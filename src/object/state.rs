@@ -1,38 +1,30 @@
-use std::{
-    cell::RefCell,
-    io::{self, SeekFrom},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    de::{Linker, ObjectExport},
-    object::{DeserializeUnrealObject, UnrealObject, state::State, ustruct::Struct},
+    object::{DeserializeUnrealObject, ustruct::Struct},
     reader::LinRead,
     runtime::UnrealRuntime,
 };
-use byteorder::ReadBytesExt;
 
 #[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Class {
-    pub parent_object: State,
+pub struct State {
+    pub parent_object: Struct,
 }
 
-impl DeserializeUnrealObject for Class {
+impl DeserializeUnrealObject for State {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: Rc<RefCell<Linker>>,
+        linker: Rc<RefCell<crate::de::Linker>>,
         reader: &mut R,
-    ) -> io::Result<()>
+    ) -> std::io::Result<()>
     where
         E: byteorder::ByteOrder,
         R: LinRead,
     {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
-
-        reader.read_u32::<E>()?;
-        todo!("class deserialization")
+        todo!()
     }
 }
 
@@ -47,11 +39,10 @@ mod tests {
         let expected_kinds = [
             UObjectKind::Object,
             UObjectKind::Struct,
-            UObjectKind::Class,
             UObjectKind::Field,
             UObjectKind::State,
         ];
-        let test_obj = Class::default();
+        let test_obj = State::default();
 
         test_object_is_a(&test_obj as &dyn UnrealObject, expected_kinds.as_slice());
     }
