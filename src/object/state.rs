@@ -6,7 +6,7 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-#[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Debug)]
 pub struct State {
     pub parent_object: Struct,
 }

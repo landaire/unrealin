@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tracing::{Level, debug, span, trace};
+
 use crate::de::Linker;
 use crate::object::{DeserializeUnrealObject, NAME_NONE};
 use crate::reader::{LinRead, UnrealReadExt};
@@ -22,8 +24,13 @@ impl DeserializeUnrealObject for PropertyTag {
         E: byteorder::ByteOrder,
         R: LinRead,
     {
+        let span = span!(Level::DEBUG, "deserialize_property_tag");
+        let _enter = span.enter();
+
+        debug!("Deserializing name");
         self.name = reader.read_packed_int()?;
         if self.name as usize == NAME_NONE {
+            trace!("Name is none");
             return Ok(());
         }
 

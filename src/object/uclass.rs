@@ -12,7 +12,7 @@ use crate::{
 };
 use byteorder::ReadBytesExt;
 
-#[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Debug)]
 pub struct Class {
     pub parent_object: State,
 }

@@ -3,6 +3,7 @@ mod internal;
 mod state;
 #[cfg(test)]
 mod test_common;
+mod text_buffer;
 mod uclass;
 mod ufield;
 mod uobject;
@@ -27,15 +28,14 @@ pub mod builtins {
 
 use builtins::*;
 
-use crate::de::{Linker, ObjectExport};
+use crate::de::{Linker, ObjectExport, RcLinker};
+use crate::object::text_buffer::TextBuffer;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
+pub type RcUnrealObject = Rc<RefCell<dyn UnrealObject>>;
+
 pub trait UnrealObject: std::fmt::Debug {
-    fn name(&self) -> &str;
-    fn set_name(&mut self, name: String);
-    fn flags(&self) -> ObjectFlags;
-    fn set_flags(&mut self, flags: ObjectFlags);
     fn kind(&self) -> UObjectKind;
     fn parent_object(&self) -> Option<&dyn UnrealObject>;
     fn parent_object_mut(&mut self) -> Option<&mut dyn UnrealObject>;
@@ -80,7 +80,10 @@ macro_rules! register_builtins {
                 match self {
                     $(
                         Self::$name => {
-                            Rc::new(RefCell::new($name::default()))
+                            let mut obj = $name::default();
+                            obj.base_object_mut().set_concrete_object_kind(UObjectKind::$name);
+
+                            Rc::new(RefCell::new(obj))
                         }
                     )*
                 }
@@ -121,23 +124,45 @@ macro_rules! register_builtins {
                 }
             }
         }
+
+
+        pub(crate) fn deserialize_object<E, R>(
+            runtime: &mut UnrealRuntime,
+            object: RcUnrealObject,
+            linker: RcLinker,
+            reader: &mut R,
+        ) -> io::Result<()>
+        where
+            R: LinRead,
+            E: ByteOrder,
+        {
+            let object_kind = object.borrow().kind();
+
+            match object_kind {
+                $(
+                    UObjectKind::$name => {
+                        let mut object = object.borrow_mut();
+
+                        let concrete_ty = object
+                            .as_any_mut()
+                            .downcast_mut::<$name>()
+                            .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($kind)));
+
+                        concrete_ty.deserialize::<E, _>(runtime, linker, reader)
+                    }
+                )*
+            }
+
+        }
     };
 }
 
-register_builtins!(Object, Struct, State, Class, Field);
+register_builtins!(Object, Struct, State, Class, Field, TextBuffer);
 
 macro_rules! make_inherited_object {
     ($($name:ident),*) => {
         $(
             impl UnrealObject for $name {
-                fn name(&self) -> &str {
-                    self.base_object().name()
-                }
-
-                fn set_name(&mut self, name: String) {
-                    self.base_object_mut().set_name(name)
-                }
-
                 fn kind(&self) -> UObjectKind {
                     UObjectKind::$name
                 }
@@ -192,20 +217,12 @@ macro_rules! make_inherited_object {
 
                     false
                 }
-
-                fn flags(&self) -> ObjectFlags {
-                    self.base_object().flags
-                }
-
-                fn set_flags(&mut self, flags: ObjectFlags) {
-                    self.base_object_mut().set_flags(flags)
-                }
             }
         )*
     };
 }
 
-make_inherited_object!(Struct, State, Class, Field);
+make_inherited_object!(Struct, State, Class, Field, TextBuffer);
 
 bitflags! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]

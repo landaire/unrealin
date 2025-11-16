@@ -6,6 +6,8 @@ use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
+use tracing::Level;
+use tracing_subscriber::fmt;
 use unrealin::{
     ExportedData,
     de::{self, LinearFileDecoder},
@@ -26,6 +28,9 @@ struct Args {
 }
 fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    let subscriber = fmt().with_max_level(Level::TRACE).finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let mut common_file = std::fs::File::open(&args.common_lin)
         .wrap_err_with(|| format!("failed to open {:?}", &args.common_lin))?;

@@ -8,14 +8,17 @@ use byteorder::ReadBytesExt;
 
 use crate::{
     de::Linker,
-    object::{DeserializeUnrealObject, uobject::Object},
+    object::{DeserializeUnrealObject, RcUnrealObject, uobject::Object},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
 
-#[derive(Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, Debug)]
 pub struct Field {
     pub parent_object: Object,
+
+    super_field: Option<RcUnrealObject>,
+    next: Option<RcUnrealObject>,
 }
 
 impl DeserializeUnrealObject for Field {
@@ -32,9 +35,8 @@ impl DeserializeUnrealObject for Field {
         self.parent_object
             .deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
 
-        let super_field = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
-        panic!("{:#?}", super_field);
-        let next = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
+        self.super_field = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
+        self.next = reader.read_object::<E>(runtime, Rc::clone(&linker))?;
 
         Ok(())
     }

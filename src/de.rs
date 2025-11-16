@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    object::{DeserializeUnrealObject, ObjectFlags, UObjectKind, UnrealObject, builtins::*},
+    object::{
+        DeserializeUnrealObject, ObjectFlags, RcUnrealObject, UObjectKind, UnrealObject,
+        builtins::*,
+    },
     reader::{CheckedLinReader, LinRead, LinReader, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -43,8 +46,10 @@ impl ExportIndex {
     }
 }
 
+pub type RcLinker = Rc<RefCell<Linker>>;
+
 pub(crate) struct Linker {
-    pub objects: HashMap<ExportIndex, Rc<RefCell<dyn UnrealObject>>>,
+    pub objects: HashMap<ExportIndex, RcUnrealObject>,
     pub name: String,
     pub package: RawPackage,
 }

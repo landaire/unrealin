@@ -7,7 +7,7 @@ use std::{
 
 use byteorder::ByteOrder;
 
-use crate::object::DeserializeUnrealObject;
+use crate::object::{DeserializeUnrealObject, deserialize_object};
 use crate::{
     de::{ExportIndex, ImportIndex, Linker, read_package},
     object::builtins::*,
@@ -49,7 +49,7 @@ impl UnrealRuntime {
                 .borrow()
                 .objects
                 .values()
-                .find(|obj| obj.borrow().name() == name)
+                .find(|obj| obj.borrow().base_object().name() == name)
                 .map(Rc::clone)
         })
     }
@@ -65,6 +65,12 @@ impl UnrealRuntime {
         key.and_then(|k| self.linkers.get(&k).map(Rc::clone))
     }
 
+    /// Loads an object by its raw encoded index. If the index refers to an import, the import will be returned.
+    /// If the object refers to an export, the export will be returned.
+    ///
+    /// If the object has not yet been loaded, it and its dependencies will be loaded.
+    ///
+    /// Can return `None` if the index is 0.
     pub fn load_object_by_raw_index<E, R>(
         &mut self,
         raw_index: i32,
@@ -111,23 +117,34 @@ impl UnrealRuntime {
         E: ByteOrder,
     {
         let linker_inner = linker.borrow();
+
+        // Check if this object has already been loaded
+        if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
+            panic!("object already loaded?");
+            return Ok(Rc::clone(loaded_obj));
+        }
+
         let export = linker_inner
             .find_export_by_index(export_index)
             .expect("could not find export");
         let export_offset = export.serial_offset();
         let export_size = export.serial_size();
 
+        println!("Loading object: {}", export.full_name(&linker.borrow()));
         println!("{:#X?}", export);
 
+        let class_name = export.class_name(&linker_inner);
         let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
-            .expect("could not find object kind");
+            .unwrap_or_else(|_| panic!("could not find object kind {}", class_name));
 
         let constructed_object = object_kind.construct();
         let mut object = constructed_object.borrow_mut();
-        object.set_flags(
+        object.base_object_mut().set_flags(
             ObjectFlags::from_bits(export.object_flags).expect("failed to construct ObjectFlags"),
         );
-        object.set_name(export.object_name(&linker_inner).to_owned());
+        object
+            .base_object_mut()
+            .set_name(export.object_name(&linker_inner).to_owned());
 
         // If this is a struct, load the dependencies
         if object.is_a(UObjectKind::Struct) {
@@ -145,7 +162,9 @@ impl UnrealRuntime {
 
         let saved_pos = reader.stream_position()?;
         reader.seek(SeekFrom::Start(export_offset))?;
-        self.deserialize_object::<E, _>(
+
+        deserialize_object::<E, _>(
+            self,
             Rc::clone(&constructed_object),
             Rc::clone(&linker),
             reader,
@@ -181,7 +200,7 @@ impl UnrealRuntime {
         let module = parts.next().expect("object name does not have a module");
         let object_name = parts.next().expect("object is not a full name");
 
-        println!("Looking up {object_name}");
+        println!("Looking up {full_name}");
 
         let linker = if module == "None" {
             self.linker_by_export_name_mut(object_name)
@@ -202,46 +221,5 @@ impl UnrealRuntime {
         drop(linker_inner);
 
         self.load_object_by_export_index::<E, _>(export_index, linker, reader)
-    }
-
-    fn deserialize_object<E, R>(
-        &mut self,
-        object: Rc<RefCell<dyn UnrealObject>>,
-        linker: Rc<RefCell<Linker>>,
-        reader: &mut R,
-    ) -> io::Result<()>
-    where
-        R: LinRead,
-        E: ByteOrder,
-    {
-        macro_rules! deserialize_as {
-            ($kind:ty) => {{
-                let mut object = object.borrow_mut();
-
-                let concrete_ty = object
-                    .as_any_mut()
-                    .downcast_mut::<$kind>()
-                    .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($kind)));
-
-                concrete_ty.deserialize::<E, _>(self, linker, reader)
-            }};
-        }
-
-        let object_kind = object.borrow().kind();
-        match object_kind {
-            UObjectKind::Object => {
-                deserialize_as!(Object)
-            }
-            UObjectKind::Struct => todo!("struct!"),
-            UObjectKind::Class => {
-                deserialize_as!(Class)
-            }
-            UObjectKind::State => {
-                deserialize_as!(State)
-            }
-            UObjectKind::Field => {
-                deserialize_as!(Field)
-            }
-        }
     }
 }

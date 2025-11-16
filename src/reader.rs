@@ -6,6 +6,7 @@ use std::{
 };
 
 use byteorder::{ByteOrder, ReadBytesExt};
+use tracing::{Level, span, trace};
 
 use crate::{
     common::IoOp,
@@ -23,7 +24,14 @@ pub trait UnrealReadExt: LinRead + Sized {
     where
         E: ByteOrder,
     {
+        let span = span!(Level::DEBUG, "read_object");
+        let _enter = span.enter();
+
+        let pos = self.stream_position()?;
         let index = self.read_packed_int()?;
+        let after = self.stream_position()?;
+
+        trace!("Read {} bytes ({:#X})", after - pos, index);
 
         runtime.load_object_by_raw_index::<E, _>(index, linker, self)
     }
@@ -34,19 +42,28 @@ pub trait UnrealReadExt: LinRead + Sized {
         const CONTINUE_BIT: u8 = 0x40;
         const NEGATE_BIT: u8 = 0x80;
 
+        let span = span!(Level::TRACE, "read_packed_int");
+        let _enter = span.enter();
+
         let b0 = self.read_u8()?;
+
+        trace!("b0: {:#X}", b0);
 
         // Build up the unsigned magnitude.
         let mut value: u32 = 0;
 
         if (b0 & CONTINUE_BIT) != 0 {
             let b1 = self.read_u8()?;
+            trace!("b1: {b1:#X}");
             if (b1 & NEGATE_BIT) != 0 {
                 let b2 = self.read_u8()?;
+                trace!("b2: {b2:#X}");
                 if (b2 & NEGATE_BIT) != 0 {
                     let b3 = self.read_u8()?;
+                    trace!("b3: {b3:#X}");
                     if (b3 & NEGATE_BIT) != 0 {
                         let b4 = self.read_u8()?;
+                        trace!("b4: {b4:#X}");
                         value = b4 as u32;
                     }
                     value = (value << 7) + ((b3 & (NEGATE_BIT - 1)) as u32);
@@ -206,7 +223,7 @@ impl<R> Seek for CheckedLinReader<R> {
                             }
                         }
                         other => panic!(
-                            "unexpected IO op during a seek from {:#X} to {:#X}: {other:#X?}",
+                            "unexpected IO op during a seek from {:#X} to {:#X}. Expected op: {other:#X?}",
                             self.pos, pos
                         ),
                     }

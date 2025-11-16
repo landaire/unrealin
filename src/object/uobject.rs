@@ -1,6 +1,7 @@
 use std::{cell::RefCell, io, rc::Rc};
 
 use byteorder::ByteOrder;
+use tracing::{Level, debug, event, span, trace};
 
 use crate::{
     de::{Linker, ObjectExport},
@@ -12,13 +13,41 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug)]
 pub struct Object {
     pub name: String,
     pub flags: ObjectFlags,
+    /// The concrete type of this object
+    pub concrete_object_kind: Option<UObjectKind>,
     // package_index: usize,
     // class: i32,
     // outer: i32, //RcUnrealObject,
+}
+
+impl Object {
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn flags(&self) -> ObjectFlags {
+        self.flags
+    }
+
+    pub fn set_flags(&mut self, flags: ObjectFlags) {
+        self.flags = flags;
+    }
+
+    pub fn set_concrete_object_kind(&mut self, kind: UObjectKind) {
+        self.concrete_object_kind = Some(kind);
+    }
+
+    pub fn concrete_object_kind(&self) -> UObjectKind {
+        self.concrete_object_kind.expect("object_kind not set")
+    }
 }
 
 impl Default for Object {
@@ -26,6 +55,7 @@ impl Default for Object {
         Self {
             name: "None".to_owned(),
             flags: ObjectFlags::empty(),
+            concrete_object_kind: None,
         }
     }
 }
@@ -41,20 +71,31 @@ impl DeserializeUnrealObject for Object {
         E: ByteOrder,
         R: LinRead,
     {
+        let span = span!(Level::DEBUG, "deserialize_object");
+        let _enter = span.enter();
+
+        debug!(
+            "Deserializing object with kind {:?}",
+            self.concrete_object_kind
+        );
+
         if self.flags.contains(ObjectFlags::HAS_STACK) {
             todo!("UObject HAS_STACK path");
         }
 
-        let mut properties = Vec::new();
-        loop {
-            let mut tag = PropertyTag::default();
-            tag.deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
+        if self.concrete_object_kind() != UObjectKind::Class {
+            let mut properties = Vec::new();
+            loop {
+                trace!("Deserializing property");
+                let mut tag = PropertyTag::default();
+                tag.deserialize::<E, _>(runtime, Rc::clone(&linker), reader)?;
 
-            if tag.name as usize == NAME_NONE {
-                break;
+                if tag.name as usize == NAME_NONE {
+                    break;
+                }
+
+                properties.push(tag);
             }
-
-            properties.push(tag);
         }
 
         Ok(())
@@ -62,10 +103,6 @@ impl DeserializeUnrealObject for Object {
 }
 
 impl UnrealObject for Object {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn kind(&self) -> UObjectKind {
         UObjectKind::Object
     }
@@ -88,18 +125,6 @@ impl UnrealObject for Object {
 
     fn is_a(&self, kind: UObjectKind) -> bool {
         self.kind() == kind
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = name;
-    }
-
-    fn flags(&self) -> ObjectFlags {
-        self.flags
-    }
-
-    fn set_flags(&mut self, flags: ObjectFlags) {
-        self.flags = flags;
     }
 
     fn parent_object_mut(&mut self) -> Option<&mut dyn UnrealObject> {
