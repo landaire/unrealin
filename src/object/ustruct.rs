@@ -5,7 +5,10 @@ use tracing::{Level, debug, span};
 
 use crate::{
     de::Linker,
-    object::{DeserializeUnrealObject, RcUnrealObject, ufield::Field, uobject::Object},
+    object::{
+        DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Property, ufield::Field,
+        uobject::Object,
+    },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -115,15 +118,73 @@ impl DeserializeUnrealObject for Struct {
             )?;
 
             let child_inner = child.borrow();
+
+            if !child_inner.is_a(UObjectKind::Property) {
+                let parent_field = child_inner
+                    .parent_of_kind(UObjectKind::Field)
+                    .expect("could not get parent Field");
+
+                child_ptr = parent_field
+                    .as_any()
+                    .downcast_ref::<Field>()
+                    .expect("failed to cast parent field to Field")
+                    .next();
+
+                continue;
+            }
+
+            // TODO: Property work
+
+            let parent_property = child_inner
+                .parent_of_kind(UObjectKind::Property)
+                .expect("failed to find child's parent Property");
+            let child_as_property = parent_property
+                .as_any()
+                .downcast_ref::<Property>()
+                .expect("failed to cast parent property to Property");
+
+            child_ptr = child_as_property.parent_object.next();
+        }
+
+        // Handle properties with flags
+        let mut child_ptr = self.children.clone();
+        while let Some(child) = child_ptr {
+            let span = span!(Level::DEBUG, "ustruct_property");
+            let _enter = span.enter();
+
+            let child_inner = child.borrow();
+            if !child_inner.is_a(UObjectKind::Property) {
+                break;
+            }
+
+            // TODO: Can remove from here
             let child_any = child_inner.as_any();
             let child_as_field = child_any
                 .downcast_ref::<Field>()
                 .expect("failed to cast child as Field");
 
-            child_ptr = child_as_field.next();
+            let next = child_as_field.next();
+
+            if child_inner.is_a(UObjectKind::Property) {
+                child_ptr = next;
+                continue;
+            }
+
+            drop(child_inner);
+            // TODO: to here
+
+            let mut child_inner = child.borrow_mut();
+            let child_any = child_inner.as_any_mut();
+            let child_as_property = child_any
+                .downcast_mut::<Property>()
+                .expect("failed to cast child as Field");
+
+            todo!("handle property");
+
+            child_ptr = next;
         }
 
-        todo!("struct")
+        Ok(())
     }
 }
 

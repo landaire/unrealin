@@ -1,5 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
+use byteorder::ReadBytesExt;
+
 use crate::{
     object::{DeserializeUnrealObject, ustruct::Struct},
     reader::LinRead,
@@ -9,6 +11,8 @@ use crate::{
 #[derive(Default, Debug)]
 pub struct State {
     pub parent_object: Struct,
+
+    probe_mask: u64,
 }
 
 impl DeserializeUnrealObject for State {
@@ -25,6 +29,8 @@ impl DeserializeUnrealObject for State {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
+        panic!("{:#X?}", reader.stream_position()?);
+        self.probe_mask = reader.read_u64::<E>()?;
         todo!()
     }
 }

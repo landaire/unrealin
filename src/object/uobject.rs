@@ -190,6 +190,22 @@ impl UnrealObject for Object {
     fn base_object_mut(&mut self) -> &mut Object {
         self
     }
+
+    fn parent_of_kind(&self, kind: UObjectKind) -> Option<&dyn UnrealObject> {
+        if kind == UObjectKind::Object {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
+    fn parent_of_kind_mut(&mut self, kind: UObjectKind) -> Option<&mut dyn UnrealObject> {
+        if kind == UObjectKind::Object {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

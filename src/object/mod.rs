@@ -6,6 +6,7 @@ mod uclass;
 mod ufield;
 mod ufunction;
 mod uobject;
+mod uproperty;
 mod ustate;
 mod ustruct;
 mod utext_buffer;
@@ -24,6 +25,7 @@ pub mod builtins {
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
     pub use super::uobject::Object;
+    pub use super::uproperty::Property;
     pub use super::ustate::State;
     pub use super::ustruct::Struct;
 }
@@ -46,6 +48,8 @@ pub trait UnrealObject: std::fmt::Debug {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     fn is_a(&self, kind: UObjectKind) -> bool;
+    fn parent_of_kind(&self, kind: UObjectKind) -> Option<&dyn UnrealObject>;
+    fn parent_of_kind_mut(&mut self, kind: UObjectKind) -> Option<&mut dyn UnrealObject>;
 }
 
 pub trait DeserializeUnrealObject {
@@ -160,12 +164,13 @@ macro_rules! register_builtins {
                     }
                 )*
             }
-
         }
     };
 }
 
-register_builtins!(Object, Struct, State, Class, Field, TextBuffer, Function);
+register_builtins!(
+    Object, Struct, State, Class, Field, TextBuffer, Function, Property
+);
 
 macro_rules! make_inherited_object {
     ($($name:ident),*) => {
@@ -210,27 +215,48 @@ macro_rules! make_inherited_object {
                 }
 
                 fn is_a(&self, kind: UObjectKind) -> bool {
+                    self.parent_of_kind(kind).is_some()
+                }
+
+                fn parent_of_kind(&self, kind: UObjectKind) -> Option<&dyn UnrealObject> {
                     let mut current_object = self as &dyn UnrealObject;
                     if current_object.kind() == kind {
-                        return true;
+                        return Some(current_object);
                     }
 
                     while let Some(parent) = current_object.parent_object() {
                         if parent.kind() == kind {
-                            return true;
+                            return Some(parent);
                         }
 
                         current_object = parent;
                     }
 
-                    false
+                    None
+                }
+
+                fn parent_of_kind_mut(&mut self, kind: UObjectKind) -> Option<&mut dyn UnrealObject> {
+                    let mut current_object = self as &mut dyn UnrealObject;
+                    if current_object.kind() == kind {
+                        return Some(current_object);
+                    }
+
+                    while let Some(parent) = current_object.parent_object_mut() {
+                        if parent.kind() == kind {
+                            return Some(parent);
+                        }
+
+                        current_object = parent;
+                    }
+
+                    None
                 }
             }
         )*
     };
 }
 
-make_inherited_object!(Struct, State, Class, Field, TextBuffer, Function);
+make_inherited_object!(Struct, State, Class, Field, TextBuffer, Function, Property);
 
 bitflags! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
