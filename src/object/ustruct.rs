@@ -95,7 +95,7 @@ impl DeserializeUnrealObject for Struct {
             "Did not read the expected amount of script data"
         );
 
-        // Deserialize properties
+        // Deserialize properties. UStruct::Link
         //
         // First, ensure that the super field is fully loaded
         if let Some(super_field) = self.parent_object.super_field() {
@@ -166,17 +166,18 @@ impl DeserializeUnrealObject for Struct {
             child_ptr = child_as_property.parent_object.next();
         }
 
-        // Handle properties with flags
+        // Handle properties with flags. This needs to walk up from the current struct,
+        // through its fields, then to the next inheritence struct
         let mut child_ptr = self.children.clone();
         while let Some(child) = child_ptr {
             let span = span!(Level::DEBUG, "ustruct_property");
             let _enter = span.enter();
 
             let child_inner = child.borrow();
-            if !child_inner.is_a(UObjectKind::Property) {
-                break;
-            }
 
+            // if let Some(parent_property) = child_inner.parent_of_kind(UObjectKind::Property) else {
+
+            // };
             // TODO: Can remove from here
             let child_any = child_inner.as_any();
             let child_as_field = child_any
@@ -187,6 +188,8 @@ impl DeserializeUnrealObject for Struct {
 
             if child_inner.is_a(UObjectKind::Property) {
                 child_ptr = next;
+                // Grab the next
+                // if next.is_none() {}
                 continue;
             }
 
