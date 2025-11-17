@@ -146,9 +146,11 @@ impl DeserializeUnrealObject for Object {
                 let mut tag = PropertyTag::default();
                 tag.deserialize::<E, _>(runtime, linker, reader)?;
 
-                if tag.name as usize == NAME_NONE {
+                if tag.name.is_none() {
                     break;
                 }
+
+                todo!("Tagged properties");
 
                 properties.push(tag);
             }

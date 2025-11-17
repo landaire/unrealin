@@ -33,6 +33,7 @@ pub mod builtins {
 use builtins::*;
 
 use crate::de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker};
+use crate::object::uproperty::FloatProperty;
 use crate::object::utext_buffer::TextBuffer;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
@@ -169,7 +170,15 @@ macro_rules! register_builtins {
 }
 
 register_builtins!(
-    Object, Struct, State, Class, Field, TextBuffer, Function, Property
+    Object,
+    Struct,
+    State,
+    Class,
+    Field,
+    TextBuffer,
+    Function,
+    Property,
+    FloatProperty
 );
 
 macro_rules! make_inherited_object {
@@ -256,7 +265,16 @@ macro_rules! make_inherited_object {
     };
 }
 
-make_inherited_object!(Struct, State, Class, Field, TextBuffer, Function, Property);
+make_inherited_object!(
+    Struct,
+    State,
+    Class,
+    Field,
+    TextBuffer,
+    Function,
+    Property,
+    FloatProperty
+);
 
 bitflags! {
     #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]

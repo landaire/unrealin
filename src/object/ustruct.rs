@@ -6,8 +6,8 @@ use tracing::{Level, debug, span};
 use crate::{
     de::Linker,
     object::{
-        DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Property, ufield::Field,
-        uobject::Object,
+        DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Property, internal::script,
+        ufield::Field, uobject::Object,
     },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
@@ -70,10 +70,30 @@ impl DeserializeUnrealObject for Struct {
         debug!("deserializing script_size");
         self.script_size = reader.read_u32::<E>()?;
 
-        debug!("deserializing script");
-        // We don't need to actually parse this
-        self.script = vec![0u8; self.script_size as usize];
-        reader.cheat(self.script.as_mut_slice())?;
+        let mut script = Vec::new();
+        let start_pos = reader.stream_position()?;
+        let expected_end_pos = start_pos + self.script_size as u64;
+        debug!(
+            "deserializing script. start_pos= {start_pos:#X}, expected_end= {expected_end_pos:#X}, len= {:#X}",
+            self.script_size
+        );
+
+        let mut bytes_read = 0;
+
+        while bytes_read < self.script_size as usize {
+            script.append(&mut script::deserialize_expr::<E, _>(
+                runtime,
+                linker,
+                reader,
+                &mut bytes_read,
+                self.script_size as usize,
+            )?);
+        }
+
+        assert_eq!(
+            bytes_read, self.script_size as usize,
+            "Did not read the expected amount of script data"
+        );
 
         // Deserialize properties
         //

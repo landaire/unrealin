@@ -1,15 +1,24 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    object::{DeserializeUnrealObject, ufield::Field},
+    object::{DeserializeUnrealObject, internal::fname::FName, ufield::Field},
     reader::LinRead,
     runtime::UnrealRuntime,
 };
 use bitflags::bitflags;
+use byteorder::ReadBytesExt;
+use tracing::{Level, span, trace};
 
 #[derive(Default, Debug)]
 pub struct Property {
     pub parent_object: Field,
+
+    array_dim: u16,
+    element_size: u32,
+    property_flags: u32,
+    category: FName,
+    rep_offset: u16,
+    rep_index: u16,
 }
 
 impl DeserializeUnrealObject for Property {
@@ -23,6 +32,50 @@ impl DeserializeUnrealObject for Property {
         E: byteorder::ByteOrder,
         R: LinRead,
     {
+        let span = span!(Level::DEBUG, "deserialize_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        trace!("array_dim");
+        // TODO: This is only for splinter cell?
+        self.array_dim = reader.read_u16::<E>()?;
+        trace!("property_flags");
+        self.property_flags = reader.read_u32::<E>()?;
+        trace!("category");
+        self.category.deserialize::<E, _>(runtime, linker, reader)?;
+
+        if self.property_flags != 0 {
+            todo!("property flags");
+            self.rep_offset = reader.read_u16::<E>()?;
+
+            // TODO: comment string
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct FloatProperty {
+    pub parent_object: Property,
+}
+
+impl DeserializeUnrealObject for FloatProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_float");
+        let _enter = span.enter();
+
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 

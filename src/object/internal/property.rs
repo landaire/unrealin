@@ -4,13 +4,14 @@ use std::rc::Rc;
 use tracing::{Level, debug, span, trace};
 
 use crate::de::Linker;
-use crate::object::{DeserializeUnrealObject, NAME_NONE};
+use crate::object::DeserializeUnrealObject;
+use crate::object::internal::fname::FName;
 use crate::reader::{LinRead, UnrealReadExt};
 use crate::runtime::UnrealRuntime;
 
 #[derive(Default)]
 pub struct PropertyTag {
-    pub name: i32,
+    pub name: FName,
 }
 
 impl DeserializeUnrealObject for PropertyTag {
@@ -28,8 +29,9 @@ impl DeserializeUnrealObject for PropertyTag {
         let _enter = span.enter();
 
         debug!("Deserializing name");
-        self.name = reader.read_packed_int()?;
-        if self.name as usize == NAME_NONE {
+
+        self.name.deserialize::<E, _>(runtime, linker, reader)?;
+        if self.name.is_none() {
             trace!("Name is none");
             return Ok(());
         }
