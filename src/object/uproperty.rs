@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    object::{DeserializeUnrealObject, internal::fname::FName, ufield::Field},
+    object::{DeserializeUnrealObject, RcUnrealObject, internal::fname::FName, ufield::Field},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -140,6 +140,66 @@ impl DeserializeUnrealObject for BoolProperty {
 
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct ObjectProperty {
+    pub parent_object: Property,
+
+    pub property_class: Option<RcUnrealObject>,
+}
+
+impl DeserializeUnrealObject for ObjectProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_object_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        self.property_class = reader.read_object::<E>(runtime, linker)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct ClassProperty {
+    pub parent_object: ObjectProperty,
+
+    pub meta_class: Option<RcUnrealObject>,
+}
+
+impl DeserializeUnrealObject for ClassProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_class_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        self.meta_class = reader.read_object::<E>(runtime, linker)?;
 
         Ok(())
     }

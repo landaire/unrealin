@@ -22,7 +22,7 @@ pub struct UnrealRuntime {
     pub linkers: HashMap<String, RcLinker>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum LoadKind {
     Load,
     Create,
@@ -39,10 +39,22 @@ impl UnrealRuntime {
         let package = read_package::<E, _>(reader)?;
         reader.set_reading_linker_header(false);
 
-        self.linkers.insert(
-            expected_name.clone(),
-            Rc::new(RefCell::new(Linker::new(expected_name, package))),
-        );
+        let linker = Rc::new(RefCell::new(Linker::new(expected_name.clone(), package)));
+        let linker_inner = linker.borrow();
+
+        for export in &linker_inner.package.exports {
+            if export.serial_offset == 0x63BA {
+                panic!(
+                    "{} {}",
+                    export.full_name(&linker_inner),
+                    export.class_name(&linker_inner)
+                );
+            }
+        }
+
+        drop(linker_inner);
+
+        self.linkers.insert(expected_name, linker);
 
         Ok(())
     }
@@ -130,6 +142,8 @@ impl UnrealRuntime {
         let span = span!(Level::INFO, "load_object_by_export_index");
         let _enter = span.enter();
 
+        trace!("Loading with load kind: {:?}", load_kind);
+
         let linker_inner = linker.borrow();
 
         let export = linker_inner
@@ -137,6 +151,8 @@ impl UnrealRuntime {
             .expect("could not find export");
         let export_offset = export.serial_offset();
         let export_size = export.serial_size();
+        let export_full_name = export.full_name(&linker.borrow());
+        let class_name = export.class_name(&linker_inner).to_string();
 
         // Check if this object has already been loaded
         let obj = if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
@@ -147,12 +163,16 @@ impl UnrealRuntime {
         } else {
             // Object has not yet been loaded
 
-            info!("Loading object: {}", export.full_name(&linker.borrow()));
             trace!("{:#X?}", export);
 
-            let class_name = export.class_name(&linker_inner);
+            info!(
+                "Loading object: {}, class = {}",
+                export_full_name, class_name
+            );
             let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
                 .unwrap_or_else(|_| panic!("could not find object kind {}", class_name));
+
+            trace!("Resolved object kind: {object_kind:?}");
 
             let constructed_object = object_kind.construct(Rc::downgrade(linker), export_index);
             let mut object = constructed_object.borrow_mut();
@@ -192,6 +212,8 @@ impl UnrealRuntime {
         };
 
         if obj.borrow().base_object().is_fully_loaded() {
+            trace!("Object is fully loaded");
+
             return Ok(obj);
         }
 
@@ -206,6 +228,10 @@ impl UnrealRuntime {
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(export_offset))?;
 
+                debug!(
+                    "Deserializing {} (class = {})",
+                    export_full_name, class_name
+                );
                 deserialize_object::<E, _>(self, Rc::clone(&obj), linker, reader)?;
 
                 let current_pos = reader.stream_position()?;

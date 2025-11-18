@@ -31,7 +31,7 @@ pub trait UnrealReadExt: LinRead + Sized {
         let index = self.read_packed_int()?;
         let after = self.stream_position()?;
 
-        trace!("Read {} bytes ({:#X})", after - pos, index);
+        trace!("Read {} bytes (obj_index= {:#X})", after - pos, index);
 
         runtime.load_object_by_raw_index::<E, _>(index, linker, LoadKind::Create, self)
     }
@@ -189,8 +189,9 @@ where
                     );
                 }
                 other => panic!(
-                    "unexpected IO op during a read of {:#X} bytes: {:#X?}",
+                    "doing a read of {:#X} bytes at {:#X}, expected: {:#X?}",
                     buf.len(),
+                    self.pos,
                     other
                 ),
             }
@@ -205,8 +206,13 @@ where
 
 impl<R> Seek for CheckedLinReader<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let span = span!(Level::TRACE, "seek");
+        let _enter = span.enter();
+
         match pos {
             std::io::SeekFrom::Start(pos) => {
+                trace!("to= {:#X}, from= {:#X}", pos, self.pos);
+
                 if !self.reading_linker_header {
                     let mut ops = self.io_ops.borrow_mut();
 
@@ -223,7 +229,7 @@ impl<R> Seek for CheckedLinReader<R> {
                             }
                         }
                         other => panic!(
-                            "unexpected IO op during a seek from {:#X} to {:#X}. Expected op: {other:#X?}",
+                            "doing a seek from {:#X} to {:#X}. Expected op: {other:#X?}",
                             self.pos, pos
                         ),
                     }

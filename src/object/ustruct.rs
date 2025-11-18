@@ -62,6 +62,7 @@ impl Struct {
                 .parent_of_kind_mut(kind)
                 .expect("failed to resolve parent of requested kind")
                 .as_any_mut();
+
             let child_as_property = child_any
                 .downcast_mut::<Property>()
                 .expect("failed to cast child as Property");
@@ -147,6 +148,7 @@ impl DeserializeUnrealObject for Struct {
         let mut bytes_read = 0;
 
         while bytes_read < self.script_size as usize {
+            debug!("Bytes read: {bytes_read:#X} / {:#X}", self.script_size);
             script.append(&mut script::deserialize_expr::<E, _>(
                 runtime,
                 linker,

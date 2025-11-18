@@ -14,6 +14,7 @@ mod utext_buffer;
 use std::cell::RefCell;
 use std::io::{self, Read, Seek};
 use std::rc::Rc;
+use tracing::trace;
 
 const NAME_NONE: usize = 0;
 
@@ -25,16 +26,15 @@ pub mod builtins {
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
     pub use super::uobject::Object;
-    pub use super::uproperty::Property;
+    pub use super::uproperty::*;
     pub use super::ustate::State;
     pub use super::ustruct::Struct;
+    pub use super::utext_buffer::TextBuffer;
 }
 
 use builtins::*;
 
 use crate::de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker};
-use crate::object::uproperty::{BoolProperty, FloatProperty, StrProperty};
-use crate::object::utext_buffer::TextBuffer;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -180,7 +180,9 @@ register_builtins!(
     Property,
     FloatProperty,
     StrProperty,
-    BoolProperty
+    BoolProperty,
+    ObjectProperty,
+    ClassProperty
 );
 
 macro_rules! make_inherited_object {
@@ -277,7 +279,9 @@ make_inherited_object!(
     Property,
     FloatProperty,
     StrProperty,
-    BoolProperty
+    BoolProperty,
+    ObjectProperty,
+    ClassProperty
 );
 
 bitflags! {

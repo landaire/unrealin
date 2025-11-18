@@ -99,8 +99,8 @@ where
 
     debug!("Token is: {:?}", token);
 
-    match token {
-        ExprToken::LocalVariable | ExprToken::InstanceVariable | ExprToken::DefaultVariable => {
+    macro_rules! read_object {
+        () => {{
             let before = reader.stream_position()?;
             let obj = reader.read_object::<E>(runtime, linker)?;
             let after = reader.stream_position()?;
@@ -108,6 +108,14 @@ where
             // The size of the object pointer is 4 bytes on 32-bit platforms.
             // So we increase by 4.
             *bytes_read += ((after - before) as usize).next_multiple_of(4);
+
+            obj
+        }};
+    }
+
+    match token {
+        ExprToken::LocalVariable | ExprToken::InstanceVariable | ExprToken::DefaultVariable => {
+            let obj = read_object!();
 
             result.push(Expr::Object(obj));
         }
@@ -162,7 +170,7 @@ where
         ExprToken::VectorConst => todo!(),
         ExprToken::ByteConst => todo!(),
         ExprToken::NativeParm => {
-            let obj = reader.read_object::<E>(runtime, linker)?;
+            let obj = read_object!();
             result.push(Expr::Object(obj));
         }
         ExprToken::IntConstByte => todo!(),
