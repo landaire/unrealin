@@ -207,31 +207,27 @@ impl DeserializeUnrealObject for Struct {
 
             let child_inner = child.borrow();
 
-            if !child_inner.is_a(UObjectKind::Property) {
-                let parent_field = child_inner
-                    .parent_of_kind(UObjectKind::Field)
-                    .expect("could not get parent Field");
-
-                child_ptr = parent_field
+            if child_inner.is_a(UObjectKind::Property) {
+                let parent_property = child_inner
+                    .parent_of_kind(UObjectKind::Property)
+                    .expect("failed to find child's parent Property");
+                let child_as_property = parent_property
                     .as_any()
-                    .downcast_ref::<Field>()
-                    .expect("failed to cast parent field to Field")
-                    .next();
+                    .downcast_ref::<Property>()
+                    .expect("failed to cast parent property to Property");
 
-                continue;
+                // Properties are supposed to be linked here. TBD if this is required for us.
             }
 
-            // TODO: Property work
+            let parent_field = child_inner
+                .parent_of_kind(UObjectKind::Field)
+                .expect("could not get parent Field");
 
-            let parent_property = child_inner
-                .parent_of_kind(UObjectKind::Property)
-                .expect("failed to find child's parent Property");
-            let child_as_property = parent_property
+            child_ptr = parent_field
                 .as_any()
-                .downcast_ref::<Property>()
-                .expect("failed to cast parent property to Property");
-
-            child_ptr = child_as_property.parent_object.next();
+                .downcast_ref::<Field>()
+                .expect("failed to cast parent field to Field")
+                .next();
         }
 
         // Handle properties with flags. This needs to walk up from the current struct,

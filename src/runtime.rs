@@ -42,15 +42,15 @@ impl UnrealRuntime {
         let linker = Rc::new(RefCell::new(Linker::new(expected_name.clone(), package)));
         let linker_inner = linker.borrow();
 
-        for export in &linker_inner.package.exports {
-            if export.serial_offset == 0x63BA {
-                panic!(
-                    "{} {}",
-                    export.full_name(&linker_inner),
-                    export.class_name(&linker_inner)
-                );
-            }
-        }
+        // for export in &linker_inner.package.exports {
+        //     if export.serial_offset == 0x63BA {
+        //         panic!(
+        //             "{} {}",
+        //             export.full_name(&linker_inner),
+        //             export.class_name(&linker_inner)
+        //         );
+        //     }
+        // }
 
         drop(linker_inner);
 
@@ -120,6 +120,8 @@ impl UnrealRuntime {
                 .expect("failed to find import");
             let import_full_name = import.full_name(&linker_inner);
 
+            drop(linker_inner);
+
             self.load_object_by_full_name::<E, _>(import_full_name.as_str(), load_kind, reader)
                 .map(Some)
         } else {
@@ -151,7 +153,7 @@ impl UnrealRuntime {
             .expect("could not find export");
         let export_offset = export.serial_offset();
         let export_size = export.serial_size();
-        let export_full_name = export.full_name(&linker.borrow());
+        let export_full_name = export.full_name(&linker_inner);
         let class_name = export.class_name(&linker_inner).to_string();
 
         // Check if this object has already been loaded
@@ -159,6 +161,7 @@ impl UnrealRuntime {
             let obj = Rc::clone(loaded_obj);
             drop(linker_inner);
 
+            // return Ok(obj);
             obj
         } else {
             // Object has not yet been loaded
@@ -185,9 +188,14 @@ impl UnrealRuntime {
                 .set_name(export.object_name(&linker_inner).to_owned());
 
             let parent_index = export.super_index;
+            let is_struct = object.is_a(UObjectKind::Struct);
+
+            // Drop the mutable borrow before potential recursive calls
+            drop(object);
             drop(linker_inner);
+
             // If this is a struct, load the dependencies
-            if object.is_a(UObjectKind::Struct) && parent_index != 0 {
+            if is_struct && parent_index != 0 {
                 // Load dependent types
 
                 self.load_object_by_raw_index::<E, _>(
@@ -204,18 +212,13 @@ impl UnrealRuntime {
                 .insert(export_index, Rc::clone(&constructed_object));
 
             // TODO: for experimentation
-            object.base_object_mut().post_loaded();
-
-            drop(object);
+            constructed_object
+                .borrow_mut()
+                .base_object_mut()
+                .post_loaded();
 
             constructed_object
         };
-
-        if obj.borrow().base_object().is_fully_loaded() {
-            trace!("Object is fully loaded");
-
-            return Ok(obj);
-        }
 
         match load_kind {
             // LoadKind::Load => {
@@ -225,6 +228,12 @@ impl UnrealRuntime {
                 // Nothing needs to happen here
             }
             LoadKind::Full | LoadKind::Load => {
+                if obj.borrow().base_object().is_fully_loaded() {
+                    trace!("Object is fully loaded");
+
+                    return Ok(obj);
+                }
+
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(export_offset))?;
 
@@ -277,7 +286,7 @@ impl UnrealRuntime {
             self.linker(module).expect("failed to force load linker")
         };
 
-        let linker_inner = linker.borrow_mut();
+        let linker_inner = linker.borrow();
         let (export_index, _) = linker_inner
             .find_export_by_name(object_name)
             .expect("failed to find export");
