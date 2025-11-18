@@ -23,6 +23,12 @@ pub struct Property {
     comment_string: Option<String>,
 }
 
+impl Property {
+    pub fn flags(&self) -> PropertyFlags {
+        self.property_flags
+    }
+}
+
 impl DeserializeUnrealObject for Property {
     fn deserialize<E, R>(
         &mut self,
@@ -78,6 +84,58 @@ impl DeserializeUnrealObject for FloatProperty {
         R: LinRead,
     {
         let span = span!(Level::DEBUG, "deserialize_float");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct StrProperty {
+    pub parent_object: Property,
+}
+
+impl DeserializeUnrealObject for StrProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_str_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct BoolProperty {
+    pub parent_object: Property,
+}
+
+impl DeserializeUnrealObject for BoolProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_bool_property");
         let _enter = span.enter();
 
         self.parent_object

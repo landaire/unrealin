@@ -161,7 +161,10 @@ where
         ExprToken::RotationConst => todo!(),
         ExprToken::VectorConst => todo!(),
         ExprToken::ByteConst => todo!(),
-        ExprToken::NativeParm => todo!(),
+        ExprToken::NativeParm => {
+            let obj = reader.read_object::<E>(runtime, linker)?;
+            result.push(Expr::Object(obj));
+        }
         ExprToken::IntConstByte => todo!(),
         ExprToken::DynamicCast => todo!(),
         ExprToken::Iterator => todo!(),
