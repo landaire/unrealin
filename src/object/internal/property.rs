@@ -36,6 +36,8 @@ impl DeserializeUnrealObject for PropertyTag {
             return Ok(());
         }
 
+        todo!("Property tag");
+
         Ok(())
     }
 }

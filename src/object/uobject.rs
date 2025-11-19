@@ -10,8 +10,8 @@ use tracing::{Level, debug, event, span, trace};
 use crate::{
     de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker},
     object::{
-        DeserializeUnrealObject, NAME_NONE, ObjectFlags, UObjectKind, UnrealObject,
-        internal::property::PropertyTag,
+        DeserializeUnrealObject, NAME_NONE, ObjectFlags, RcUnrealObject, UObjectKind, UnrealObject,
+        WeakUnrealObject, internal::property::PropertyTag,
     },
     reader::LinRead,
     runtime::UnrealRuntime,
@@ -27,6 +27,8 @@ pub struct Object {
     pub needs_post_load: bool,
     pub linker: Option<WeakLinker>,
     pub export_index: Option<ExportIndex>,
+    pub outer_object: Option<RcUnrealObject>,
+    pub concrete_obj: Option<WeakUnrealObject>,
     // package_index: usize,
     // class: i32,
     // outer: i32, //RcUnrealObject,
@@ -42,6 +44,8 @@ impl Default for Object {
             needs_post_load: true,
             linker: Default::default(),
             export_index: Default::default(),
+            outer_object: None,
+            concrete_obj: None,
         }
     }
 }
@@ -114,6 +118,25 @@ impl Object {
     pub fn export_index(&self) -> ExportIndex {
         self.export_index.expect("export_index is not set")
     }
+
+    pub fn set_outer_object(&mut self, outer: RcUnrealObject) {
+        self.outer_object = Some(outer);
+    }
+
+    pub fn outer_object(&self) -> Option<&RcUnrealObject> {
+        self.outer_object.as_ref()
+    }
+
+    pub fn set_concrete_obj(&mut self, outer: WeakUnrealObject) {
+        self.concrete_obj = Some(outer);
+    }
+
+    pub fn concrete_obj(&self) -> RcUnrealObject {
+        self.concrete_obj
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .expect("concrete object pointer was never set or died")
+    }
 }
 
 impl DeserializeUnrealObject for Object {
@@ -131,7 +154,7 @@ impl DeserializeUnrealObject for Object {
         let _enter = span.enter();
 
         debug!(
-            "Deserializing object with kind {:?}",
+            "Deserializing UObject for object with kind {:?}",
             self.concrete_object_kind
         );
 

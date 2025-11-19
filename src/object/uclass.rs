@@ -31,7 +31,7 @@ impl DeserializeUnrealObject for Class {
         E: byteorder::ByteOrder,
         R: LinRead,
     {
-        let span = span!(Level::DEBUG, "deserialize_field");
+        let span = span!(Level::DEBUG, "deserialize_class");
         let _enter = span.enter();
 
         self.parent_object

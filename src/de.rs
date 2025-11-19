@@ -562,6 +562,7 @@ where
             sources: VecDeque::from_iter(sources.into_iter().map(LinReader::new)),
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
+                objects_full_loading: Default::default(),
             },
             file_table: Vec::new(),
             metadata,
@@ -585,6 +586,7 @@ where
             ),
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
+                objects_full_loading: Default::default(),
             },
             file_table: Vec::new(),
             metadata,

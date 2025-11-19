@@ -13,7 +13,7 @@ mod utext_buffer;
 
 use std::cell::{Cell, RefCell};
 use std::io;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use tracing::Level;
 use tracing::span;
 use tracing::trace;
@@ -41,6 +41,7 @@ use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
 pub type RcUnrealObject = Rc<RefCell<dyn UnrealObject>>;
+pub type WeakUnrealObject = Weak<RefCell<dyn UnrealObject>>;
 
 pub trait UnrealObject: std::fmt::Debug {
     fn kind(&self) -> UObjectKind;

@@ -199,27 +199,25 @@ impl DeserializeUnrealObject for Struct {
             );
             let _enter = span.enter();
 
-            let (child_linker, child_export_index) = {
-                let child = child.borrow();
-                (
-                    child.base_object().linker(),
-                    child.base_object().export_index(),
-                )
+            runtime.full_load_object::<E, _>(&child, reader)?;
+
+            // Do not do any more work if the field is nto related to this struct
+            let child_inner = child.borrow();
+            let Some(field_outer) = child_inner.base_object().outer_object() else {
+                break;
             };
 
-            runtime.load_object_by_export_index::<E, _>(
-                child_export_index,
-                &child_linker,
-                crate::runtime::LoadKind::Full,
-                reader,
-            )?;
+            {
+                let this_concrete = self.base_object().concrete_obj();
+                if !Rc::ptr_eq(field_outer, &this_concrete) {
+                    break;
+                }
+            }
 
-            let child_inner = child.borrow();
-
+            // Link the struct
             if child_inner.is_a(UObjectKind::Property) {
-                drop(child_inner);
+                let child_linker = child.borrow().base_object().linker();
 
-                // Properties are supposed to be linked here. TBD if this is required for us.
                 link_object::<E, _>(runtime, Rc::clone(&child), &child_linker, reader)?;
             }
 

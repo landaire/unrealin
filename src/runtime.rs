@@ -1,8 +1,8 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, SeekFrom},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use byteorder::ByteOrder;
@@ -18,8 +18,18 @@ use crate::{
 
 type RcLinker = Rc<RefCell<Linker>>;
 
+#[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RcUnrealObjPointer(usize);
+impl RcUnrealObjPointer {
+    pub fn from_unreal_object(obj: &RcUnrealObject) -> Self {
+        RcUnrealObjPointer(obj.as_ptr().expose_provenance())
+    }
+}
+
 pub struct UnrealRuntime {
     pub linkers: HashMap<String, RcLinker>,
+    pub objects_full_loading: HashSet<RcUnrealObjPointer>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -83,6 +93,32 @@ impl UnrealRuntime {
         });
 
         key.and_then(|k| self.linkers.get(&k).map(Rc::clone))
+    }
+
+    pub fn full_load_object<E, R>(&mut self, obj: &RcUnrealObject, reader: &mut R) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        if self
+            .objects_full_loading
+            .contains(&RcUnrealObjPointer::from_unreal_object(obj))
+        {
+            return Ok(());
+        }
+
+        let (linker, export_index) = {
+            // This is unfortunately re-entrant.
+            let obj_inner = obj.borrow();
+
+            (
+                obj_inner.base_object().linker(),
+                obj_inner.base_object().export_index(),
+            )
+        };
+
+        self.load_object_by_export_index::<E, _>(export_index, &linker, LoadKind::Full, reader)
+            .map(|_| ())
     }
 
     /// Loads an object by its raw encoded index. If the index refers to an import, the import will be returned.
@@ -165,7 +201,11 @@ impl UnrealRuntime {
         );
         let _enter = span.enter();
 
-        trace!("Loading with load kind: {:?}", load_kind);
+        trace!(
+            "Loading with load kind: {:?}, linker= {:#X}",
+            load_kind,
+            linker.as_ptr().expose_provenance()
+        );
 
         // Check if this object has already been loaded
         let obj = if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
@@ -174,6 +214,11 @@ impl UnrealRuntime {
             let obj = Rc::clone(loaded_obj);
             drop(linker_inner);
 
+            let ptr = RcUnrealObjPointer::from_unreal_object(&obj);
+            if self.objects_full_loading.contains(&ptr) {
+                return Ok(obj);
+            }
+
             obj
         } else {
             // Object has not yet been loaded
@@ -181,7 +226,7 @@ impl UnrealRuntime {
             trace!("({class_name}) {export_full_name} {export:#X?}");
 
             info!(
-                "Loading object: {}, class = {}",
+                "Constructing new object: {}, class = {}",
                 export_full_name, class_name
             );
             let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
@@ -198,6 +243,9 @@ impl UnrealRuntime {
             object
                 .base_object_mut()
                 .set_name(export.object_name(&linker_inner).to_owned());
+            object
+                .base_object_mut()
+                .set_concrete_obj(Rc::downgrade(&constructed_object));
 
             let parent_index = export.super_index;
             let is_struct = object.is_a(UObjectKind::Struct);
@@ -221,7 +269,7 @@ impl UnrealRuntime {
                 )?;
             }
 
-            self.load_object_by_raw_index::<E, _>(
+            let parent = self.load_object_by_raw_index::<E, _>(
                 export.package_index,
                 linker,
                 LoadKind::Create,
@@ -232,6 +280,13 @@ impl UnrealRuntime {
             if !contains_key && object_parsed_by_parent.is_some() {
                 panic!("DOES CONTAIN OBJECT");
                 // return Ok(obj);
+            }
+
+            if let Some(parent) = parent {
+                constructed_object
+                    .borrow_mut()
+                    .base_object_mut()
+                    .set_outer_object(parent);
             }
 
             let return_obj = if let Some(obj) = object_parsed_by_parent {
@@ -271,9 +326,12 @@ impl UnrealRuntime {
                 debug!("Returning -- object was loaded with LoadKind::Create");
             }
             LoadKind::Full | LoadKind::Load => {
+                let pointer_value = RcUnrealObjPointer::from_unreal_object(&obj);
+                self.objects_full_loading.insert(pointer_value);
+
                 let obj_inner = obj.borrow();
                 let obj_base = obj_inner.base_object();
-                if obj_base.is_fully_loaded() {
+                if !obj_base.needs_load() {
                     trace!("Object is fully loaded");
 
                     drop(obj_inner);
@@ -309,6 +367,8 @@ impl UnrealRuntime {
                 reader.seek(SeekFrom::Start(saved_pos))?;
 
                 obj.borrow_mut().base_object_mut().loaded();
+
+                self.objects_full_loading.remove(&pointer_value);
             }
         }
 

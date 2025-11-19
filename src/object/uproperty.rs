@@ -384,29 +384,6 @@ impl Link for ClassProperty {
         );
         let _enter = span.enter();
 
-        let Some(obj) = self.meta_class.as_ref() else {
-            return Ok(());
-        };
-
-        debug!("Linking ClassProperty");
-
-        let (linker, export_index) = {
-            // This is re-entrant.
-            let obj_inner = obj.borrow();
-
-            (
-                obj_inner.base_object().linker(),
-                obj_inner.base_object().export_index(),
-            )
-        };
-
-        runtime.load_object_by_export_index::<E, _>(
-            export_index,
-            &linker,
-            runtime::LoadKind::Full,
-            reader,
-        )?;
-
         Ok(())
     }
 }
@@ -429,7 +406,7 @@ impl DeserializeUnrealObject for StructProperty {
         E: byteorder::ByteOrder,
         R: LinRead,
     {
-        let span = span!(Level::DEBUG, "deserialize_class_property");
+        let span = span!(Level::DEBUG, "deserialize_struct_property");
         let _enter = span.enter();
 
         self.parent_object
@@ -452,24 +429,14 @@ impl Link for StructProperty {
         E: ByteOrder,
         R: LinRead,
     {
+        let span = span!(Level::DEBUG, "link_struct_property");
+        let _enter = span.enter();
+
         let Some(obj) = self.struct_obj.as_ref() else {
             return Ok(());
         };
 
-        let (linker, export_index) = {
-            let obj_inner = obj.borrow();
-            (
-                obj_inner.base_object().linker(),
-                obj_inner.base_object().export_index(),
-            )
-        };
-
-        runtime.load_object_by_export_index::<E, _>(
-            export_index,
-            &linker,
-            runtime::LoadKind::Full,
-            reader,
-        )?;
+        runtime.full_load_object::<E, _>(obj, reader)?;
 
         Ok(())
     }

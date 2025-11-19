@@ -27,7 +27,7 @@ impl DeserializeUnrealObject for FName {
         E: byteorder::ByteOrder,
         R: crate::reader::LinRead,
     {
-        FName::from_raw(reader.read_packed_int()?);
+        *self = FName::from_raw(reader.read_packed_int()?);
 
         Ok(())
     }
