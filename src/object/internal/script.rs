@@ -4,7 +4,7 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span, trace};
 
 use crate::{
-    de::Linker,
+    de::{Linker, RcLinker},
     object::RcUnrealObject,
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
@@ -12,7 +12,7 @@ use crate::{
 
 pub fn deserialize_expr<E, R>(
     runtime: &mut UnrealRuntime,
-    linker: &Rc<RefCell<Linker>>,
+    linker: &RcLinker,
     reader: &mut R,
     bytes_read: &mut usize,
     script_size: usize,

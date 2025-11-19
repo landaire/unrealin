@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    de::{Linker, ObjectExport},
+    de::{Linker, ObjectExport, RcLinker},
     object::{
         DeserializeUnrealObject, UnrealObject, builtins::Link, ustate::State, ustruct::Struct,
     },
@@ -24,7 +24,7 @@ impl DeserializeUnrealObject for Class {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> io::Result<()>
     where

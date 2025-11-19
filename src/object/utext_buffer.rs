@@ -4,7 +4,7 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span, trace};
 
 use crate::{
-    de::Linker,
+    de::{Linker, RcLinker},
     object::{DeserializeUnrealObject, builtins::Link, uobject::Object},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
@@ -23,7 +23,7 @@ impl DeserializeUnrealObject for TextBuffer {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> io::Result<()>
     where

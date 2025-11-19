@@ -10,8 +10,8 @@ use tracing::{Level, span, trace};
 
 use crate::{
     common::IoOp,
-    de::{ExportIndex, ImportIndex, Linker},
-    object::UnrealObject,
+    de::{ExportIndex, ImportIndex, Linker, RcLinker},
+    object::{RcUnrealObject, UnrealObject},
     runtime::{LoadKind, UnrealRuntime},
 };
 
@@ -19,8 +19,8 @@ pub trait UnrealReadExt: LinRead + Sized {
     fn read_object<E>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
-    ) -> io::Result<Option<Rc<RefCell<dyn UnrealObject>>>>
+        linker: &RcLinker,
+    ) -> io::Result<Option<RcUnrealObject>>
     where
         E: ByteOrder,
     {

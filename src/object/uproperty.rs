@@ -49,7 +49,7 @@ impl DeserializeUnrealObject for Property {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -92,7 +92,7 @@ impl DeserializeUnrealObject for FloatProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -133,7 +133,7 @@ impl DeserializeUnrealObject for StrProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -174,7 +174,7 @@ impl DeserializeUnrealObject for BoolProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -215,7 +215,7 @@ impl DeserializeUnrealObject for IntProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -256,7 +256,7 @@ impl DeserializeUnrealObject for NameProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -299,7 +299,7 @@ impl DeserializeUnrealObject for ObjectProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -344,7 +344,7 @@ impl DeserializeUnrealObject for ClassProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
@@ -422,7 +422,7 @@ impl DeserializeUnrealObject for StructProperty {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where

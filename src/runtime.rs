@@ -97,7 +97,7 @@ impl UnrealRuntime {
         linker: &Rc<RefCell<Linker>>,
         load_kind: LoadKind,
         reader: &mut R,
-    ) -> io::Result<Option<Rc<RefCell<dyn UnrealObject>>>>
+    ) -> io::Result<Option<RcUnrealObject>>
     where
         R: LinRead,
         E: ByteOrder,
@@ -136,7 +136,7 @@ impl UnrealRuntime {
         linker: &Rc<RefCell<Linker>>,
         load_kind: LoadKind,
         reader: &mut R,
-    ) -> io::Result<Rc<RefCell<dyn UnrealObject>>>
+    ) -> io::Result<RcUnrealObject>
     where
         R: LinRead,
         E: ByteOrder,
@@ -323,7 +323,7 @@ impl UnrealRuntime {
         full_name: &str,
         load_kind: LoadKind,
         reader: &mut R,
-    ) -> io::Result<Rc<RefCell<dyn UnrealObject>>>
+    ) -> io::Result<RcUnrealObject>
     where
         R: LinRead,
         E: ByteOrder,

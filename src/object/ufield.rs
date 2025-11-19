@@ -8,7 +8,7 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span, trace};
 
 use crate::{
-    de::Linker,
+    de::{Linker, RcLinker},
     object::{
         DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Link, uobject::Object,
     },
@@ -38,7 +38,7 @@ impl DeserializeUnrealObject for Field {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where

@@ -4,6 +4,7 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, span, trace};
 
 use crate::{
+    de::RcLinker,
     object::{DeserializeUnrealObject, builtins::Link, ustruct::Struct},
     reader::LinRead,
     runtime::UnrealRuntime,
@@ -23,7 +24,7 @@ impl DeserializeUnrealObject for State {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<crate::de::Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where

@@ -11,8 +11,8 @@ mod ustate;
 mod ustruct;
 mod utext_buffer;
 
-use std::cell::RefCell;
-use std::io::{self, Read, Seek};
+use std::cell::{Cell, RefCell};
+use std::io;
 use std::rc::Rc;
 use tracing::Level;
 use tracing::span;
@@ -59,7 +59,7 @@ pub trait DeserializeUnrealObject {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> io::Result<()>
     where
@@ -85,7 +85,7 @@ macro_rules! register_builtins {
                 ].as_slice()
             }
 
-            pub fn construct(&self, linker: WeakLinker, export_index: ExportIndex) -> Rc<RefCell<dyn UnrealObject>>  {
+            pub fn construct(&self, linker: WeakLinker, export_index: ExportIndex) -> RcUnrealObject  {
                 match self {
                     $(
                         Self::$name => {

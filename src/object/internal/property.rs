@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use tracing::{Level, debug, span, trace};
 
-use crate::de::Linker;
+use crate::de::{Linker, RcLinker};
 use crate::object::DeserializeUnrealObject;
 use crate::object::internal::fname::FName;
 use crate::reader::{LinRead, UnrealReadExt};
@@ -18,7 +18,7 @@ impl DeserializeUnrealObject for PropertyTag {
     fn deserialize<E, R>(
         &mut self,
         runtime: &mut UnrealRuntime,
-        linker: &Rc<RefCell<Linker>>,
+        linker: &RcLinker,
         reader: &mut R,
     ) -> std::io::Result<()>
     where
