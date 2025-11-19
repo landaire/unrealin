@@ -84,7 +84,7 @@ impl Object {
     }
 
     pub fn post_loaded(&mut self) {
-        self.needs_load = false;
+        self.needs_post_load = false;
     }
 
     pub fn is_fully_loaded(&self) -> bool {

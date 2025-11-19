@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span};
 
-use crate::object::{DeserializeUnrealObject, ustruct::Struct};
+use crate::object::{DeserializeUnrealObject, builtins::Link, ustruct::Struct};
 
 #[derive(Default, Debug)]
 pub struct Function {

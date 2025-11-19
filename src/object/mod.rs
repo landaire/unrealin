@@ -14,6 +14,8 @@ mod utext_buffer;
 use std::cell::RefCell;
 use std::io::{self, Read, Seek};
 use std::rc::Rc;
+use tracing::Level;
+use tracing::span;
 use tracing::trace;
 
 const NAME_NONE: usize = 0;
@@ -149,6 +151,11 @@ macro_rules! register_builtins {
             R: LinRead,
             E: ByteOrder,
         {
+            let span = span!(Level::DEBUG,
+                "deserialize_object",
+                obj_ptr = format!("{:#x}", object.as_ptr().expose_provenance())
+            );
+            let _enter = span.enter();
             let object_kind = object.borrow().kind();
 
             match object_kind {
@@ -182,10 +189,13 @@ register_builtins!(
     StrProperty,
     BoolProperty,
     ObjectProperty,
-    ClassProperty
+    ClassProperty,
+    IntProperty,
+    NameProperty,
+    StructProperty
 );
 
-macro_rules! make_inherited_object {
+macro_rules! make_inherited_objects {
     ($($name:ident),*) => {
         $(
             impl UnrealObject for $name {
@@ -269,7 +279,7 @@ macro_rules! make_inherited_object {
     };
 }
 
-make_inherited_object!(
+make_inherited_objects!(
     Struct,
     State,
     Class,
@@ -281,7 +291,64 @@ make_inherited_object!(
     StrProperty,
     BoolProperty,
     ObjectProperty,
-    ClassProperty
+    ClassProperty,
+    IntProperty,
+    NameProperty,
+    StructProperty
+);
+
+macro_rules! register_linkable {
+    ($($name:ident),*) => {
+        pub(crate) fn link_object<E, R>(
+            runtime: &mut UnrealRuntime,
+            object: RcUnrealObject,
+            linker: &RcLinker,
+            reader: &mut R,
+        ) -> io::Result<()>
+        where
+            R: LinRead,
+            E: ByteOrder,
+        {
+            let span = span!(Level::DEBUG, "link_object",
+                obj_ptr = format!("{:#x}", object.as_ptr().expose_provenance())
+            );
+            let _enter = span.enter();
+
+            let object = object.borrow();
+            let object_kind = object.kind();
+
+            match object_kind {
+                $(
+                    UObjectKind::$name => {
+                        let concrete_ty = object
+                            .as_any()
+                            .downcast_ref::<$name>()
+                            .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($name)));
+                        concrete_ty.link::<E, R>(runtime, linker, reader)
+                    }
+                )*
+                _ => {
+                    if object_kind.as_str().ends_with("Property") {
+                        panic!("{object_kind:?} should probably support linking?");
+                    }
+
+                     // Types that don't implement Link just return Ok
+                    Ok(())
+                },
+            }
+        }
+    };
+}
+
+register_linkable!(
+    FloatProperty,
+    StrProperty,
+    BoolProperty,
+    IntProperty,
+    NameProperty,
+    ObjectProperty,
+    ClassProperty,
+    StructProperty
 );
 
 bitflags! {

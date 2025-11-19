@@ -6,7 +6,9 @@ use std::{
 
 use crate::{
     de::{Linker, ObjectExport},
-    object::{DeserializeUnrealObject, UnrealObject, ustate::State, ustruct::Struct},
+    object::{
+        DeserializeUnrealObject, UnrealObject, builtins::Link, ustate::State, ustruct::Struct,
+    },
     reader::LinRead,
     runtime::UnrealRuntime,
 };

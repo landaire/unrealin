@@ -9,7 +9,9 @@ use tracing::{Level, debug, span, trace};
 
 use crate::{
     de::Linker,
-    object::{DeserializeUnrealObject, RcUnrealObject, UObjectKind, uobject::Object},
+    object::{
+        DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Link, uobject::Object,
+    },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };

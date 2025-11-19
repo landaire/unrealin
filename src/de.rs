@@ -613,6 +613,7 @@ where
                 crate::runtime::LoadKind::Load,
                 reader,
             )?;
+            panic!("first object loaded!");
         }
 
         Ok(())

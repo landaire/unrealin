@@ -6,8 +6,13 @@ use tracing::{Level, debug, span};
 use crate::{
     de::Linker,
     object::{
-        DeserializeUnrealObject, RcUnrealObject, UObjectKind, UnrealObject, builtins::Property,
-        internal::script, ufield::Field, uobject::Object, uproperty::PropertyFlags,
+        DeserializeUnrealObject, RcUnrealObject, UObjectKind, UnrealObject,
+        builtins::{Link, Property},
+        internal::script,
+        link_object,
+        ufield::Field,
+        uobject::Object,
+        uproperty::PropertyFlags,
     },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
@@ -187,37 +192,38 @@ impl DeserializeUnrealObject for Struct {
 
         let mut child_ptr = self.children.clone();
         while let Some(child) = child_ptr {
-            let span = span!(Level::DEBUG, "ustruct_property");
+            let span = span!(
+                Level::DEBUG,
+                "ustruct_property",
+                child_ptr = format!("{:#x}", child.as_ptr().expose_provenance())
+            );
             let _enter = span.enter();
 
-            let (linker, export_index) = {
-                let super_field = child.borrow();
+            let (child_linker, child_export_index) = {
+                let child = child.borrow();
                 (
-                    super_field.base_object().linker(),
-                    super_field.base_object().export_index(),
+                    child.base_object().linker(),
+                    child.base_object().export_index(),
                 )
             };
 
             runtime.load_object_by_export_index::<E, _>(
-                export_index,
-                &linker,
-                crate::runtime::LoadKind::Load,
+                child_export_index,
+                &child_linker,
+                crate::runtime::LoadKind::Full,
                 reader,
             )?;
 
             let child_inner = child.borrow();
 
             if child_inner.is_a(UObjectKind::Property) {
-                let parent_property = child_inner
-                    .parent_of_kind(UObjectKind::Property)
-                    .expect("failed to find child's parent Property");
-                let child_as_property = parent_property
-                    .as_any()
-                    .downcast_ref::<Property>()
-                    .expect("failed to cast parent property to Property");
+                drop(child_inner);
 
                 // Properties are supposed to be linked here. TBD if this is required for us.
+                link_object::<E, _>(runtime, Rc::clone(&child), &child_linker, reader)?;
             }
+
+            let child_inner = child.borrow();
 
             let parent_field = child_inner
                 .parent_of_kind(UObjectKind::Field)

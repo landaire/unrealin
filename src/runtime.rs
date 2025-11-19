@@ -141,32 +141,44 @@ impl UnrealRuntime {
         R: LinRead,
         E: ByteOrder,
     {
-        let span = span!(Level::INFO, "load_object_by_export_index");
-        let _enter = span.enter();
-
-        trace!("Loading with load kind: {:?}", load_kind);
+        debug!("Linker count: {}", self.linkers.len());
+        for (name, linker) in self.linkers.iter() {
+            debug!(
+                "Linker {name} object count: {}",
+                linker.borrow().objects.len()
+            );
+        }
 
         let linker_inner = linker.borrow();
 
         let export = linker_inner
             .find_export_by_index(export_index)
-            .expect("could not find export");
-        let export_offset = export.serial_offset();
-        let export_size = export.serial_size();
+            .expect("could not find export")
+            .clone();
         let export_full_name = export.full_name(&linker_inner);
         let class_name = export.class_name(&linker_inner).to_string();
 
+        let span = span!(
+            Level::INFO,
+            "load_object_by_export_index",
+            object_name = &export_full_name
+        );
+        let _enter = span.enter();
+
+        trace!("Loading with load kind: {:?}", load_kind);
+
         // Check if this object has already been loaded
         let obj = if let Some(loaded_obj) = linker_inner.objects.get(&export_index) {
+            trace!("Using pre-constructed {export_full_name} object");
+
             let obj = Rc::clone(loaded_obj);
             drop(linker_inner);
 
-            // return Ok(obj);
             obj
         } else {
             // Object has not yet been loaded
 
-            trace!("{:#X?}", export);
+            trace!("({class_name}) {export_full_name} {export:#X?}");
 
             info!(
                 "Loading object: {}, class = {}",
@@ -194,8 +206,11 @@ impl UnrealRuntime {
             drop(object);
             drop(linker_inner);
 
+            let contains_key = linker.borrow().objects.contains_key(&export_index);
+
             // If this is a struct, load the dependencies
             if is_struct && parent_index != 0 {
+                trace!("Loading parent...");
                 // Load dependent types
 
                 self.load_object_by_raw_index::<E, _>(
@@ -206,18 +221,45 @@ impl UnrealRuntime {
                 )?;
             }
 
-            linker
-                .borrow_mut()
-                .objects
-                .insert(export_index, Rc::clone(&constructed_object));
+            self.load_object_by_raw_index::<E, _>(
+                export.package_index,
+                linker,
+                LoadKind::Create,
+                reader,
+            )?;
 
-            // TODO: for experimentation
-            constructed_object
-                .borrow_mut()
-                .base_object_mut()
-                .post_loaded();
+            let object_parsed_by_parent = linker.borrow().objects.get(&export_index).map(Rc::clone);
+            if !contains_key && object_parsed_by_parent.is_some() {
+                panic!("DOES CONTAIN OBJECT");
+                // return Ok(obj);
+            }
 
-            constructed_object
+            let return_obj = if let Some(obj) = object_parsed_by_parent {
+                obj
+            } else {
+                linker
+                    .borrow_mut()
+                    .objects
+                    .insert(export_index, Rc::clone(&constructed_object));
+
+                constructed_object
+            };
+
+            // Ensure that the super field is loaded
+            {
+                let is_class = return_obj.borrow().is_a(UObjectKind::Class);
+                if is_class && export.super_index != 0 {
+                    trace!("Loading super item");
+                    self.load_object_by_raw_index::<E, _>(
+                        export.super_index,
+                        linker,
+                        LoadKind::Create,
+                        reader,
+                    )?;
+                }
+            }
+
+            return_obj
         };
 
         match load_kind {
@@ -226,35 +268,52 @@ impl UnrealRuntime {
             // }
             LoadKind::Create => {
                 // Nothing needs to happen here
+                debug!("Returning -- object was loaded with LoadKind::Create");
             }
             LoadKind::Full | LoadKind::Load => {
-                if obj.borrow().base_object().is_fully_loaded() {
+                let obj_inner = obj.borrow();
+                let obj_base = obj_inner.base_object();
+                if obj_base.is_fully_loaded() {
                     trace!("Object is fully loaded");
+
+                    drop(obj_inner);
 
                     return Ok(obj);
                 }
-
-                let saved_pos = reader.stream_position()?;
-                reader.seek(SeekFrom::Start(export_offset))?;
+                drop(obj_inner);
 
                 debug!(
                     "Deserializing {} (class = {})",
                     export_full_name, class_name
                 );
+
+                debug!("Export is {export:X?}");
+
+                trace!("{:X?}", obj);
+                trace!("Seeking to export position");
+                let saved_pos = reader.stream_position()?;
+                reader.seek(SeekFrom::Start(export.serial_offset()))?;
+
                 deserialize_object::<E, _>(self, Rc::clone(&obj), linker, reader)?;
 
                 let current_pos = reader.stream_position()?;
-                let read_size = (current_pos - export_offset) as usize;
+                let read_size = (current_pos - export.serial_offset()) as usize;
                 assert_eq!(
-                    read_size, export_size,
-                    "Data read for export does not match expected. Read {read_size:#X} bytes, expected {export_size:#X}",
+                    read_size,
+                    export.serial_size(),
+                    "Data read for export does not match expected. Read {read_size:#X} bytes, expected {:#X}",
+                    export.serial_size()
                 );
 
+                trace!("Seeking back to saved position");
                 reader.seek(SeekFrom::Start(saved_pos))?;
 
                 obj.borrow_mut().base_object_mut().loaded();
             }
         }
+
+        // TODO: for experimentation
+        // obj.borrow_mut().base_object_mut().post_loaded();
 
         Ok(obj)
     }

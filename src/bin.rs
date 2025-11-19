@@ -32,7 +32,7 @@ struct Args {
 fn main() -> Result<()> {
     let mut args = Args::parse();
 
-    let subscriber = fmt().with_max_level(Level::TRACE).finish();
+    let subscriber = fmt().pretty().with_max_level(Level::TRACE).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let mut common_file = std::fs::File::open(&args.common_lin)

@@ -1,14 +1,30 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, io, rc::Rc};
 
 use crate::{
-    object::{DeserializeUnrealObject, RcUnrealObject, internal::fname::FName, ufield::Field},
+    de::RcLinker,
+    object::{
+        DeserializeUnrealObject, RcUnrealObject, UnrealObject, internal::fname::FName,
+        ufield::Field, ustruct::Struct,
+    },
     reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
+    runtime::{self, UnrealRuntime},
 };
 use bitflags::bitflags;
-use byteorder::ReadBytesExt;
+use byteorder::{ByteOrder, ReadBytesExt};
 use serde::Serialize;
-use tracing::{Level, span, trace};
+use tracing::{Level, debug, span, trace};
+
+pub trait Link: UnrealObject {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead;
+}
 
 #[derive(Default, Debug)]
 pub struct Property {
@@ -93,6 +109,21 @@ impl DeserializeUnrealObject for FloatProperty {
     }
 }
 
+impl Link for FloatProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct StrProperty {
     pub parent_object: Property,
@@ -119,6 +150,21 @@ impl DeserializeUnrealObject for StrProperty {
     }
 }
 
+impl Link for StrProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct BoolProperty {
     pub parent_object: Property,
@@ -141,6 +187,103 @@ impl DeserializeUnrealObject for BoolProperty {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
+        Ok(())
+    }
+}
+
+impl Link for BoolProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct IntProperty {
+    pub parent_object: Property,
+}
+
+impl DeserializeUnrealObject for IntProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_int_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        Ok(())
+    }
+}
+
+impl Link for IntProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct NameProperty {
+    pub parent_object: Property,
+}
+
+impl DeserializeUnrealObject for NameProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_int_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        Ok(())
+    }
+}
+
+impl Link for NameProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
         Ok(())
     }
 }
@@ -175,6 +318,21 @@ impl DeserializeUnrealObject for ObjectProperty {
     }
 }
 
+impl Link for ObjectProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct ClassProperty {
     pub parent_object: ObjectProperty,
@@ -200,6 +358,118 @@ impl DeserializeUnrealObject for ClassProperty {
             .deserialize::<E, _>(runtime, linker, reader)?;
 
         self.meta_class = reader.read_object::<E>(runtime, linker)?;
+
+        Ok(())
+    }
+}
+
+impl Link for ClassProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(
+            Level::DEBUG,
+            "link_class_property",
+            meta_class = self
+                .meta_class
+                .as_ref()
+                .map(|c| format!("{:#x}", c.as_ptr().expose_provenance()))
+        );
+        let _enter = span.enter();
+
+        let Some(obj) = self.meta_class.as_ref() else {
+            return Ok(());
+        };
+
+        debug!("Linking ClassProperty");
+
+        let (linker, export_index) = {
+            // This is re-entrant.
+            let obj_inner = obj.borrow();
+
+            (
+                obj_inner.base_object().linker(),
+                obj_inner.base_object().export_index(),
+            )
+        };
+
+        runtime.load_object_by_export_index::<E, _>(
+            export_index,
+            &linker,
+            runtime::LoadKind::Full,
+            reader,
+        )?;
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct StructProperty {
+    pub parent_object: Property,
+
+    pub struct_obj: Option<RcUnrealObject>,
+}
+
+impl DeserializeUnrealObject for StructProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<crate::de::Linker>>,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_class_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        self.struct_obj = reader.read_object::<E>(runtime, linker)?;
+
+        Ok(())
+    }
+}
+
+impl Link for StructProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        let Some(obj) = self.struct_obj.as_ref() else {
+            return Ok(());
+        };
+
+        let (linker, export_index) = {
+            let obj_inner = obj.borrow();
+            (
+                obj_inner.base_object().linker(),
+                obj_inner.base_object().export_index(),
+            )
+        };
+
+        runtime.load_object_by_export_index::<E, _>(
+            export_index,
+            &linker,
+            runtime::LoadKind::Full,
+            reader,
+        )?;
 
         Ok(())
     }

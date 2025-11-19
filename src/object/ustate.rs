@@ -4,7 +4,7 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, span, trace};
 
 use crate::{
-    object::{DeserializeUnrealObject, ustruct::Struct},
+    object::{DeserializeUnrealObject, builtins::Link, ustruct::Struct},
     reader::LinRead,
     runtime::UnrealRuntime,
 };
