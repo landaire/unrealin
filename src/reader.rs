@@ -228,10 +228,22 @@ impl<R> Seek for CheckedLinReader<R> {
                                 );
                             }
                         }
-                        other => panic!(
-                            "doing a seek from {:#X} to {:#X}. Expected op: {other:#X?}",
-                            self.pos, pos
-                        ),
+                        other => {
+                            let bytes_until_next_seek = ops
+                                .iter()
+                                .take_while(|op| !matches!(op, IoOp::Seek { .. }))
+                                .fold(0, |accum, op| {
+                                    if let IoOp::Read { len } = op {
+                                        accum + *len
+                                    } else {
+                                        unreachable!("unexpected op");
+                                    }
+                                });
+                            panic!(
+                                "doing a seek from {:#X} to {:#X}. Bytes until next seek: {bytes_until_next_seek:#X}. Expected op: {other:#X?}",
+                                self.pos, pos
+                            )
+                        }
                     }
                 }
 

@@ -159,7 +159,6 @@ impl UnrealRuntime {
             drop(linker_inner);
 
             self.load_object_by_full_name::<E, _>(import_full_name.as_str(), load_kind, reader)
-                .map(Some)
         } else {
             Ok(None)
         }
@@ -197,7 +196,8 @@ impl UnrealRuntime {
         let span = span!(
             Level::INFO,
             "load_object_by_export_index",
-            object_name = &export_full_name
+            object_name = &export_full_name,
+            load_kind = format!("{:?}", load_kind),
         );
         let _enter = span.enter();
 
@@ -247,7 +247,7 @@ impl UnrealRuntime {
                 .base_object_mut()
                 .set_concrete_obj(Rc::downgrade(&constructed_object));
 
-            let parent_index = export.super_index;
+            let class_index = export.class_index;
             let is_struct = object.is_a(UObjectKind::Struct);
 
             // Drop the mutable borrow before potential recursive calls
@@ -257,16 +257,11 @@ impl UnrealRuntime {
             let contains_key = linker.borrow().objects.contains_key(&export_index);
 
             // If this is a struct, load the dependencies
-            if is_struct && parent_index != 0 {
-                trace!("Loading parent...");
+            if class_index != 0 {
+                trace!("Loading class...");
                 // Load dependent types
 
-                self.load_object_by_raw_index::<E, _>(
-                    parent_index,
-                    linker,
-                    LoadKind::Full,
-                    reader,
-                )?;
+                self.load_object_by_raw_index::<E, _>(class_index, linker, LoadKind::Full, reader)?;
             }
 
             let parent = self.load_object_by_raw_index::<E, _>(
@@ -302,13 +297,12 @@ impl UnrealRuntime {
 
             // Ensure that the super field is loaded
             {
-                let is_class = return_obj.borrow().is_a(UObjectKind::Class);
-                if is_class && export.super_index != 0 {
+                if is_struct && export.super_index != 0 {
                     trace!("Loading super item");
                     self.load_object_by_raw_index::<E, _>(
                         export.super_index,
                         linker,
-                        LoadKind::Create,
+                        load_kind,
                         reader,
                     )?;
                 }
@@ -328,6 +322,18 @@ impl UnrealRuntime {
             LoadKind::Full | LoadKind::Load => {
                 let pointer_value = RcUnrealObjPointer::from_unreal_object(&obj);
                 self.objects_full_loading.insert(pointer_value);
+
+                // Ensure super class is loaded.
+                let is_class = obj.borrow().is_a(UObjectKind::Class);
+                if is_class && export.super_index != 0 {
+                    trace!("Loading super item");
+                    self.load_object_by_raw_index::<E, _>(
+                        export.super_index,
+                        linker,
+                        load_kind,
+                        reader,
+                    )?;
+                }
 
                 let obj_inner = obj.borrow();
                 let obj_base = obj_inner.base_object();
@@ -383,7 +389,7 @@ impl UnrealRuntime {
         full_name: &str,
         load_kind: LoadKind,
         reader: &mut R,
-    ) -> io::Result<RcUnrealObject>
+    ) -> io::Result<Option<RcUnrealObject>>
     where
         R: LinRead,
         E: ByteOrder,
@@ -392,7 +398,23 @@ impl UnrealRuntime {
         let module = parts.next().expect("object name does not have a module");
         let object_name = parts.next().expect("object is not a full name");
 
-        println!("Looking up {full_name}");
+        let span = span!(
+            Level::DEBUG,
+            "load_object_by_full_name",
+            name = full_name,
+            load_kind = format!("{:?}", load_kind)
+        );
+        let _enter = span.enter();
+
+        debug!("Looking up {full_name}");
+
+        if module == "Core"
+            && let Ok(kind) = UObjectKind::try_from(object_name)
+        {
+            debug!("Object is a builtin of kind {kind:?}");
+
+            return Ok(None);
+        }
 
         let linker = if module == "None" {
             self.linker_by_export_name_mut(object_name)
@@ -413,5 +435,6 @@ impl UnrealRuntime {
         drop(linker_inner);
 
         self.load_object_by_export_index::<E, _>(export_index, &linker, load_kind, reader)
+            .map(Some)
     }
 }
