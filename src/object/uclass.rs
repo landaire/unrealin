@@ -38,7 +38,7 @@ impl DeserializeUnrealObject for Class {
             .deserialize::<E, _>(runtime, linker, reader)?;
 
         reader.read_u32::<E>()?;
-        todo!("class deserialization")
+        todo!("class deserialization");
     }
 }
 

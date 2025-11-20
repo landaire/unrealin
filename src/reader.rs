@@ -7,7 +7,7 @@ use std::{
 };
 
 use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, span, trace};
+use tracing::{Level, debug, span, trace};
 
 use crate::{
     common::IoOp,
@@ -96,11 +96,16 @@ pub trait UnrealReadExt: LinRead + Sized {
     }
 
     fn read_packed_int_array(&mut self) -> io::Result<Vec<i32>> {
+        let span = span!(Level::TRACE, "read_packed_int_array");
+        let _enter = span.enter();
+
         let array_len = self.read_packed_int()?;
         assert!(array_len >= 0, "Packed array length is negative");
 
+        debug!("Array len: {array_len:#X}");
+
         let mut data = Vec::with_capacity(array_len as usize);
-        for _ in 0..data.len() {
+        for _ in 0..array_len {
             data.push(self.read_packed_int()?);
         }
 
@@ -109,14 +114,14 @@ pub trait UnrealReadExt: LinRead + Sized {
 
     fn read_string(&mut self) -> io::Result<String> {
         let string_len = self.read_packed_int()?;
-        
+
         if string_len == 0 {
             return Ok(String::new());
         }
-        
+
         let is_unicode = string_len < 0;
         let actual_len = string_len.abs() as usize;
-        
+
         if is_unicode {
             // Unicode strings - read as wide chars (not implemented yet)
             panic!("Unicode strings not yet implemented");
@@ -126,12 +131,12 @@ pub trait UnrealReadExt: LinRead + Sized {
             for _ in 0..actual_len {
                 string_data.push(self.read_u8()?);
             }
-            
+
             // Remove the null terminator if present
             if !string_data.is_empty() && string_data[string_data.len() - 1] == 0 {
                 string_data.pop();
             }
-            
+
             Ok(String::from_utf8(string_data).expect("string is not valid UTF-8"))
         }
     }

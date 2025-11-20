@@ -45,7 +45,8 @@ impl DeserializeUnrealObject for State {
         self.label_table_offset = reader.read_u16::<E>()?;
         trace!("state_flags");
         self.state_flags = reader.read_u32::<E>()?;
-        todo!()
+
+        Ok(())
     }
 }
 
