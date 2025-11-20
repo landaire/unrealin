@@ -285,7 +285,7 @@ impl UnrealRuntime {
                     .set_outer_object(parent);
             }
 
-            if let Some(obj) = object_parsed_by_parent {
+            let returned_obj = if let Some(obj) = object_parsed_by_parent {
                 obj
             } else {
                 linker
@@ -294,7 +294,21 @@ impl UnrealRuntime {
                     .insert(export_index, Rc::clone(&constructed_object));
 
                 constructed_object
+            };
+
+            // Ensure super class is loaded.
+            if is_struct && export.super_index != 0 {
+                trace!("Loading super item");
+                self.load_object_by_raw_index::<E, _>(
+                    export.super_index,
+                    linker,
+                    LoadKind::Create,
+                    reader,
+                )?;
+                trace!("Super item loaded");
             }
+
+            returned_obj
         };
 
         match load_kind {
@@ -306,9 +320,6 @@ impl UnrealRuntime {
                 debug!("Returning -- object was loaded with LoadKind::Create");
             }
             LoadKind::Full | LoadKind::Load => {
-                let pointer_value = RcUnrealObjPointer::from_unreal_object(&obj);
-                self.objects_full_loading.insert(pointer_value);
-
                 // Ensure super class is loaded.
                 let is_struct = obj.borrow().is_a(UObjectKind::Struct);
                 if is_struct && export.super_index != 0 {
@@ -316,11 +327,14 @@ impl UnrealRuntime {
                     self.load_object_by_raw_index::<E, _>(
                         export.super_index,
                         linker,
-                        load_kind,
+                        LoadKind::Full,
                         reader,
                     )?;
                     trace!("Super item loaded");
                 }
+
+                let pointer_value = RcUnrealObjPointer::from_unreal_object(&obj);
+                self.objects_full_loading.insert(pointer_value);
 
                 let obj_inner = obj.borrow();
                 let obj_base = obj_inner.base_object();
