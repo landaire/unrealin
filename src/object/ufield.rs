@@ -58,16 +58,12 @@ impl DeserializeUnrealObject for Field {
             self.super_field = reader.read_object::<E>(runtime, linker)?;
         }
 
-        debug!("Super field was: {:X?}", self.super_field());
-
         {
             let span = span!(Level::DEBUG, "next");
             let _enter = span.enter();
             trace!("deserializing next");
             self.next = reader.read_object::<E>(runtime, linker)?;
         }
-
-        debug!("{:?}", self);
 
         Ok(())
     }

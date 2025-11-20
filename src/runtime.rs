@@ -216,6 +216,7 @@ impl UnrealRuntime {
 
             let ptr = RcUnrealObjPointer::from_unreal_object(&obj);
             if self.objects_full_loading.contains(&ptr) {
+                trace!("Object is being full loaded");
                 return Ok(obj);
             }
 
@@ -353,7 +354,6 @@ impl UnrealRuntime {
 
                 debug!("Export is {export:X?}");
 
-                trace!("{:X?}", obj);
                 trace!("Seeking to export position");
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(export.serial_offset()))?;

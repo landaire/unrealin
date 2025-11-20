@@ -172,22 +172,8 @@ impl DeserializeUnrealObject for Struct {
         //
         // First, ensure that the super field is fully loaded
         if let Some(super_field) = self.parent_object.super_field() {
-            let (linker, export_index) = {
-                let super_field = super_field.borrow();
-                (
-                    super_field.base_object().linker(),
-                    super_field.base_object().export_index(),
-                )
-            };
-
-            panic!("About to make sure that the parent object is fully loaded");
-
-            runtime.load_object_by_export_index::<E, _>(
-                export_index,
-                &linker,
-                crate::runtime::LoadKind::Load,
-                reader,
-            )?;
+            debug!("Full loading super field");
+            runtime.full_load_object::<E, _>(&super_field, reader)?;
         }
 
         let mut child_ptr = self.children.clone();

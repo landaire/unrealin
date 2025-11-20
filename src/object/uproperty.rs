@@ -406,7 +406,7 @@ impl DeserializeUnrealObject for ByteProperty {
         E: byteorder::ByteOrder,
         R: LinRead,
     {
-        let span = span!(Level::DEBUG, "deserialize_class_property");
+        let span = span!(Level::DEBUG, "deserialize_byte_property");
         let _enter = span.enter();
 
         self.parent_object

@@ -108,10 +108,32 @@ pub trait UnrealReadExt: LinRead + Sized {
     }
 
     fn read_string(&mut self) -> io::Result<String> {
-        let mut string_data = self.read_array()?;
-        // Remove the null terminator
-        let _ = string_data.pop();
-        Ok(String::from_utf8(string_data).expect("string is not valid UTF-8"))
+        let string_len = self.read_packed_int()?;
+        
+        if string_len == 0 {
+            return Ok(String::new());
+        }
+        
+        let is_unicode = string_len < 0;
+        let actual_len = string_len.abs() as usize;
+        
+        if is_unicode {
+            // Unicode strings - read as wide chars (not implemented yet)
+            panic!("Unicode strings not yet implemented");
+        } else {
+            // ANSI strings - read byte by byte
+            let mut string_data = Vec::with_capacity(actual_len);
+            for _ in 0..actual_len {
+                string_data.push(self.read_u8()?);
+            }
+            
+            // Remove the null terminator if present
+            if !string_data.is_empty() && string_data[string_data.len() - 1] == 0 {
+                string_data.pop();
+            }
+            
+            Ok(String::from_utf8(string_data).expect("string is not valid UTF-8"))
+        }
     }
 }
 

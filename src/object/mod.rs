@@ -3,6 +3,7 @@ mod internal;
 #[cfg(test)]
 mod test_common;
 mod uclass;
+mod uconst;
 mod uenum;
 mod ufield;
 mod ufunction;
@@ -26,6 +27,7 @@ use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
     pub use super::uclass::Class;
+    pub use super::uconst::Const;
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
@@ -185,6 +187,7 @@ register_builtins!(
     State,
     Class,
     Field,
+    Const,
     TextBuffer,
     Function,
     Property,
@@ -289,6 +292,7 @@ make_inherited_objects!(
     State,
     Class,
     Field,
+    Const,
     TextBuffer,
     Function,
     Property,
