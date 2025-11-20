@@ -10,7 +10,8 @@ use tracing::{Level, debug, span, trace};
 use crate::{
     de::{Linker, RcLinker},
     object::{
-        DeserializeUnrealObject, RcUnrealObject, UObjectKind, builtins::Link, uobject::Object,
+        DeserializeUnrealObject, RcUnrealObject, UObjectKind, UnrealObject, builtins::Link,
+        uobject::Object,
     },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
@@ -26,7 +27,11 @@ pub struct Field {
 
 impl Field {
     pub(crate) fn super_field(&self) -> Option<RcUnrealObject> {
-        self.super_field.clone()
+        if self.base_object().concrete_object_kind() == UObjectKind::Function {
+            None
+        } else {
+            self.super_field.clone()
+        }
     }
 
     pub fn next(&self) -> Option<RcUnrealObject> {

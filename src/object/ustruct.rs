@@ -172,7 +172,10 @@ impl DeserializeUnrealObject for Struct {
         //
         // First, ensure that the super field is fully loaded
         if let Some(super_field) = self.parent_object.super_field() {
-            debug!("Full loading super field");
+            debug!(
+                "Full loading super field for {}",
+                self.base_object().concrete_object_kind().as_str()
+            );
             runtime.full_load_object::<E, _>(&super_field, reader)?;
         }
 
@@ -180,11 +183,12 @@ impl DeserializeUnrealObject for Struct {
         while let Some(child) = child_ptr {
             let span = span!(
                 Level::DEBUG,
-                "ustruct_property",
+                "ustruct_link_child_iter",
                 child_ptr = format!("{:#x}", child.as_ptr().expose_provenance())
             );
             let _enter = span.enter();
 
+            debug!("Full loading child object");
             runtime.full_load_object::<E, _>(&child, reader)?;
 
             // Do not do any more work if the field is nto related to this struct

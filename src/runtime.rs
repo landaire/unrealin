@@ -285,7 +285,7 @@ impl UnrealRuntime {
                     .set_outer_object(parent);
             }
 
-            let return_obj = if let Some(obj) = object_parsed_by_parent {
+            if let Some(obj) = object_parsed_by_parent {
                 obj
             } else {
                 linker
@@ -294,22 +294,7 @@ impl UnrealRuntime {
                     .insert(export_index, Rc::clone(&constructed_object));
 
                 constructed_object
-            };
-
-            // Ensure that the super field is loaded
-            {
-                if is_struct && export.super_index != 0 {
-                    trace!("Loading super item");
-                    self.load_object_by_raw_index::<E, _>(
-                        export.super_index,
-                        linker,
-                        load_kind,
-                        reader,
-                    )?;
-                }
             }
-
-            return_obj
         };
 
         match load_kind {
@@ -325,8 +310,8 @@ impl UnrealRuntime {
                 self.objects_full_loading.insert(pointer_value);
 
                 // Ensure super class is loaded.
-                let is_class = obj.borrow().is_a(UObjectKind::Class);
-                if is_class && export.super_index != 0 {
+                let is_struct = obj.borrow().is_a(UObjectKind::Struct);
+                if is_struct && export.super_index != 0 {
                     trace!("Loading super item");
                     self.load_object_by_raw_index::<E, _>(
                         export.super_index,
@@ -334,6 +319,7 @@ impl UnrealRuntime {
                         load_kind,
                         reader,
                     )?;
+                    trace!("Super item loaded");
                 }
 
                 let obj_inner = obj.borrow();
