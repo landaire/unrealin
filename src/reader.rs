@@ -1,4 +1,5 @@
 use std::{
+    array,
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
     io::{self, Read, Seek},
@@ -90,6 +91,18 @@ pub trait UnrealReadExt: LinRead + Sized {
 
         let mut data = vec![0u8; array_len as usize];
         self.read_exact(&mut data)?;
+
+        Ok(data)
+    }
+
+    fn read_packed_int_array(&mut self) -> io::Result<Vec<i32>> {
+        let array_len = self.read_packed_int()?;
+        assert!(array_len >= 0, "Packed array length is negative");
+
+        let mut data = Vec::with_capacity(array_len as usize);
+        for _ in 0..data.len() {
+            data.push(self.read_packed_int()?);
+        }
 
         Ok(data)
     }

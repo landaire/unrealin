@@ -389,6 +389,54 @@ impl Link for ClassProperty {
 }
 
 #[derive(Default, Debug)]
+pub struct ByteProperty {
+    pub parent_object: Property,
+
+    pub eenum: Option<RcUnrealObject>,
+}
+
+impl DeserializeUnrealObject for ByteProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_class_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        self.eenum = reader.read_object::<E>(runtime, linker)?;
+
+        Ok(())
+    }
+}
+
+impl Link for ByteProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "link_byte_property",);
+        let _enter = span.enter();
+
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug)]
 pub struct StructProperty {
     pub parent_object: Property,
 

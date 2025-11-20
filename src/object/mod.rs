@@ -3,6 +3,7 @@ mod internal;
 #[cfg(test)]
 mod test_common;
 mod uclass;
+mod uenum;
 mod ufield;
 mod ufunction;
 mod uobject;
@@ -25,6 +26,7 @@ use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
     pub use super::uclass::Class;
+    pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
     pub use super::uobject::Object;
@@ -193,7 +195,9 @@ register_builtins!(
     ClassProperty,
     IntProperty,
     NameProperty,
-    StructProperty
+    StructProperty,
+    ByteProperty,
+    Enum
 );
 
 macro_rules! make_inherited_objects {
@@ -295,7 +299,9 @@ make_inherited_objects!(
     ClassProperty,
     IntProperty,
     NameProperty,
-    StructProperty
+    StructProperty,
+    ByteProperty,
+    Enum
 );
 
 macro_rules! register_linkable {
@@ -349,7 +355,8 @@ register_linkable!(
     NameProperty,
     ObjectProperty,
     ClassProperty,
-    StructProperty
+    StructProperty,
+    ByteProperty
 );
 
 bitflags! {
