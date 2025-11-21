@@ -33,7 +33,7 @@ impl DeserializeUnrealObject for Enum {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
-        self.names = reader.read_serializable::<E, FName>(runtime, linker)?;
+        self.names = reader.read_serializable_array::<E, FName>(runtime, linker)?;
 
         Ok(())
     }

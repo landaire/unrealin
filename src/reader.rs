@@ -95,7 +95,7 @@ pub trait UnrealReadExt: LinRead + Sized {
         Ok(data)
     }
 
-    fn read_serializable<E, T>(
+    fn read_serializable_array<E, T>(
         &mut self,
         runtime: &mut UnrealRuntime,
         linker: &RcLinker,
