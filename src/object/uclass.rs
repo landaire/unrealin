@@ -18,6 +18,10 @@ use tracing::{Level, span};
 #[derive(Default, Debug)]
 pub struct Class {
     pub parent_object: State,
+
+    pub old_class_record_size: Option<u32>,
+    pub class_flags: u32,
+    pub class_guid: (u32, u32, u32, u32),
 }
 
 impl DeserializeUnrealObject for Class {
@@ -37,7 +41,19 @@ impl DeserializeUnrealObject for Class {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
-        reader.read_u32::<E>()?;
+        let version = linker.borrow().version();
+        if version <= 61 {
+            self.old_class_record_size = Some(reader.read_u32::<E>()?);
+        }
+
+        self.class_flags = reader.read_u32::<E>()?;
+        self.class_guid = (
+            reader.read_u32::<E>()?,
+            reader.read_u32::<E>()?,
+            reader.read_u32::<E>()?,
+            reader.read_u32::<E>()?,
+        );
+
         todo!("class deserialization");
     }
 }

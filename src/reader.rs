@@ -12,7 +12,7 @@ use tracing::{Level, debug, span, trace};
 use crate::{
     common::IoOp,
     de::{ExportIndex, ImportIndex, Linker, RcLinker},
-    object::{RcUnrealObject, UnrealObject},
+    object::{DeserializeUnrealObject, RcUnrealObject, UnrealObject},
     runtime::{LoadKind, UnrealRuntime},
 };
 
@@ -95,7 +95,15 @@ pub trait UnrealReadExt: LinRead + Sized {
         Ok(data)
     }
 
-    fn read_packed_int_array(&mut self) -> io::Result<Vec<i32>> {
+    fn read_serializable<E, T>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+    ) -> io::Result<Vec<T>>
+    where
+        T: DeserializeUnrealObject + Default + Clone,
+        E: ByteOrder,
+    {
         let span = span!(Level::TRACE, "read_packed_int_array");
         let _enter = span.enter();
 
@@ -104,9 +112,9 @@ pub trait UnrealReadExt: LinRead + Sized {
 
         debug!("Array len: {array_len:#X}");
 
-        let mut data = Vec::with_capacity(array_len as usize);
-        for _ in 0..array_len {
-            data.push(self.read_packed_int()?);
+        let mut data = vec![T::default(); array_len as usize];
+        for obj in &mut data {
+            obj.deserialize::<E, _>(runtime, linker, self)?;
         }
 
         Ok(data)

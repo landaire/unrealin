@@ -4,7 +4,7 @@ use tracing::{Level, span};
 
 use crate::{
     de::RcLinker,
-    object::{DeserializeUnrealObject, ufield::Field},
+    object::{DeserializeUnrealObject, internal::fname::FName, ufield::Field},
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -13,7 +13,7 @@ use crate::{
 pub struct Enum {
     pub parent_object: Field,
 
-    names: Vec<i32>,
+    names: Vec<FName>,
 }
 
 impl DeserializeUnrealObject for Enum {
@@ -33,7 +33,7 @@ impl DeserializeUnrealObject for Enum {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
-        self.names = reader.read_packed_int_array()?;
+        self.names = reader.read_serializable::<E, FName>(runtime, linker)?;
 
         Ok(())
     }
