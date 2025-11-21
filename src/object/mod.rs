@@ -2,11 +2,13 @@
 mod internal;
 #[cfg(test)]
 mod test_common;
+mod uaudio_subsystem;
 mod uclass;
 mod uconst;
 mod uenum;
 mod ufield;
 mod ufunction;
+mod ulanguage;
 mod uobject;
 mod uproperty;
 mod ustate;
@@ -26,11 +28,13 @@ use bitflags::bitflags;
 use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
+    pub use super::uaudio_subsystem::AudioSubsystem;
     pub use super::uclass::Class;
     pub use super::uconst::Const;
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
+    pub use super::ulanguage::Language;
     pub use super::uobject::Object;
     pub use super::uproperty::*;
     pub use super::ustate::State;
@@ -200,7 +204,9 @@ register_builtins!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum
+    Enum,
+    AudioSubsystem,
+    Language
 );
 
 macro_rules! make_inherited_objects {
@@ -305,7 +311,9 @@ make_inherited_objects!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum
+    Enum,
+    AudioSubsystem,
+    Language
 );
 
 macro_rules! register_linkable {
