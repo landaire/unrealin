@@ -270,7 +270,7 @@ impl<R> Seek for CheckedLinReader<R> {
                     {
                         IoOp::Seek { to, from } => {
                             // Not checking `from` because there's some weird nuance with EOF
-                            if to != pos {
+                            if from != self.pos || to != pos {
                                 panic!(
                                     "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}",
                                     self.pos, pos, from, to

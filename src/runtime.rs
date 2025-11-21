@@ -430,7 +430,7 @@ impl UnrealRuntime {
         let linker_inner = linker.borrow();
         let (export_index, _) = linker_inner
             .find_export_by_name(object_name)
-            .expect("failed to find export");
+            .unwrap_or_else(|| panic!("failed to find export {full_name:?}"));
 
         drop(linker_inner);
 

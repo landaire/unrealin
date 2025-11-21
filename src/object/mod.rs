@@ -4,15 +4,20 @@ mod internal;
 mod test_common;
 mod uaudio_subsystem;
 mod uclass;
+mod uclient;
 mod uconst;
+mod ucylinder;
 mod uenum;
 mod ufield;
 mod ufunction;
 mod ulanguage;
 mod uobject;
+mod uprimitive;
 mod uproperty;
+mod urenderdevice;
 mod ustate;
 mod ustruct;
+mod usubsystem;
 mod utext_buffer;
 
 use std::cell::{Cell, RefCell};
@@ -30,15 +35,20 @@ use paste::paste;
 pub mod builtins {
     pub use super::uaudio_subsystem::AudioSubsystem;
     pub use super::uclass::Class;
+    pub use super::uclient::Client;
     pub use super::uconst::Const;
+    pub use super::ucylinder::Cylinder;
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufunction::Function;
     pub use super::ulanguage::Language;
     pub use super::uobject::Object;
+    pub use super::uprimitive::Primitive;
     pub use super::uproperty::*;
+    pub use super::urenderdevice::RenderDevice;
     pub use super::ustate::State;
     pub use super::ustruct::Struct;
+    pub use super::usubsystem::Subsystem;
     pub use super::utext_buffer::TextBuffer;
 }
 
@@ -205,8 +215,12 @@ register_builtins!(
     StructProperty,
     ByteProperty,
     Enum,
-    AudioSubsystem,
-    Language
+    // AudioSubsystem,
+    Language,
+    Primitive,
+    Cylinder,
+    Client // Subsystem,
+           // RenderDevice
 );
 
 macro_rules! make_inherited_objects {
@@ -312,8 +326,12 @@ make_inherited_objects!(
     StructProperty,
     ByteProperty,
     Enum,
-    AudioSubsystem,
-    Language
+    // AudioSubsystem,
+    Language,
+    Primitive,
+    Cylinder,
+    Client // Subsystem,
+           // RenderDevice
 );
 
 macro_rules! register_linkable {
