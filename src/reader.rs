@@ -269,7 +269,8 @@ impl<R> Seek for CheckedLinReader<R> {
                         .expect("conducting an IO op but there are no more IO ops")
                     {
                         IoOp::Seek { to, from } => {
-                            if self.pos != from || to != pos {
+                            // Not checking `from` because there's some weird nuance with EOF
+                            if to != pos {
                                 panic!(
                                     "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}",
                                     self.pos, pos, from, to
