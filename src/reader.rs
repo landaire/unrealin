@@ -156,6 +156,7 @@ pub struct LinReader<R> {
     source: R,
     pos: u64,
     version: u16,
+    linker: Vec<RcLinker>,
 }
 
 impl<R> LinReader<R> {
@@ -164,6 +165,7 @@ impl<R> LinReader<R> {
             source: reader,
             pos: 0,
             version: 0,
+            linker: Default::default(),
         }
     }
 }
@@ -175,6 +177,9 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let bytes_read = self.source.read(buf)?;
         self.pos += bytes_read as u64;
+        if let Some(linker) = self.linker.last_mut() {
+            linker.borrow_mut().set_position(self.pos);
+        }
 
         Ok(bytes_read)
     }
@@ -182,7 +187,7 @@ where
 
 impl<R> Seek for LinReader<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        match pos {
+        let res = match pos {
             std::io::SeekFrom::Start(pos) => {
                 self.pos = pos;
                 Ok(pos)
@@ -190,7 +195,13 @@ impl<R> Seek for LinReader<R> {
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
             std::io::SeekFrom::Current(0) => Ok(self.pos),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
+        };
+
+        if let Some(linker) = self.linker.last_mut() {
+            linker.borrow_mut().set_position(self.pos);
         }
+
+        res
     }
 }
 
@@ -201,6 +212,7 @@ pub struct CheckedLinReader<R> {
     /// Package headers are not included in the raw IO ops
     reading_linker_header: bool,
     io_ops: Rc<RefCell<VecDeque<IoOp>>>,
+    linker: Vec<RcLinker>,
 }
 
 impl<R> CheckedLinReader<R> {
@@ -211,6 +223,7 @@ impl<R> CheckedLinReader<R> {
             reading_linker_header: false,
             io_ops,
             version: 0,
+            linker: Default::default(),
         }
     }
 }
@@ -247,6 +260,9 @@ where
 
         let bytes_read = self.source.read(buf)?;
         self.pos += bytes_read as u64;
+        if let Some(linker) = self.linker.last_mut() {
+            linker.borrow_mut().set_position(self.pos);
+        }
 
         Ok(bytes_read)
     }
@@ -257,7 +273,7 @@ impl<R> Seek for CheckedLinReader<R> {
         let span = span!(Level::TRACE, "seek");
         let _enter = span.enter();
 
-        match pos {
+        let res = match pos {
             std::io::SeekFrom::Start(pos) => {
                 trace!("to= {:#X}, from= {:#X}", pos, self.pos);
 
@@ -272,8 +288,14 @@ impl<R> Seek for CheckedLinReader<R> {
                             // Not checking `from` because there's some weird nuance with EOF
                             if from != self.pos || to != pos {
                                 panic!(
-                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}",
-                                    self.pos, pos, from, to
+                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}. Linker position: {:#X?}",
+                                    self.pos,
+                                    pos,
+                                    from,
+                                    to,
+                                    self.linker
+                                        .last()
+                                        .map(|linker| linker.borrow().reader_offset)
                                 );
                             }
                         }
@@ -302,13 +324,20 @@ impl<R> Seek for CheckedLinReader<R> {
             std::io::SeekFrom::End(_) => todo!("end position seeking not implemented"),
             std::io::SeekFrom::Current(0) => Ok(self.pos),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
+        };
+        if let Some(linker) = self.linker.last_mut() {
+            linker.borrow_mut().set_position(self.pos);
         }
+
+        res
     }
 }
 
 pub trait LinRead: io::Read + io::Seek {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool);
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()>;
+    fn push_linker(&mut self, linker: RcLinker);
+    fn pop_linker(&mut self) -> RcLinker;
 }
 
 impl<R> LinRead for LinReader<R>
@@ -322,6 +351,14 @@ where
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
         // We have no IO ops to cheat
         self.read_exact(buf)
+    }
+
+    fn push_linker(&mut self, linker: RcLinker) {
+        self.linker.push(linker);
+    }
+
+    fn pop_linker(&mut self) -> RcLinker {
+        self.linker.pop().expect("no linker")
     }
 }
 
@@ -361,5 +398,19 @@ where
         drop(io_ops);
 
         self.read_exact(buf)
+    }
+
+    fn push_linker(&mut self, linker: RcLinker) {
+        self.linker.push(linker);
+    }
+
+    fn pop_linker(&mut self) -> RcLinker {
+        let linker = self.linker.pop().expect("no linker?");
+        println!(
+            "POPPING LINKER WITH POS: {:#X?}",
+            linker.borrow().reader_offset
+        );
+
+        linker
     }
 }

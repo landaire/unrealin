@@ -201,6 +201,8 @@ impl UnrealRuntime {
         );
         let _enter = span.enter();
 
+        reader.push_linker(Rc::clone(linker));
+
         trace!(
             "Loading with load kind: {:?}, linker= {:#X}",
             load_kind,
@@ -217,6 +219,8 @@ impl UnrealRuntime {
             let ptr = RcUnrealObjPointer::from_unreal_object(&obj);
             if self.objects_full_loading.contains(&ptr) {
                 trace!("Object is being full loaded");
+
+                reader.pop_linker();
                 return Ok(obj);
             }
 
@@ -343,6 +347,7 @@ impl UnrealRuntime {
 
                     drop(obj_inner);
 
+                    reader.pop_linker();
                     return Ok(obj);
                 }
                 drop(obj_inner);
@@ -377,6 +382,7 @@ impl UnrealRuntime {
                 self.objects_full_loading.remove(&pointer_value);
             }
         }
+        reader.pop_linker();
 
         // TODO: for experimentation
         // obj.borrow_mut().base_object_mut().post_loaded();

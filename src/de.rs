@@ -53,6 +53,7 @@ pub(crate) struct Linker {
     pub objects: HashMap<ExportIndex, RcUnrealObject>,
     pub name: String,
     pub package: RawPackage,
+    pub reader_offset: u64,
 }
 
 impl Linker {
@@ -61,6 +62,7 @@ impl Linker {
             objects: Default::default(),
             name,
             package,
+            reader_offset: 0,
         }
     }
 
@@ -88,6 +90,10 @@ impl Linker {
 
     pub fn find_export_by_index(&self, index: ExportIndex) -> Option<&ObjectExport> {
         self.package.exports.get(index.0)
+    }
+
+    pub fn set_position(&mut self, pos: u64) {
+        self.reader_offset = pos;
     }
 }
 
