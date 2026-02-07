@@ -201,8 +201,6 @@ impl UnrealRuntime {
         );
         let _enter = span.enter();
 
-        reader.push_linker(Rc::clone(linker));
-
         trace!(
             "Loading with load kind: {:?}, linker= {:#X}",
             load_kind,
@@ -220,7 +218,6 @@ impl UnrealRuntime {
             if self.objects_full_loading.contains(&ptr) {
                 trace!("Object is being full loaded");
 
-                reader.pop_linker();
                 return Ok(obj);
             }
 
@@ -347,7 +344,6 @@ impl UnrealRuntime {
 
                     drop(obj_inner);
 
-                    reader.pop_linker();
                     return Ok(obj);
                 }
                 drop(obj_inner);
@@ -360,6 +356,19 @@ impl UnrealRuntime {
                 debug!("Export is {export:X?}");
 
                 trace!("Seeking to export position");
+                trace!(
+                    "Linker positions: {}",
+                    self.linkers
+                        .iter()
+                        .map(|(name, linker)| format!(
+                            "{}: {:#X}",
+                            name,
+                            linker.borrow().position()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                reader.push_linker(Rc::clone(linker));
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(export.serial_offset()))?;
 
@@ -380,9 +389,10 @@ impl UnrealRuntime {
                 obj.borrow_mut().base_object_mut().loaded();
 
                 self.objects_full_loading.remove(&pointer_value);
+
+                reader.pop_linker();
             }
         }
-        reader.pop_linker();
 
         // TODO: for experimentation
         // obj.borrow_mut().base_object_mut().post_loaded();

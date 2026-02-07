@@ -95,9 +95,8 @@ fn main() -> Result<()> {
     std::io::copy(&mut common_lin_data.as_slice(), &mut out_file)
         .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
 
-    let reader = BufReader::new(
-        std::fs::File::open("/var/tmp/reads.json").expect("failed to open reads file"),
-    );
+    let reader =
+        BufReader::new(std::fs::File::open("reads.json").expect("failed to open reads file"));
 
     let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
     metadata.file_ptr_order.reverse();

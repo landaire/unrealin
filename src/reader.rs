@@ -294,8 +294,14 @@ impl<R> Seek for CheckedLinReader<R> {
                                     from,
                                     to,
                                     self.linker
-                                        .last()
-                                        .map(|linker| linker.borrow().reader_offset)
+                                        .iter()
+                                        .map(|linker| {
+                                            let linker = linker.borrow();
+
+                                            format!("{}: {:#X}", linker.name, linker.reader_offset)
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
                                 );
                             }
                         }

@@ -95,6 +95,10 @@ impl Linker {
     pub fn set_position(&mut self, pos: u64) {
         self.reader_offset = pos;
     }
+
+    pub fn position(&self) -> u64 {
+        self.reader_offset
+    }
 }
 
 struct Block {

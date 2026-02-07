@@ -214,13 +214,12 @@ register_builtins!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum,
-    // AudioSubsystem,
-    Language,
-    Primitive,
-    Cylinder,
-    Client // Subsystem,
-           // RenderDevice
+    Enum // AudioSubsystem,
+         // Language,
+         // Primitive,
+         // Cylinder,
+         // Client // Subsystem,
+         // RenderDevice
 );
 
 macro_rules! make_inherited_objects {
@@ -325,13 +324,12 @@ make_inherited_objects!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum,
-    // AudioSubsystem,
-    Language,
-    Primitive,
-    Cylinder,
-    Client // Subsystem,
-           // RenderDevice
+    Enum // AudioSubsystem,
+         // Language,
+         // Primitive,
+         // Cylinder,
+         // Client // Subsystem,
+         // RenderDevice
 );
 
 macro_rules! register_linkable {
