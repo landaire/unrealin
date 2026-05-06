@@ -44,7 +44,10 @@ pub mod builtins {
     pub use super::ulanguage::Language;
     pub use super::uobject::Object;
     pub use super::uprimitive::Primitive;
-    pub use super::uproperty::*;
+    pub use super::uproperty::{
+        ArrayProperty, BoolProperty, ByteProperty, ClassProperty, FloatProperty, IntProperty, Link,
+        NameProperty, ObjectProperty, Property, PropertyFlags, StrProperty, StructProperty,
+    };
     pub use super::urenderdevice::RenderDevice;
     pub use super::ustate::State;
     pub use super::ustruct::Struct;
@@ -214,12 +217,8 @@ register_builtins!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum // AudioSubsystem,
-         // Language,
-         // Primitive,
-         // Cylinder,
-         // Client // Subsystem,
-         // RenderDevice
+    ArrayProperty,
+    Enum
 );
 
 macro_rules! make_inherited_objects {
@@ -324,12 +323,8 @@ make_inherited_objects!(
     NameProperty,
     StructProperty,
     ByteProperty,
-    Enum // AudioSubsystem,
-         // Language,
-         // Primitive,
-         // Cylinder,
-         // Client // Subsystem,
-         // RenderDevice
+    ArrayProperty,
+    Enum
 );
 
 macro_rules! register_linkable {
@@ -384,7 +379,8 @@ register_linkable!(
     ObjectProperty,
     ClassProperty,
     StructProperty,
-    ByteProperty
+    ByteProperty,
+    ArrayProperty
 );
 
 bitflags! {

@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     io::{self, SeekFrom},
-    rc::{Rc, Weak},
+    rc::Rc,
 };
 
 use byteorder::ByteOrder;
@@ -30,6 +30,10 @@ impl RcUnrealObjPointer {
 pub struct UnrealRuntime {
     pub linkers: HashMap<String, RcLinker>,
     pub objects_full_loading: HashSet<RcUnrealObjPointer>,
+    /// Maps a package name (e.g. "Engine") to its `len` from the LIN file table.
+    /// The game's per-package reader treats this as the position the reader is at
+    /// once construction is finished, so we seed `Linker::reader_offset` with it.
+    pub package_file_size: HashMap<String, u64>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -49,22 +53,13 @@ impl UnrealRuntime {
         let package = read_package::<E, _>(reader)?;
         reader.set_reading_linker_header(false);
 
-        let linker = Rc::new(RefCell::new(Linker::new(expected_name.clone(), package)));
-        let linker_inner = linker.borrow();
+        let mut linker = Linker::new(expected_name.clone(), package);
+        if let Some(size) = self.package_file_size.get(&expected_name) {
+            linker.set_position(*size);
+        }
 
-        // for export in &linker_inner.package.exports {
-        //     if export.serial_offset == 0x63BA {
-        //         panic!(
-        //             "{} {}",
-        //             export.full_name(&linker_inner),
-        //             export.class_name(&linker_inner)
-        //         );
-        //     }
-        // }
-
-        drop(linker_inner);
-
-        self.linkers.insert(expected_name, linker);
+        self.linkers
+            .insert(expected_name, Rc::new(RefCell::new(linker)));
 
         Ok(())
     }
@@ -154,7 +149,7 @@ impl UnrealRuntime {
             let import = linker_inner
                 .find_import_by_index(import_index)
                 .expect("failed to find import");
-            let import_full_name = import.full_name(&linker_inner);
+            let import_full_name = import.full_name(&linker_inner, import_index);
 
             drop(linker_inner);
 
@@ -444,9 +439,13 @@ impl UnrealRuntime {
         };
 
         let linker_inner = linker.borrow();
-        let (export_index, _) = linker_inner
-            .find_export_by_name(object_name)
-            .unwrap_or_else(|| panic!("failed to find export {full_name:?}"));
+        let Some((export_index, _)) = linker_inner.find_export_by_name(object_name) else {
+            drop(linker_inner);
+            tracing::warn!(
+                "unresolved import {full_name:?} (likely a native class); returning None"
+            );
+            return Ok(None);
+        };
 
         drop(linker_inner);
 

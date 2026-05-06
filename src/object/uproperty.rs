@@ -490,6 +490,60 @@ impl Link for StructProperty {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct ArrayProperty {
+    pub parent_object: Property,
+
+    pub inner: Option<RcUnrealObject>,
+}
+
+impl DeserializeUnrealObject for ArrayProperty {
+    fn deserialize<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> std::io::Result<()>
+    where
+        E: byteorder::ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "deserialize_array_property");
+        let _enter = span.enter();
+
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
+
+        self.inner = reader.read_object::<E>(runtime, linker)?;
+
+        Ok(())
+    }
+}
+
+impl Link for ArrayProperty {
+    fn link<E, R>(
+        &self,
+        runtime: &mut UnrealRuntime,
+        linker: &RcLinker,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        let span = span!(Level::DEBUG, "link_array_property");
+        let _enter = span.enter();
+
+        let Some(obj) = self.inner.as_ref() else {
+            return Ok(());
+        };
+
+        runtime.full_load_object::<E, _>(obj, reader)?;
+
+        Ok(())
+    }
+}
+
 bitflags! {
     /// Flags associated with each property in a class, overriding the
     /// property's default behavior.

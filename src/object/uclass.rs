@@ -1,23 +1,17 @@
-use std::{
-    cell::RefCell,
-    io::{self, SeekFrom},
-    rc::Rc,
-};
+use std::io;
 
 use crate::{
-    de::{Linker, ObjectExport, RcLinker},
+    de::RcLinker,
     object::{
         DeserializeUnrealObject, RcUnrealObject, UnrealObject,
-        builtins::Link,
-        internal::{fdependency::FDependency, fname::FName},
+        internal::{fdependency::FDependency, fname::FName, property::PropertyTag},
         ustate::State,
-        ustruct::Struct,
     },
     reader::{LinRead, UnrealReadExt},
-    runtime::{RcUnrealObjPointer, UnrealRuntime},
+    runtime::UnrealRuntime,
 };
 use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span};
+use tracing::{Level, debug, span, trace};
 
 #[derive(Default, Debug)]
 pub struct Class {
@@ -27,9 +21,11 @@ pub struct Class {
     pub class_flags: u32,
     pub class_guid: (u32, u32, u32, u32),
     pub dependencies: Vec<FDependency>,
+    pub package_imports: Vec<FName>,
     pub class_within: Option<RcUnrealObject>,
     pub class_config_name: FName,
     pub hide_categories: Vec<FName>,
+    pub default_tags: Vec<PropertyTag>,
 }
 
 impl DeserializeUnrealObject for Class {
@@ -66,6 +62,9 @@ impl DeserializeUnrealObject for Class {
         debug!("dependencies");
         self.dependencies = reader.read_serializable_array::<E, FDependency>(runtime, linker)?;
 
+        debug!("package_imports");
+        self.package_imports = reader.read_serializable_array::<E, FName>(runtime, linker)?;
+
         if version >= 62 {
             debug!("class_within");
             self.class_within = reader.read_object::<E>(runtime, linker)?;
@@ -77,6 +76,24 @@ impl DeserializeUnrealObject for Class {
         if version >= 99 {
             debug!("hide_categories");
             self.hide_categories = reader.read_serializable_array::<E, FName>(runtime, linker)?;
+        }
+
+        debug!("default_tags");
+        loop {
+            let mut tag = PropertyTag::default();
+            tag.deserialize::<E, _>(runtime, linker, reader)?;
+            if tag.name.is_none() {
+                break;
+            }
+            trace!(
+                "skipping tagged property value: type={} size={:#X}",
+                tag.property_type, tag.size
+            );
+            if tag.size > 0 {
+                let mut buf = vec![0u8; tag.size as usize];
+                reader.cheat(&mut buf)?;
+            }
+            self.default_tags.push(tag);
         }
 
         Ok(())

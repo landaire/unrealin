@@ -360,11 +360,20 @@ where
     }
 
     fn push_linker(&mut self, linker: RcLinker) {
+        if let Some(prev) = self.linker.last() {
+            prev.borrow_mut().set_position(self.pos);
+        }
+        self.pos = linker.borrow().reader_offset;
         self.linker.push(linker);
     }
 
     fn pop_linker(&mut self) -> RcLinker {
-        self.linker.pop().expect("no linker")
+        let linker = self.linker.pop().expect("no linker");
+        linker.borrow_mut().set_position(self.pos);
+        if let Some(prev) = self.linker.last() {
+            self.pos = prev.borrow().reader_offset;
+        }
+        linker
     }
 }
 
@@ -407,16 +416,19 @@ where
     }
 
     fn push_linker(&mut self, linker: RcLinker) {
+        if let Some(prev) = self.linker.last() {
+            prev.borrow_mut().set_position(self.pos);
+        }
+        self.pos = linker.borrow().reader_offset;
         self.linker.push(linker);
     }
 
     fn pop_linker(&mut self) -> RcLinker {
         let linker = self.linker.pop().expect("no linker?");
-        println!(
-            "POPPING LINKER WITH POS: {:#X?}",
-            linker.borrow().reader_offset
-        );
-
+        linker.borrow_mut().set_position(self.pos);
+        if let Some(prev) = self.linker.last() {
+            self.pos = prev.borrow().reader_offset;
+        }
         linker
     }
 }

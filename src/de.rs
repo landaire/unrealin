@@ -209,24 +209,18 @@ impl Import {
             .as_str()
     }
 
-    pub fn full_name<'p>(&self, linker: &'p Linker) -> String {
-        let package_name = &linker.package.names[self.class_package as usize];
-        format!("{}.{}", &package_name.name, self.object_name(linker))
+    pub fn full_name(&self, linker: &Linker, this_index: ImportIndex) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        let mut cursor: i32 = -(this_index.0 as i32) - 1;
+        while cursor != 0 {
+            let idx = ImportIndex::from_raw(cursor);
+            let import = &linker.package.imports[idx.0];
+            parts.push(import.object_name(linker));
+            cursor = import.package_index;
+        }
+        parts.reverse();
+        parts.join(".")
     }
-
-    // pub fn full_name(&self, package: &RawPackage<'_>) -> String {
-    //     format!(
-    //         "{} {}.{}",
-    //         package.names[self.class_name as usize].name,
-    //         package.names[self.class_package as usize].name,
-    //         package.names[self.object_name as usize].name
-    //     )
-    // }
-
-    // pub fn resolve_export<'i>(&self, container: &'i RawPackage<'_>) -> &'i ObjectExport<'i> {
-    //     let normalized_index = normalize_index(self.package_index);
-    //     &container.exports[normalized_index]
-    // }
 }
 
 fn read_import<E, R>(reader: &mut R) -> io::Result<Import>
@@ -573,6 +567,7 @@ where
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
+                package_file_size: HashMap::new(),
             },
             file_table: Vec::new(),
             metadata,
@@ -597,6 +592,7 @@ where
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
+                package_file_size: HashMap::new(),
             },
             file_table: Vec::new(),
             metadata,
@@ -625,7 +621,6 @@ where
                 crate::runtime::LoadKind::Load,
                 reader,
             )?;
-            panic!("first object loaded!");
         }
 
         Ok(())
@@ -634,15 +629,13 @@ where
     pub fn read_lin_header(&mut self) -> io::Result<()> {
         let has_file_table = !self.file_table.is_empty();
 
-        let mut reader = self.reader();
+        let reader = self.reader();
 
         reader.set_reading_linker_header(true);
 
-        let unk = reader.read_u32::<E>()?;
-        let name = reader.read_string()?;
-        println!("{}", name);
+        let _unk = reader.read_u32::<E>()?;
+        let _name = reader.read_string()?;
 
-        // There's only one file table, so we shouldn't read this.
         if has_file_table {
             reader.set_reading_linker_header(false);
             return Ok(());
@@ -651,15 +644,24 @@ where
         let tag = reader.read_u32::<E>()?;
         assert_eq!(tag, LIN_FILE_TABLE_TAG, "LIN file table tag mismatch");
 
-        let file_table = Some(read_file_table::<E, _>(reader).expect("failed to read file table"));
-        println!(
-            "File table length: {:#X}",
-            file_table.as_ref().map(|t| t.len()).unwrap_or_default()
-        );
-        println!("{file_table:#X?}");
-
+        let file_table = read_file_table::<E, _>(reader).expect("failed to read file table");
         reader.set_reading_linker_header(false);
 
+        for entry in &file_table {
+            if let Some(pkg) = package_name_from_path(&entry.name) {
+                self.runtime
+                    .package_file_size
+                    .insert(pkg, entry.len as u64);
+            }
+        }
+
+        self.file_table = file_table;
         Ok(())
     }
+}
+
+fn package_name_from_path(path: &str) -> Option<String> {
+    let leaf = path.rsplit('\\').next().unwrap_or(path);
+    let stem = leaf.rsplit_once('.').map(|(s, _)| s).unwrap_or(leaf);
+    if stem.is_empty() { None } else { Some(stem.to_owned()) }
 }
