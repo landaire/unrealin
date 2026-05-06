@@ -1,7 +1,7 @@
 use std::{
     array,
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     io::{self, Read, Seek},
     rc::Rc,
 };
@@ -134,7 +134,9 @@ pub trait UnrealReadExt: LinRead + Sized {
             // Unicode strings - read as wide chars (not implemented yet)
             panic!("Unicode strings not yet implemented");
         } else {
-            // ANSI strings - read byte by byte
+            // ANSI strings - read byte by byte. UE2 ANSI strings are Latin-1
+            // (e.g. SC has French asset names like `…Defé_GLW`); blindly
+            // decoding as UTF-8 panics on the first 0x80-0xFF byte.
             let mut string_data = Vec::with_capacity(actual_len);
             for _ in 0..actual_len {
                 string_data.push(self.read_u8()?);
@@ -145,7 +147,7 @@ pub trait UnrealReadExt: LinRead + Sized {
                 string_data.pop();
             }
 
-            Ok(String::from_utf8(string_data).expect("string is not valid UTF-8"))
+            Ok(string_data.into_iter().map(|b| b as char).collect())
         }
     }
 }
@@ -165,6 +167,14 @@ pub struct LinReader<R> {
     /// export's deserialize so we can extract the exact bytes that
     /// went into its body.
     capture_stack: Vec<Vec<u8>>,
+    /// Source-absolute start of the current package within the `.lin`
+    /// stream. Package-relative virtual seeks add this to translate to
+    /// the absolute source offset. Set by `push_linker` (and
+    /// `set_source_start` for the initial `read_package` call before a
+    /// `Linker` exists).
+    source_start: u64,
+    /// Stack of `source_start` values to restore on `pop_linker`.
+    source_start_stack: Vec<u64>,
     version: u16,
     linker: Vec<RcLinker>,
 }
@@ -176,6 +186,8 @@ impl<R> LinReader<R> {
             pos: 0,
             source_consumed: 0,
             capture_stack: Vec::new(),
+            source_start: 0,
+            source_start_stack: Vec::new(),
             version: 0,
             linker: Default::default(),
         }
@@ -183,6 +195,10 @@ impl<R> LinReader<R> {
 
     pub fn source_consumed(&self) -> u64 {
         self.source_consumed
+    }
+
+    pub fn set_source_start(&mut self, start: u64) {
+        self.source_start = start;
     }
 }
 
@@ -226,25 +242,55 @@ impl<R> Seek for LinReader<R> {
 }
 
 pub struct CheckedLinReader<R> {
-    source: R,
+    /// One source per `file_ptr` from the recorded IO trace. Each op
+    /// carries its own `file_ptr`; we switch to the matching source
+    /// before consuming the op. Maps `file_ptr` -> index into `sources`.
+    sources: Vec<R>,
+    file_ptr_to_index: HashMap<u32, usize>,
+    /// Sources that haven't been bound to a file_ptr yet, popped off
+    /// in `file_ptr_order` as new file_ptrs appear in the trace.
+    file_ptr_order: VecDeque<u32>,
+    current_source_idx: usize,
     pos: u64,
     source_consumed: u64,
     capture_stack: Vec<Vec<u8>>,
+    source_start: u64,
+    source_start_stack: Vec<u64>,
     version: u16,
-    /// Package headers are not included in the raw IO ops
-    reading_linker_header: bool,
+    /// Counter for nested "in linker header" frames. Incremented by
+    /// `set_reading_linker_header(true)`, decremented by `(false)`.
+    /// Used as a depth counter so nested `load_linker` calls (e.g. from
+    /// VerifyAllImports cascading into other top-level packages) keep the
+    /// "skip IO op consumption" mode active across the whole nested span.
+    /// Effective state: `linker_header_depth > 0`.
+    linker_header_depth: u32,
     io_ops: Rc<RefCell<VecDeque<IoOp>>>,
     linker: Vec<RcLinker>,
 }
 
 impl<R> CheckedLinReader<R> {
-    pub fn new(reader: R, io_ops: Rc<RefCell<VecDeque<IoOp>>>) -> Self {
+    pub fn new(
+        sources: Vec<R>,
+        file_ptr_order: Vec<u32>,
+        io_ops: Rc<RefCell<VecDeque<IoOp>>>,
+    ) -> Self {
+        let mut file_ptr_to_index = HashMap::new();
+        // Pre-bind any file_ptrs we already know about (in case the trace
+        // never references one — won't matter, but harmless).
+        for (i, ptr) in file_ptr_order.iter().enumerate() {
+            file_ptr_to_index.insert(*ptr, i);
+        }
         CheckedLinReader {
-            source: reader,
+            sources,
+            file_ptr_to_index,
+            file_ptr_order: VecDeque::from(file_ptr_order),
+            current_source_idx: 0,
             pos: 0,
             source_consumed: 0,
             capture_stack: Vec::new(),
-            reading_linker_header: false,
+            source_start: 0,
+            source_start_stack: Vec::new(),
+            linker_header_depth: 0,
             io_ops,
             version: 0,
             linker: Default::default(),
@@ -254,6 +300,33 @@ impl<R> CheckedLinReader<R> {
     pub fn source_consumed(&self) -> u64 {
         self.source_consumed
     }
+
+    pub fn set_source_start(&mut self, start: u64) {
+        self.source_start = start;
+    }
+
+    pub fn ops_remaining(&self) -> usize {
+        self.io_ops.borrow().len()
+    }
+
+    /// Switch the active source to the one bound to `file_ptr`. Binds
+    /// `file_ptr` to the next free source on first encounter (in
+    /// recorded `file_ptr_order`).
+    fn switch_source(&mut self, file_ptr: u32) {
+        if file_ptr == 0 {
+            return; // legacy/no-info ops keep current source
+        }
+        let idx = if let Some(&i) = self.file_ptr_to_index.get(&file_ptr) {
+            i
+        } else {
+            let i = self.file_ptr_to_index.len();
+            self.file_ptr_to_index.insert(file_ptr, i);
+            i
+        };
+        if idx < self.sources.len() {
+            self.current_source_idx = idx;
+        }
+    }
 }
 
 impl<R> Read for CheckedLinReader<R>
@@ -261,14 +334,16 @@ where
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if !self.reading_linker_header {
+        let mut next_file_ptr: u32 = 0;
+        if self.linker_header_depth == 0 {
             let mut ops = self.io_ops.borrow_mut();
 
             match ops
                 .pop_front()
                 .expect("conducting an IO op but there are no more IO ops")
             {
-                IoOp::Read { len } => {
+                IoOp::Read { len, file_ptr } => {
+                    next_file_ptr = file_ptr;
                     let remaining = ops.len();
                     assert_eq!(
                         buf.len() as u64,
@@ -288,7 +363,9 @@ where
             }
         }
 
-        let bytes_read = self.source.read(buf)?;
+        self.switch_source(next_file_ptr);
+        let source = &mut self.sources[self.current_source_idx];
+        let bytes_read = source.read(buf)?;
         self.pos += bytes_read as u64;
         self.source_consumed += bytes_read as u64;
         if let Some(top) = self.capture_stack.last_mut() {
@@ -307,22 +384,27 @@ impl<R> Seek for CheckedLinReader<R> {
         let span = span!(Level::TRACE, "seek");
         let _enter = span.enter();
 
+        let mut next_file_ptr: u32 = 0;
+        let mut do_source_seek_to: Option<u64> = None;
         let res = match pos {
             std::io::SeekFrom::Start(pos) => {
                 trace!("to= {:#X}, from= {:#X}", pos, self.pos);
 
-                if !self.reading_linker_header {
+                if self.linker_header_depth == 0 {
                     let mut ops = self.io_ops.borrow_mut();
 
                     match ops
                         .pop_front()
                         .expect("conducting an IO op but there are no more IO ops")
                     {
-                        IoOp::Seek { to, from } => {
+                        IoOp::Seek { to, from, file_ptr } => {
+                            next_file_ptr = file_ptr;
+                            do_source_seek_to = Some(to);
                             // Not checking `from` because there's some weird nuance with EOF
                             if from != self.pos || to != pos {
+                                let remaining = ops.len();
                                 panic!(
-                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}. Linker position: {:#X?}",
+                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}. Linker position: {:#X?}; remaining ops: {}",
                                     self.pos,
                                     pos,
                                     from,
@@ -335,7 +417,8 @@ impl<R> Seek for CheckedLinReader<R> {
                                             format!("{}: {:#X}", linker.name, linker.reader_offset)
                                         })
                                         .collect::<Vec<_>>()
-                                        .join(", ")
+                                        .join(", "),
+                                    remaining,
                                 );
                             }
                         }
@@ -344,7 +427,7 @@ impl<R> Seek for CheckedLinReader<R> {
                                 .iter()
                                 .take_while(|op| !matches!(op, IoOp::Seek { .. }))
                                 .fold(0, |accum, op| {
-                                    if let IoOp::Read { len } = op {
+                                    if let IoOp::Read { len, .. } = op {
                                         accum + *len
                                     } else {
                                         unreachable!("unexpected op");
@@ -365,6 +448,8 @@ impl<R> Seek for CheckedLinReader<R> {
             std::io::SeekFrom::Current(0) => Ok(self.pos),
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         };
+        self.switch_source(next_file_ptr);
+        let _ = do_source_seek_to;
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
         }
@@ -386,18 +471,26 @@ pub trait LinRead: io::Read + io::Seek {
     /// End the innermost capture frame and return the bytes read while
     /// it was active.
     fn pop_capture(&mut self) -> Vec<u8>;
+    /// Cumulative bytes consumed from the underlying source. Unaffected
+    /// by virtual seeks. Used to map sequential decompressed-`.lin`
+    /// offsets to the right export bodies for static recompilation.
+    fn source_consumed(&self) -> u64;
+    /// Set the source-absolute start of the current package. All
+    /// subsequent `seek(SeekFrom::Start(virtual))` calls translate to
+    /// `source_start + virtual` when seeking the underlying source.
+    /// Used by `load_linker` to set the package base before parsing
+    /// its header (which seeks to package-relative name/import/export
+    /// table offsets).
+    fn set_source_start(&mut self, start: u64);
 }
 
 impl<R> LinRead for LinReader<R>
 where
     R: Read,
 {
-    fn set_reading_linker_header(&mut self, _reading_linker_header: bool) {
-        // Do nothing
-    }
+    fn set_reading_linker_header(&mut self, _reading_linker_header: bool) {}
 
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        // We have no IO ops to cheat
         self.read_exact(buf)
     }
 
@@ -405,6 +498,8 @@ where
         if let Some(prev) = self.linker.last() {
             prev.borrow_mut().set_position(self.pos);
         }
+        self.source_start_stack.push(self.source_start);
+        self.source_start = linker.borrow().source_start;
         self.pos = linker.borrow().reader_offset;
         self.linker.push(linker);
     }
@@ -412,6 +507,7 @@ where
     fn pop_linker(&mut self) -> RcLinker {
         let linker = self.linker.pop().expect("no linker");
         linker.borrow_mut().set_position(self.pos);
+        self.source_start = self.source_start_stack.pop().unwrap_or(0);
         if let Some(prev) = self.linker.last() {
             self.pos = prev.borrow().reader_offset;
         }
@@ -425,6 +521,14 @@ where
     fn pop_capture(&mut self) -> Vec<u8> {
         self.capture_stack.pop().unwrap_or_default()
     }
+
+    fn source_consumed(&self) -> u64 {
+        self.source_consumed
+    }
+
+    fn set_source_start(&mut self, start: u64) {
+        self.source_start = start;
+    }
 }
 
 impl<R> LinRead for CheckedLinReader<R>
@@ -432,7 +536,17 @@ where
     R: Read,
 {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool) {
-        self.reading_linker_header = reading_linker_header;
+        if reading_linker_header {
+            self.linker_header_depth = self
+                .linker_header_depth
+                .checked_add(1)
+                .expect("linker_header_depth overflow");
+        } else {
+            self.linker_header_depth = self
+                .linker_header_depth
+                .checked_sub(1)
+                .expect("linker_header_depth underflow: unbalanced set_reading_linker_header(false)");
+        }
     }
 
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
@@ -440,10 +554,12 @@ where
         let mut remove_len = 0;
 
         let mut io_ops = self.io_ops.borrow_mut();
+        let mut last_file_ptr: u32 = 0;
         while remove_len < buf.len() {
             match io_ops.pop_front().expect("no io op?") {
-                IoOp::Seek { to, from } => panic!("unexpected seek op while cheating reads"),
-                IoOp::Read { len } => {
+                IoOp::Seek { .. } => panic!("unexpected seek op while cheating reads"),
+                IoOp::Read { len, file_ptr } => {
+                    last_file_ptr = file_ptr;
                     remove_len += len as usize;
                 }
             }
@@ -457,6 +573,7 @@ where
         if remove_len > 0 {
             io_ops.push_front(IoOp::Read {
                 len: buf.len() as u64,
+                file_ptr: last_file_ptr,
             });
         }
 
@@ -469,6 +586,8 @@ where
         if let Some(prev) = self.linker.last() {
             prev.borrow_mut().set_position(self.pos);
         }
+        self.source_start_stack.push(self.source_start);
+        self.source_start = linker.borrow().source_start;
         self.pos = linker.borrow().reader_offset;
         self.linker.push(linker);
     }
@@ -476,6 +595,7 @@ where
     fn pop_linker(&mut self) -> RcLinker {
         let linker = self.linker.pop().expect("no linker?");
         linker.borrow_mut().set_position(self.pos);
+        self.source_start = self.source_start_stack.pop().unwrap_or(0);
         if let Some(prev) = self.linker.last() {
             self.pos = prev.borrow().reader_offset;
         }
@@ -488,5 +608,13 @@ where
 
     fn pop_capture(&mut self) -> Vec<u8> {
         self.capture_stack.pop().unwrap_or_default()
+    }
+
+    fn source_consumed(&self) -> u64 {
+        self.source_consumed
+    }
+
+    fn set_source_start(&mut self, start: u64) {
+        self.source_start = start;
     }
 }

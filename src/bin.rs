@@ -99,7 +99,6 @@ fn main() -> Result<()> {
         BufReader::new(std::fs::File::open("reads.json").expect("failed to open reads file"));
 
     let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
-    metadata.file_ptr_order.reverse();
     metadata
         .file_reads
         .iter_mut()

@@ -67,6 +67,12 @@ pub struct Linker {
     pub name: String,
     pub package: RawPackage,
     pub reader_offset: u64,
+    /// Absolute byte offset of this package's PKG_TAG within the
+    /// underlying decompressed `.lin` source. All package-relative
+    /// offsets (name_offset, import_offset, export_offset, each
+    /// export's serial_offset) are translated by adding this when
+    /// seeking the source.
+    pub source_start: u64,
     pub captured: CapturedBytes,
 }
 
@@ -77,6 +83,7 @@ impl Linker {
             name,
             package,
             reader_offset: 0,
+            source_start: 0,
             captured: CapturedBytes::default(),
         }
     }
@@ -97,6 +104,42 @@ impl Linker {
             .position(|export| export.object_name(self) == name)?;
 
         Some((ExportIndex(index), &self.package.exports[index]))
+    }
+
+    /// Resolve an export by walking a path of segments, where each segment must
+    /// match an export whose `package_index` points to the previous match. The
+    /// first segment must be top-level (`package_index == 0`, i.e. outer is the
+    /// package itself).
+    ///
+    /// `parts` are the segments AFTER the linker (package) name. For full_name
+    /// `"Engine.Console"`, `parts = ["Console"]` and we resolve to the top-level
+    /// `Console` Class. For `"Engine.Engine.Console"`, `parts = ["Engine",
+    /// "Console"]` and we resolve to the `ClassProperty` nested inside the
+    /// `Engine` class. Disambiguates names that appear at multiple scopes.
+    pub fn find_export_by_path(&self, parts: &[&str]) -> Option<(ExportIndex, &ObjectExport)> {
+        if parts.is_empty() {
+            return None;
+        }
+        let mut current_outer: i32 = 0;
+        let mut current_idx: Option<usize> = None;
+        for part in parts {
+            let mut found: Option<usize> = None;
+            for (i, export) in self.package.exports.iter().enumerate() {
+                if export.package_index != current_outer {
+                    continue;
+                }
+                if export.object_name(self) != *part {
+                    continue;
+                }
+                found = Some(i);
+                break;
+            }
+            let i = found?;
+            current_idx = Some(i);
+            current_outer = (i as i32) + 1;
+        }
+        let idx = current_idx?;
+        Some((ExportIndex(idx), &self.package.exports[idx]))
     }
 
     /// Match `ULinker::VerifyImport`: select the export whose
@@ -366,9 +409,11 @@ impl ObjectExport {
 
     /// The package name where the export's class type is defined. Engine's
     /// `VerifyImport` matches imports against `(ObjectName, ClassName,
-    /// ClassPackage)`; for a class_index that's an import, the class_package
-    /// is the import's `class_package` field. For an export class_index, it's
-    /// the export's package's name (i.e. our linker name).
+    /// ClassPackage)` and ClassPackage means "the package where the class
+    /// itself lives". For a class_index that's an import, this is *not* the
+    /// import's `class_package` field (that's where Core.Class is — always
+    /// `Core`). It's the top-level package found by walking the import's
+    /// `package_index` chain.
     pub fn class_package<'p>(&self, linker: &'p Linker) -> &'p str {
         let index = self.class_index;
         if index == 0 {
@@ -376,8 +421,17 @@ impl ObjectExport {
         }
         let header = &linker.package;
         if index < 0 {
-            let import = &header.imports[normalize_index(index)];
-            header.names[import.class_package as usize].name.as_str()
+            let mut idx = normalize_index(index);
+            loop {
+                let import = &header.imports[idx];
+                if import.package_index == 0 {
+                    return header.names[import.object_name as usize].name.as_str();
+                }
+                if import.package_index >= 0 {
+                    return header.names[import.class_package as usize].name.as_str();
+                }
+                idx = normalize_index(import.package_index);
+            }
         } else {
             // For an export class, the class package is just the current
             // linker's package.
@@ -650,6 +704,11 @@ where
                 objects_full_loading: Default::default(),
                 loaded_objects: Default::default(),
                 package_file_size: HashMap::new(),
+                present_packages: metadata
+                    .file_load_order
+                    .iter()
+                    .filter_map(|p| package_name_from_path(p))
+                    .collect(),
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
@@ -668,17 +727,24 @@ where
 {
     pub fn new_checked(sources: Vec<R>, mut metadata: ExportedData) -> Self {
         let io_ops = Rc::new(RefCell::new(metadata.raw_io_ops.drain(..).collect()));
+        let file_ptr_order = metadata.file_ptr_order.clone();
+        // Single CheckedLinReader holds all sources and switches between
+        // them based on each op's `file_ptr`. The trace's
+        // `file_ptr_order` (already reversed by bin.rs to consumption
+        // order) tells us which source each new file_ptr value maps to.
+        let combined = CheckedLinReader::new(sources, file_ptr_order, io_ops);
         Self {
-            sources: VecDeque::from_iter(
-                sources
-                    .into_iter()
-                    .map(|reader| CheckedLinReader::new(reader, Rc::clone(&io_ops))),
-            ),
+            sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
                 loaded_objects: Default::default(),
                 package_file_size: HashMap::new(),
+                present_packages: metadata
+                    .file_load_order
+                    .iter()
+                    .filter_map(|p| package_name_from_path(p))
+                    .collect(),
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,

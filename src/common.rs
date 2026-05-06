@@ -27,10 +27,21 @@ pub struct ExportedData {
     pub file_ptr_order: Vec<u32>,
     pub raw_io_ops: Vec<IoOp>,
     pub object_load_order: Vec<String>,
+    #[serde(default)]
+    pub gobj_loaded_order: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub enum IoOp {
-    Seek { to: u64, from: u64 },
-    Read { len: u64 },
+    Seek {
+        to: u64,
+        from: u64,
+        #[serde(default)]
+        file_ptr: u32,
+    },
+    Read {
+        len: u64,
+        #[serde(default)]
+        file_ptr: u32,
+    },
 }

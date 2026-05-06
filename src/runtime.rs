@@ -41,6 +41,13 @@ pub struct UnrealRuntime {
     /// The game's per-package reader treats this as the position the reader is at
     /// once construction is finished, so we seed `Linker::reader_offset` with it.
     pub package_file_size: HashMap<String, u64>,
+    /// Set of package names that are physically present in our sources
+    /// (`common.lin` + `map.lin`). Derived from the QEMU-captured
+    /// `file_load_order`. Used to gate the `VerifyAllImports`-style cascade
+    /// in `load_linker`: imports may reference engine intrinsics or modules
+    /// not packed in this `.lin`, and trying to `load_linker` for one of
+    /// those would consume arbitrary bytes from the source as a fake header.
+    pub present_packages: HashSet<String>,
     /// Mirror of UE2's `GObjLoaded`: every newly constructed object lands here so
     /// `end_load` can drain it in serial-offset order. That's the "random I/O ->
     /// sequential bytes" property the .lin format relies on.
@@ -68,18 +75,95 @@ impl UnrealRuntime {
         R: LinRead,
         E: ByteOrder,
     {
+        let pkg_source_start = reader.source_consumed();
+        debug!(
+            "load_linker {} starting at source 0x{:X}",
+            expected_name, pkg_source_start
+        );
         reader.set_reading_linker_header(true);
         let package = read_package::<E, _>(reader)?;
-        reader.set_reading_linker_header(false);
+        let pkg_source_end = reader.source_consumed();
+        debug!(
+            "load_linker {} ended at source 0x{:X} (consumed 0x{:X} bytes)",
+            expected_name,
+            pkg_source_end,
+            pkg_source_end - pkg_source_start
+        );
 
         let mut linker = Linker::new(expected_name.clone(), package);
+        linker.source_start = pkg_source_start;
         if let Some(size) = self.package_file_size.get(&expected_name) {
             linker.set_position(*size);
         }
 
+        let linker_rc = Rc::new(RefCell::new(linker));
         self.linkers
-            .insert(expected_name, Rc::new(RefCell::new(linker)));
+            .insert(expected_name, Rc::clone(&linker_rc));
 
+        // Mirror SC's `VerifyAllImports` (xbe `0x39da0`), called at the end of
+        // `ULinkerLoad::ULinkerLoad`. For every import in the new package, walk
+        // the package_index chain to its top-level ancestor (the import whose
+        // `package_index == 0`, i.e. a root `Core.Package` reference) and ensure
+        // that package's linker is loaded. The cascade advances the underlying
+        // sequential reader past every stacked package's tables, so when a
+        // subsequent preload seeks into one of *this* package's exports the
+        // bytes it consumes are the actual export body — not whatever stacked
+        // package PKG_TAG happened to follow our header.
+        //
+        // Recursion safety: we insert into `self.linkers` *before* calling
+        // verify_imports so cyclic import graphs short-circuit on the
+        // `contains_key` check below.
+        self.verify_imports::<E, _>(&linker_rc, reader)?;
+
+        reader.set_reading_linker_header(false);
+
+        Ok(())
+    }
+
+    fn verify_imports<E, R>(&mut self, linker: &RcLinker, reader: &mut R) -> io::Result<()>
+    where
+        R: LinRead,
+        E: ByteOrder,
+    {
+        let imports_count = linker.borrow().package.imports.len();
+        for i in 0..imports_count {
+            let pkg_name = {
+                let l = linker.borrow();
+                let mut idx: usize = i;
+                let mut top_name: Option<String> = None;
+                loop {
+                    let imp = &l.package.imports[idx];
+                    if imp.package_index == 0 {
+                        top_name = Some(
+                            l.package.names[imp.object_name as usize].name.clone(),
+                        );
+                        break;
+                    }
+                    if imp.package_index >= 0 {
+                        // Malformed parent reference; skip.
+                        break;
+                    }
+                    idx = (-imp.package_index - 1) as usize;
+                }
+                top_name
+            };
+            let Some(pkg_name) = pkg_name else { continue };
+            if pkg_name.is_empty() {
+                continue;
+            }
+            if self.linkers.contains_key(&pkg_name) {
+                continue;
+            }
+            // Only cascade-load packages that are physically present in our
+            // sources. Imports may reference engine intrinsics or modules
+            // not packed in this `.lin`; calling load_linker for one of
+            // those would consume arbitrary bytes from the source as a
+            // fake package header.
+            if !self.present_packages.contains(&pkg_name) {
+                continue;
+            }
+            self.load_linker::<E, _>(pkg_name, reader)?;
+        }
         Ok(())
     }
 
@@ -300,9 +384,22 @@ impl UnrealRuntime {
 
             // Grab this import's linker
             let linker_inner = linker.borrow();
-            let import = linker_inner
-                .find_import_by_index(import_index)
-                .expect("failed to find import");
+            // Mirror SC's `IndexToObject` (xbe `0x39620`): when the index is
+            // out of range the engine logs `ImportIndex` and still calls
+            // CreateImport with whatever's at `import_table[idx]`. On Xbox
+            // that's whatever happens to be in memory — usually zeroed or
+            // unmapped, which CreateImport silently treats as "no object".
+            // Match that by returning None instead of crashing; the bogus
+            // ref is what was on disk and the engine itself never panics.
+            let Some(import) = linker_inner.find_import_by_index(import_index) else {
+                tracing::warn!(
+                    "out-of-range import index {} in {:?} (table len {}); treating as None",
+                    raw_index,
+                    linker_inner.name,
+                    linker_inner.package.imports.len()
+                );
+                return Ok(None);
+            };
             let import_full_name = import.full_name(&linker_inner, import_index);
             let class_name = import.class_name(&linker_inner).to_owned();
             let class_package = linker_inner.package.names[import.class_package as usize]
@@ -402,8 +499,18 @@ impl UnrealRuntime {
                 "Entering construction branch: {}, class = {}",
                 export_full_name, class_name
             );
-            let object_kind = UObjectKind::try_from(export.class_name(&linker_inner))
-                .unwrap_or_else(|_| panic!("could not find object kind {}", class_name));
+            let Ok(object_kind) = UObjectKind::try_from(export.class_name(&linker_inner)) else {
+                // Native class without a stub. Engine still constructs and
+                // serializes, so this WILL diverge the IO trace if the body
+                // contains nested object refs. For now we skip rather than
+                // panic so we can keep making forward progress on the
+                // non-native classes; revisit when adding the missing kind.
+                tracing::warn!(
+                    "skipping construction of {} (no stub for class {})",
+                    export_full_name, class_name
+                );
+                return Ok(None);
+            };
 
             trace!("Resolved object kind: {object_kind:?}");
 
@@ -537,7 +644,17 @@ impl UnrealRuntime {
         R: LinRead,
         E: ByteOrder,
     {
-        self.load_object_by_full_name_with_class::<E, _>(full_name, None, load_kind, reader)
+        // SC's `LoadObject` wrapper (xbe `0x4ea40`) hardcodes the class filter
+        // to `Core.Class` before calling `StaticLoadObject`. The bootstrap loop
+        // that drives `object_load_order` only loads Class-kind exports; an
+        // export sharing a name with a Class (e.g. a Texture instance also
+        // named `SubActionFade`) is *not* what this entry resolves to.
+        self.load_object_by_full_name_with_class::<E, _>(
+            full_name,
+            Some(("Class", "Core")),
+            load_kind,
+            reader,
+        )
     }
 
     pub fn load_object_by_full_name_with_class<E, R>(
@@ -551,9 +668,14 @@ impl UnrealRuntime {
         R: LinRead,
         E: ByteOrder,
     {
-        let mut parts = full_name.split('.');
-        let module = parts.next().expect("object name does not have a module");
-        let object_name = parts.next().expect("object is not a full name");
+        let parts: Vec<&str> = full_name.split('.').collect();
+        assert!(
+            parts.len() >= 2,
+            "object name does not have a module: {full_name:?}"
+        );
+        let module = parts[0];
+        let path_parts = &parts[1..];
+        let object_name = *path_parts.last().expect("path has no leaf");
 
         let span = span!(
             Level::DEBUG,
@@ -566,6 +688,7 @@ impl UnrealRuntime {
         debug!("Looking up {full_name}");
 
         if module == "Core"
+            && path_parts.len() == 1
             && let Ok(kind) = UObjectKind::try_from(object_name)
         {
             debug!("Object is a builtin of kind {kind:?}");
@@ -585,11 +708,26 @@ impl UnrealRuntime {
         };
 
         let linker_inner = linker.borrow();
-        let lookup = if let Some((cn, cp)) = class_info {
-            linker_inner.find_export_by_name_and_class(object_name, cn, cp)
-        } else {
-            linker_inner.find_export_by_name(object_name)
-        };
+        // Walk the full path so multi-segment names disambiguate. Name-only
+        // lookup matches the first export with that name in the export table,
+        // which mishandles cases like "Engine.Console" (the top-level Class)
+        // vs "Engine.Engine.Console" (a ClassProperty nested in the Engine
+        // class) where a property shares a leaf name with a top-level Class.
+        let lookup = linker_inner
+            .find_export_by_path(path_parts)
+            .filter(|(_, export)| match class_info {
+                Some((cn, cp)) => {
+                    export.class_name(&linker_inner) == cn
+                        && export.class_package(&linker_inner) == cp
+                }
+                None => true,
+            })
+            .or_else(|| match class_info {
+                Some((cn, cp)) => {
+                    linker_inner.find_export_by_name_and_class(object_name, cn, cp)
+                }
+                None => None,
+            });
         let Some((export_index, _)) = lookup else {
             drop(linker_inner);
             tracing::warn!(
