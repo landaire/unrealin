@@ -10,8 +10,8 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-/// Mirror of SC's `UFont::Serialize` (Engine_demo `0x103ed710`):
-///   - `Super::Serialize` (UObject — tagged props)
+/// Mirror of SC's `UFont::Serialize` (Engine_demo 0x103ed710):
+///   - `Super::Serialize` (UObject, tagged props)
 ///   - `Ar << Pages << CharactersPerPage`
 ///   - if `Ar.Ver() >= 69`: `Ar << CharRemap << IsRemapped`
 ///

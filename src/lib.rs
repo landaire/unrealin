@@ -1,5 +1,5 @@
 pub mod de;
-// pub mod ser;
+pub mod ser;
 
 pub(crate) mod common;
 pub(crate) mod object;

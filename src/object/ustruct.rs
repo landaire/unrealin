@@ -90,7 +90,7 @@ impl Struct {
         // currently be borrowed by an outer `deserialize` higher in the stack
         // (recursive super-preload re-entry through this same super chain).
         // The super's children will be walked when its own deserialize ends,
-        // so skipping here is fine — this loop only checks `PropertyFlags::NET`.
+        // so skipping here is fine. This loop only checks `PropertyFlags::NET`.
         if let Some(super_field) = self.parent_object.super_field()
             && let Ok(super_inner) = super_field.try_borrow()
         {

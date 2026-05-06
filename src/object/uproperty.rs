@@ -538,7 +538,14 @@ impl Link for ArrayProperty {
             return Ok(());
         };
 
+        // Mirror SC's `UArrayProperty::Link` (Core_retail 0x10101c3a,
+        // 0x10171790): `Ar.Preload(Inner); Inner->Link(Ar, NULL);`. The
+        // inner Link cascade is what triggers `UStructProperty::Link`'s
+        // `Preload(this->Struct)` for arrays of structs (e.g.
+        // `TerrainInfo.DecoLayers` to `DecorationLayer`).
         runtime.full_load_object::<E, _>(obj, reader)?;
+        let inner_linker = obj.borrow().base_object().linker();
+        crate::object::link_object::<E, _>(runtime, Rc::clone(obj), &inner_linker, reader)?;
 
         Ok(())
     }

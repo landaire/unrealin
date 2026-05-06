@@ -155,6 +155,16 @@ impl<R: LinRead + Sized> UnrealReadExt for R {}
 pub struct LinReader<R> {
     source: R,
     pos: u64,
+    /// Bytes consumed from `source` so far. Unlike `pos` (virtual), this
+    /// tracks the actual sequential byte stream position. Used by the
+    /// serializer to map exports back to their byte ranges in the
+    /// decompressed `.lin` for verbatim copy.
+    source_consumed: u64,
+    /// Stack of capture buffers. Each `read` appends to the top frame.
+    /// `push_capture` / `pop_capture` (the LinRead trait) wrap an
+    /// export's deserialize so we can extract the exact bytes that
+    /// went into its body.
+    capture_stack: Vec<Vec<u8>>,
     version: u16,
     linker: Vec<RcLinker>,
 }
@@ -164,9 +174,15 @@ impl<R> LinReader<R> {
         LinReader {
             source: reader,
             pos: 0,
+            source_consumed: 0,
+            capture_stack: Vec::new(),
             version: 0,
             linker: Default::default(),
         }
+    }
+
+    pub fn source_consumed(&self) -> u64 {
+        self.source_consumed
     }
 }
 
@@ -177,6 +193,10 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let bytes_read = self.source.read(buf)?;
         self.pos += bytes_read as u64;
+        self.source_consumed += bytes_read as u64;
+        if let Some(top) = self.capture_stack.last_mut() {
+            top.extend_from_slice(&buf[..bytes_read]);
+        }
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
         }
@@ -208,6 +228,8 @@ impl<R> Seek for LinReader<R> {
 pub struct CheckedLinReader<R> {
     source: R,
     pos: u64,
+    source_consumed: u64,
+    capture_stack: Vec<Vec<u8>>,
     version: u16,
     /// Package headers are not included in the raw IO ops
     reading_linker_header: bool,
@@ -220,11 +242,17 @@ impl<R> CheckedLinReader<R> {
         CheckedLinReader {
             source: reader,
             pos: 0,
+            source_consumed: 0,
+            capture_stack: Vec::new(),
             reading_linker_header: false,
             io_ops,
             version: 0,
             linker: Default::default(),
         }
+    }
+
+    pub fn source_consumed(&self) -> u64 {
+        self.source_consumed
     }
 }
 
@@ -262,6 +290,10 @@ where
 
         let bytes_read = self.source.read(buf)?;
         self.pos += bytes_read as u64;
+        self.source_consumed += bytes_read as u64;
+        if let Some(top) = self.capture_stack.last_mut() {
+            top.extend_from_slice(&buf[..bytes_read]);
+        }
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
         }
@@ -346,6 +378,14 @@ pub trait LinRead: io::Read + io::Seek {
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()>;
     fn push_linker(&mut self, linker: RcLinker);
     fn pop_linker(&mut self) -> RcLinker;
+    /// Begin capturing bytes read into a new buffer. Subsequent `read`
+    /// and `cheat` calls append to the *innermost* capture frame, so
+    /// nested preloads correctly attribute their bytes to their own
+    /// frame (not the outer one).
+    fn push_capture(&mut self);
+    /// End the innermost capture frame and return the bytes read while
+    /// it was active.
+    fn pop_capture(&mut self) -> Vec<u8>;
 }
 
 impl<R> LinRead for LinReader<R>
@@ -376,6 +416,14 @@ where
             self.pos = prev.borrow().reader_offset;
         }
         linker
+    }
+
+    fn push_capture(&mut self) {
+        self.capture_stack.push(Vec::new());
+    }
+
+    fn pop_capture(&mut self) -> Vec<u8> {
+        self.capture_stack.pop().unwrap_or_default()
     }
 }
 
@@ -432,5 +480,13 @@ where
             self.pos = prev.borrow().reader_offset;
         }
         linker
+    }
+
+    fn push_capture(&mut self) {
+        self.capture_stack.push(Vec::new());
+    }
+
+    fn pop_capture(&mut self) -> Vec<u8> {
+        self.capture_stack.pop().unwrap_or_default()
     }
 }

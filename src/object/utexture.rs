@@ -12,26 +12,26 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-/// SC's `UTexture::Serialize` (Engine_demo `0x103067b2` → `0x104f9890`):
-///   - `Super::Serialize` (UMaterial — tagged-property loop only).
+/// SC's `UTexture::Serialize` (Engine_demo 0x103067b2, 0x104f9890):
+///   - `Super::Serialize` (UMaterial, tagged-property loop only).
 ///   - Three `TArray<FMipmap>` serializes for the mip levels (we collapse
 ///     these into a single `mips` vector since SC's three calls write
-///     the same array three times — see `0x104f9b60`).
+///     the same array three times. See 0x104f9b60).
 ///
-/// Each `FMipmap::operator<<` (`0x104fe2b0`) reads:
-///   - `TLazyArray<BYTE> DataArray` (see [`read_lazy_array_byte`]).
+/// Each `FMipmap::operator<<` (0x104fe2b0) reads:
+///   - `TLazyArray<BYTE> DataArray`.
 ///   - `INT USize`, `INT VSize`.
 ///   - `BYTE UBits`, `BYTE VBits`.
 ///
 /// `TLazyArray<BYTE>::operator<<` (UT2004's `UnTemplate.h` matches
-/// SC's `0x103cf0b0`) does, on the loading path:
+/// SC's 0x103cf0b0) does, on the loading path:
 ///   - `Ar << SeekPos` (4 bytes)
-///   - `Ar.AttachLazyLoader(this)` — internally `SavedPos = Ar.Tell()`
-///   - if `!GLazyLoad`: `this->Load()` — which does
-///     `PushedPos = Ar.Tell(); Ar.Seek(SavedPos); Ar << TArray; Ar.Seek(PushedPos);`
+///   - `Ar.AttachLazyLoader(this)`. Internally `SavedPos = Ar.Tell()`.
+///   - if `!GLazyLoad`: `this->Load()`, which does
+///     `PushedPos = Ar.Tell(); Ar.Seek(SavedPos); Ar << TArray; Ar.Seek(PushedPos);`.
 ///     The `Ar.Seek(SavedPos)` is a no-op (we just set SavedPos=Tell)
 ///     but the QEMU plugin still records the `fseek`.
-///   - `Ar.Seek(SeekPos)` — moves to the post-data position.
+///   - `Ar.Seek(SeekPos)`. Moves to the post-data position.
 #[derive(Default, Debug)]
 pub struct Texture {
     pub parent_object: Object,
@@ -76,7 +76,7 @@ impl DeserializeUnrealObject for Texture {
                 let skip_offset = reader.read_i32::<E>()?;
                 let saved_pos = reader.stream_position()?;
                 // `AttachLazyLoader` records `SavedPos = Ar.Tell()` and
-                // `Load()` then does `Ar.Seek(SavedPos)` — a no-op move, but
+                // `Load()` then does `Ar.Seek(SavedPos)`, a no-op move, but
                 // QEMU records the fseek so we must emit the seek too.
                 reader.seek(SeekFrom::Start(saved_pos))?;
 

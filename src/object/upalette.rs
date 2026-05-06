@@ -10,9 +10,9 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-/// Mirror of SC's `UPalette::Serialize` (Engine_demo `0x10305123` →
-/// `0x104fbf90`):
-///   - `Super::Serialize` (UObject — tagged props)
+/// Mirror of SC's `UPalette::Serialize` (Engine_demo 0x10305123,
+/// 0x104fbf90):
+///   - `Super::Serialize` (UObject, tagged props)
 ///   - `Ar << Colors` where `Colors` is `TArray<FColor>` and each
 ///     `FColor` is `(B, G, R, A)` packed as 4 bytes.
 ///   - For files older than version 66, the alpha byte is patched to

@@ -30,7 +30,7 @@ impl RcUnrealObjPointer {
 pub struct UnrealRuntime {
     pub linkers: HashMap<String, RcLinker>,
     /// Objects currently between `seek+ClearFlags(RF_NeedLoad)` and end of
-    /// serialize body — mirrors UE2's `RF_Preloading`. Tracked on the runtime
+    /// serialize body. Mirrors UE2's `RF_Preloading`. Tracked on the runtime
     /// so we can entry-check without borrowing the `RefCell` (avoids
     /// conflicting with the `borrow_mut()` held by the active `deserialize`).
     pub objects_full_loading: HashSet<RcUnrealObjPointer>,
@@ -134,7 +134,7 @@ impl UnrealRuntime {
         }
 
         // Splinter Cell's `EndLoad` (verified by decompilation of the SC xbe at
-        // 0x48d80) processes ObjLoaded in *insertion order* — there is no
+        // 0x48d80) processes ObjLoaded in *insertion order*. There is no
         // `Sort(...)` call like UT2004 has. New items appended during a
         // `Preload(...)` go to the back of the same array and are processed
         // after the current items. We match that with a FIFO drain that takes
@@ -184,12 +184,12 @@ impl UnrealRuntime {
         // the `RefCell` (the active `deserialize_object` already holds a
         // mutable borrow on this same object during its tag-value loop).
         //
-        // - `loaded_objects` ↔ inverse of UE2 `RF_NeedLoad`. Set after the
-        //   serialize body completes.
-        // - `objects_full_loading` ↔ UE2 `RF_Preloading`. Set across the
-        //   seek+serialize span. Recursive `Preload(this)` from inside the
-        //   serialize body short-circuits here, matching the engine where
-        //   `RF_NeedLoad` was just cleared before `Object->Serialize(*this)`.
+        // `loaded_objects` is the inverse of UE2 `RF_NeedLoad`, set after
+        // the serialize body completes. `objects_full_loading` is UE2
+        // `RF_Preloading`, set across the seek+serialize span. Recursive
+        // `Preload(this)` from inside the serialize body short-circuits
+        // here, matching the engine where `RF_NeedLoad` was just cleared
+        // before `Object->Serialize(*this)`.
         let pointer_value = RcUnrealObjPointer::from_unreal_object(obj);
         if self.loaded_objects.contains(&pointer_value)
             || self.objects_full_loading.contains(&pointer_value)
@@ -237,7 +237,17 @@ impl UnrealRuntime {
 
         self.objects_full_loading.insert(pointer_value);
 
+        // Capture the raw bytes consumed for this export. Nested
+        // preloads push their own frames so they don't pollute ours;
+        // we get only this object's body.
+        reader.push_capture();
         deserialize_object::<E, _>(self, Rc::clone(obj), &linker, reader)?;
+        let body_bytes = reader.pop_capture();
+        linker
+            .borrow_mut()
+            .captured
+            .bodies
+            .insert(export_index.0, body_bytes);
 
         self.objects_full_loading.remove(&pointer_value);
         self.loaded_objects.insert(pointer_value);

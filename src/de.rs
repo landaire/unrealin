@@ -36,7 +36,7 @@ impl ImportIndex {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ExportIndex(usize);
+pub struct ExportIndex(pub(crate) usize);
 
 impl ExportIndex {
     pub fn from_raw(idx: i32) -> Self {
@@ -44,16 +44,30 @@ impl ExportIndex {
 
         ExportIndex(normalize_index(idx))
     }
+
+    pub fn raw(&self) -> usize {
+        self.0
+    }
 }
 
 pub(crate) type WeakLinker = Weak<RefCell<Linker>>;
 pub(crate) type RcLinker = Rc<RefCell<Linker>>;
 
-pub(crate) struct Linker {
+/// Captured raw body bytes per export, keyed by 0-based export index.
+/// Filled by `preload`'s capture frame so the per-package serializer
+/// can write export bodies verbatim: the bytes engine actually
+/// consumed for that export's `Serialize`, in original order.
+#[derive(Default, Debug)]
+pub struct CapturedBytes {
+    pub bodies: std::collections::HashMap<usize, Vec<u8>>,
+}
+
+pub struct Linker {
     pub objects: HashMap<ExportIndex, RcUnrealObject>,
     pub name: String,
     pub package: RawPackage,
     pub reader_offset: u64,
+    pub captured: CapturedBytes,
 }
 
 impl Linker {
@@ -63,6 +77,7 @@ impl Linker {
             name,
             package,
             reader_offset: 0,
+            captured: CapturedBytes::default(),
         }
     }
 
@@ -86,7 +101,7 @@ impl Linker {
 
     /// Match `ULinker::VerifyImport`: select the export whose
     /// `ObjectName + ClassName + ClassPackage` triple matches. Returns None
-    /// if no triple match — engine then falls back to native class lookup
+    /// if no triple match. Engine then falls back to native class lookup
     /// (which we don't model), so the import resolves to "no object" and
     /// load_object_by_full_name returns None.
     pub fn find_export_by_name_and_class(
@@ -680,6 +695,10 @@ where
     E: ByteOrder,
     R: LinRead,
 {
+    pub fn linkers(&self) -> &HashMap<String, Rc<RefCell<Linker>>> {
+        &self.runtime.linkers
+    }
+
     fn reader(&mut self) -> &mut R {
         self.sources.front_mut().expect("no file reader available?")
     }

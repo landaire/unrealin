@@ -1,5 +1,5 @@
 use std::{
-    io::{BufReader, BufWriter, Cursor},
+    io::{BufReader, BufWriter, Cursor, Write},
     path::PathBuf,
 };
 
@@ -109,28 +109,31 @@ fn main() -> Result<()> {
         vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
         metadata,
     );
-    lin_decoder
-        .decode_linear_file()
-        .expect("failed to decode lienar file");
+    // The replay still hits a divergence partway through (Echelon
+    // ECanvas, see docs/io-mismatch-investigation.md). Catch the panic
+    // so we can still dump what was parsed before the failure.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = lin_decoder.decode_linear_file();
+    }));
 
-    // for (i, package) in linear_file.packages_mut().iter_mut().enumerate() {
-    //     let out_path = output_dir.join(format!("{i}.bin"));
-    //     println!("Rewriting {:?}", out_path);
-    //     let mut writer = std::fs::File::create(&out_path)?;
-    //     unrealin::ser::serialize_unreal_package(writer, package)
-    //         .expect("failed to serialize package");
-
-    //     let reader = std::fs::read(&out_path).unwrap();
-    //     let mut input = reader.as_ref();
-    //     le_u32::<_, ContextError>(&mut input);
-    //     let res = de::read_package(&mut input).unwrap();
-    //     for (i, export) in res.exports.iter().enumerate() {
-    //         if export.object_name < 0 || export.object_name as usize >= res.names.len() {
-    //             println!("Prev: {:#X?}", res.exports[i - 1]);
-    //             panic!("Bad export: {i} {:#X?}", export);
-    //         }
-    //     }
-    // }
+    let pkg_out = output_dir.join("packages");
+    std::fs::create_dir_all(&pkg_out)?;
+    for (name, linker) in lin_decoder.linkers() {
+        let linker = linker.borrow();
+        let ext = unrealin::ser::extension_for(name);
+        let path = pkg_out.join(format!("{name}.{ext}"));
+        let f = std::fs::File::create(&path)
+            .wrap_err_with(|| format!("failed to create {path:?}"))?;
+        let mut bw = BufWriter::new(f);
+        if let Err(e) = unrealin::ser::serialize_linker_le(&linker, &mut bw) {
+            eprintln!("warn: failed to serialize {name}: {e}");
+        }
+        bw.flush()?;
+        println!(
+            "wrote {path:?} ({} exports captured)",
+            linker.captured.bodies.len()
+        );
+    }
 
     Ok(())
 }
