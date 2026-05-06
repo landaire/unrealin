@@ -84,6 +84,32 @@ impl Linker {
         Some((ExportIndex(index), &self.package.exports[index]))
     }
 
+    /// Match `ULinker::VerifyImport`: select the export whose
+    /// `ObjectName + ClassName + ClassPackage` triple matches. Returns None
+    /// if no triple match — engine then falls back to native class lookup
+    /// (which we don't model), so the import resolves to "no object" and
+    /// load_object_by_full_name returns None.
+    pub fn find_export_by_name_and_class(
+        &self,
+        name: &str,
+        class_name: &str,
+        class_package: &str,
+    ) -> Option<(ExportIndex, &ObjectExport)> {
+        for (i, export) in self.package.exports.iter().enumerate() {
+            if export.object_name(self) != name {
+                continue;
+            }
+            if export.class_name(self) != class_name {
+                continue;
+            }
+            if export.class_package(self) != class_package {
+                continue;
+            }
+            return Some((ExportIndex(i), export));
+        }
+        None
+    }
+
     pub fn find_import_by_index(&self, index: ImportIndex) -> Option<&Import> {
         self.package.imports.get(index.0)
     }
@@ -300,8 +326,48 @@ impl ObjectExport {
         }
     }
 
-    pub fn full_name<'p>(&self, linker: &'p Linker) -> String {
-        format!("{}.{}", &linker.name, self.object_name(linker))
+    pub fn full_name(&self, linker: &Linker) -> String {
+        // Walk the `package_index` chain (export index when positive, import
+        // when negative, terminator when 0) and prepend each segment.
+        // Matches the QEMU plugin's `gobj_loaded_order` formatting (which
+        // walks `Outer` chains in `GObjLoaded.AddItem`).
+        let mut parts: Vec<String> = vec![self.object_name(linker).to_owned()];
+        let mut cursor = self.package_index;
+        while cursor != 0 {
+            if cursor > 0 {
+                let exp = &linker.package.exports[(cursor - 1) as usize];
+                parts.push(exp.object_name(linker).to_owned());
+                cursor = exp.package_index;
+            } else {
+                let imp = &linker.package.imports[(-cursor - 1) as usize];
+                parts.push(imp.object_name(linker).to_owned());
+                cursor = imp.package_index;
+            }
+        }
+        parts.push(linker.name.clone());
+        parts.reverse();
+        parts.join(".")
+    }
+
+    /// The package name where the export's class type is defined. Engine's
+    /// `VerifyImport` matches imports against `(ObjectName, ClassName,
+    /// ClassPackage)`; for a class_index that's an import, the class_package
+    /// is the import's `class_package` field. For an export class_index, it's
+    /// the export's package's name (i.e. our linker name).
+    pub fn class_package<'p>(&self, linker: &'p Linker) -> &'p str {
+        let index = self.class_index;
+        if index == 0 {
+            return "Core";
+        }
+        let header = &linker.package;
+        if index < 0 {
+            let import = &header.imports[normalize_index(index)];
+            header.names[import.class_package as usize].name.as_str()
+        } else {
+            // For an export class, the class package is just the current
+            // linker's package.
+            linker.name.as_str()
+        }
     }
 }
 
@@ -567,7 +633,11 @@ where
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
+                loaded_objects: Default::default(),
                 package_file_size: HashMap::new(),
+                pending_loads: Vec::new(),
+                begin_load_count: 0,
+                next_construction_index: 0,
             },
             file_table: Vec::new(),
             metadata,
@@ -592,7 +662,11 @@ where
             runtime: UnrealRuntime {
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
+                loaded_objects: Default::default(),
                 package_file_size: HashMap::new(),
+                pending_loads: Vec::new(),
+                begin_load_count: 0,
+                next_construction_index: 0,
             },
             file_table: Vec::new(),
             metadata,
@@ -616,11 +690,13 @@ where
         for object in &self.metadata.object_load_order {
             let reader = self.sources.front_mut().expect("no file reader available?");
             println!("Loading {object}");
+            self.runtime.begin_load();
             self.runtime.load_object_by_full_name::<E, _>(
                 object,
                 crate::runtime::LoadKind::Load,
                 reader,
             )?;
+            self.runtime.end_load::<E, _>(reader)?;
         }
 
         Ok(())

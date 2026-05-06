@@ -10,6 +10,43 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
+fn handle_optional_debug_info<E, R>(
+    runtime: &mut UnrealRuntime,
+    linker: &RcLinker,
+    reader: &mut R,
+    bytes_read: &mut usize,
+    script_size: usize,
+) -> std::io::Result<Vec<Expr>>
+where
+    E: byteorder::ByteOrder,
+    R: LinRead,
+{
+    let mut out = Vec::new();
+    if *bytes_read >= script_size {
+        return Ok(out);
+    }
+    let before_pos = reader.stream_position()?;
+    let peek = reader.read_u8()?;
+    let mut version: Option<u32> = None;
+    if let Ok(ExprToken::DebugInfo) = ExprToken::try_from(peek) {
+        let v = reader.read_u32::<E>()?;
+        out.push(Expr::Token(ExprToken::DebugInfo));
+        out.push(Expr::Data(v.to_le_bytes().to_vec()));
+        version = Some(v);
+    }
+    reader.seek(SeekFrom::Start(before_pos))?;
+    if version == Some(100) {
+        out.append(&mut deserialize_expr::<E, _>(
+            runtime,
+            linker,
+            reader,
+            bytes_read,
+            script_size,
+        )?);
+    }
+    Ok(out)
+}
+
 pub fn deserialize_expr<E, R>(
     runtime: &mut UnrealRuntime,
     linker: &RcLinker,
@@ -57,40 +94,9 @@ where
         }
 
         trace!("Reading possible debug info");
-        // Handle debug info
-        if *bytes_read < script_size {
-            // NOTE: These are purposefully not counted towards
-            // the read data size!
-            let before_pos = reader.stream_position()?;
-            let mut debug_tokens = Vec::new();
-            let version = if let Ok(ExprToken::DebugInfo) = ExprToken::try_from(reader.read_u8()?) {
-                let version = reader.read_u32::<E>()?;
-                debug_tokens = vec![
-                    Expr::Token(ExprToken::DebugInfo),
-                    // TODO: Endianness
-                    Expr::Data(version.to_le_bytes().to_vec()),
-                ];
-
-                Some(version)
-            } else {
-                None
-            };
-
-            reader.seek(SeekFrom::Start(before_pos))?;
-
-            if let Some(100) = version {
-                trace!("Reading actual debug info");
-                debug_tokens.append(&mut deserialize_expr::<E, _>(
-                    runtime,
-                    linker,
-                    reader,
-                    bytes_read,
-                    script_size,
-                )?);
-            }
-
-            result.append(&mut debug_tokens);
-        }
+        let mut debug_tokens =
+            handle_optional_debug_info::<E, _>(runtime, linker, reader, bytes_read, script_size)?;
+        result.append(&mut debug_tokens);
 
         return Ok(result);
     }
@@ -104,35 +110,95 @@ where
             let before = reader.stream_position()?;
             let obj = reader.read_object::<E>(runtime, linker)?;
             let after = reader.stream_position()?;
-
-            // The size of the object pointer is 4 bytes on 32-bit platforms.
-            // So we increase by 4.
-            *bytes_read += ((after - before) as usize).next_multiple_of(4);
-
+            // In-memory script slot for an object pointer is 4 bytes regardless
+            // of how many bytes the packed_int consumed in the file.
+            let _ = after - before;
+            *bytes_read += 4;
             obj
+        }};
+    }
+
+    macro_rules! read_fname {
+        () => {{
+            let before = reader.stream_position()?;
+            let idx = reader.read_packed_int()?;
+            let after = reader.stream_position()?;
+            let _ = after - before;
+            *bytes_read += 4;
+            idx
+        }};
+    }
+
+    macro_rules! read_int {
+        () => {{
+            let v = reader.read_i32::<E>()?;
+            *bytes_read += 4;
+            v
+        }};
+    }
+
+    macro_rules! read_word {
+        () => {{
+            let v = reader.read_u16::<E>()?;
+            *bytes_read += 2;
+            v
+        }};
+    }
+
+    macro_rules! read_byte {
+        () => {{
+            let v = reader.read_u8()?;
+            *bytes_read += 1;
+            v
+        }};
+    }
+
+    macro_rules! read_float {
+        () => {{
+            let v = reader.read_f32::<E>()?;
+            *bytes_read += 4;
+            v
+        }};
+    }
+
+    macro_rules! sub_expr {
+        () => {{
+            let mut sub =
+                deserialize_expr::<E, _>(runtime, linker, reader, bytes_read, script_size)?;
+            assert!(!sub.is_empty());
+            sub
         }};
     }
 
     match token {
         ExprToken::LocalVariable | ExprToken::InstanceVariable | ExprToken::DefaultVariable => {
             let obj = read_object!();
-
             result.push(Expr::Object(obj));
         }
-        ExprToken::Return => {
-            result.append(&mut deserialize_expr::<E, _>(
-                runtime,
-                linker,
-                reader,
-                bytes_read,
-                script_size,
-            )?);
+        ExprToken::Return | ExprToken::EatString | ExprToken::DynArrayLength => {
+            result.append(&mut sub_expr!());
         }
-        ExprToken::Switch => todo!(),
-        ExprToken::Jump => todo!(),
-        ExprToken::JumpIfNot => todo!(),
-        ExprToken::Assert => todo!(),
-        ExprToken::Case => todo!(),
+        ExprToken::Switch => {
+            let _ = read_byte!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::Jump => {
+            let _ = read_word!();
+        }
+        ExprToken::JumpIfNot => {
+            let _ = read_word!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::Assert => {
+            let _ = read_word!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::Case => {
+            let w = read_word!();
+            if w != 0xFFFF {
+                result.append(&mut sub_expr!());
+            }
+        }
         ExprToken::Nothing
         | ExprToken::BoolVariable
         | ExprToken::EndOfScript
@@ -146,53 +212,184 @@ where
         | ExprToken::IteratorPop
         | ExprToken::Stop
         | ExprToken::IteratorNext => {}
-        ExprToken::LabelTable => todo!(),
-        ExprToken::GotoLabel => todo!(),
-        ExprToken::EatString => todo!(),
-        ExprToken::Let => todo!(),
-        ExprToken::DynArrayElement => todo!(),
-        ExprToken::New => todo!(),
-        ExprToken::ClassContext => todo!(),
-        ExprToken::MetaCast => todo!(),
-        ExprToken::LetBool => todo!(),
-        ExprToken::LineNumber => todo!(),
-        ExprToken::Skip => todo!(),
-        ExprToken::Context => todo!(),
-        ExprToken::ArrayElement => todo!(),
-        ExprToken::VirtualFunction => todo!(),
-        ExprToken::FinalFunction => todo!(),
-        ExprToken::IntConst => todo!(),
-        ExprToken::FloatConst => todo!(),
-        ExprToken::StringConst => todo!(),
-        ExprToken::ObjectConst => todo!(),
-        ExprToken::NameConst => todo!(),
-        ExprToken::RotationConst => todo!(),
-        ExprToken::VectorConst => todo!(),
-        ExprToken::ByteConst => todo!(),
+        ExprToken::LabelTable => {
+            // Loop FLabelEntry (FName + INT) until name == 0.
+            loop {
+                let name = read_fname!();
+                let _line = read_int!();
+                if name == 0 {
+                    break;
+                }
+            }
+        }
+        ExprToken::GotoLabel => {
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::Let | ExprToken::LetBool | ExprToken::LetDelegate => {
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::DynArrayElement | ExprToken::ArrayElement => {
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::New => {
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::ClassContext | ExprToken::Context => {
+            result.append(&mut sub_expr!());
+            let _ = read_word!();
+            let _ = read_byte!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::MetaCast | ExprToken::DynamicCast => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::LineNumber => {
+            // UE2 source UStruct::SerializeExpr doesn't enumerate this in the
+            // switch (falls through to default error). Some script tooling
+            // emits it though; treat as no payload to avoid spurious panics.
+        }
+        ExprToken::Skip => {
+            let _ = read_word!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::VirtualFunction | ExprToken::GlobalFunction => {
+            let _ = read_fname!();
+            loop {
+                let mut parsed = sub_expr!();
+                let primary = parsed[0].clone();
+                result.append(&mut parsed);
+                if let Expr::Token(ExprToken::EndFunctionParms) = primary {
+                    break;
+                }
+            }
+            result.append(&mut handle_optional_debug_info::<E, _>(
+                runtime,
+                linker,
+                reader,
+                bytes_read,
+                script_size,
+            )?);
+        }
+        ExprToken::FinalFunction => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+            loop {
+                let mut parsed = sub_expr!();
+                let primary = parsed[0].clone();
+                result.append(&mut parsed);
+                if let Expr::Token(ExprToken::EndFunctionParms) = primary {
+                    break;
+                }
+            }
+            result.append(&mut handle_optional_debug_info::<E, _>(
+                runtime,
+                linker,
+                reader,
+                bytes_read,
+                script_size,
+            )?);
+        }
+        ExprToken::IntConst => {
+            let _ = read_int!();
+        }
+        ExprToken::FloatConst => {
+            let _ = read_float!();
+        }
+        ExprToken::StringConst => {
+            // Read bytes until null terminator.
+            loop {
+                let b = read_byte!();
+                if b == 0 {
+                    break;
+                }
+            }
+        }
+        ExprToken::UnicodeStringConst => {
+            loop {
+                let w = read_word!();
+                if w == 0 {
+                    break;
+                }
+            }
+        }
+        ExprToken::ObjectConst => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+        }
+        ExprToken::NameConst => {
+            let _ = read_fname!();
+        }
+        ExprToken::RotationConst => {
+            let _ = read_int!();
+            let _ = read_int!();
+            let _ = read_int!();
+        }
+        ExprToken::VectorConst => {
+            let _ = read_float!();
+            let _ = read_float!();
+            let _ = read_float!();
+        }
+        ExprToken::ByteConst | ExprToken::IntConstByte => {
+            let _ = read_byte!();
+        }
         ExprToken::NativeParm => {
             let obj = read_object!();
             result.push(Expr::Object(obj));
         }
-        ExprToken::IntConstByte => todo!(),
-        ExprToken::DynamicCast => todo!(),
-        ExprToken::Iterator => todo!(),
-        ExprToken::StructCmpEq => todo!(),
-        ExprToken::StructCmpNe => todo!(),
-        ExprToken::UnicodeStringConst => todo!(),
-        ExprToken::RangeConst => todo!(),
-        ExprToken::StructMember => todo!(),
-        ExprToken::DynArrayLength => todo!(),
-        ExprToken::GlobalFunction => todo!(),
-        ExprToken::PrimitiveCast => todo!(),
-        ExprToken::DynArrayInsert => todo!(),
-        ExprToken::DynArrayRemove => todo!(),
-        ExprToken::DebugInfo => todo!(),
-        ExprToken::DelegateFunction => todo!(),
-        ExprToken::DelegateProperty => todo!(),
-        ExprToken::LetDelegate => todo!(),
-        ExprToken::PointerConst => todo!(),
-        ExprToken::ExtendedNative => todo!(),
-        ExprToken::FirstNative => todo!(),
+        ExprToken::Iterator => {
+            result.append(&mut sub_expr!());
+            let _ = read_word!();
+        }
+        ExprToken::StructCmpEq | ExprToken::StructCmpNe => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::StructMember => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::PrimitiveCast => {
+            let _kind = read_byte!();
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::DynArrayInsert | ExprToken::DynArrayRemove => {
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+            result.append(&mut sub_expr!());
+        }
+        ExprToken::DebugInfo => {
+            let _version = read_int!();
+            let _line = read_int!();
+            let _char_pos = read_int!();
+            let _opcode = read_byte!();
+        }
+        ExprToken::DelegateFunction => {
+            let obj = read_object!();
+            result.push(Expr::Object(obj));
+            let _ = read_fname!();
+        }
+        ExprToken::DelegateProperty => {
+            let _ = read_fname!();
+        }
+        ExprToken::RangeConst | ExprToken::PointerConst => {
+            // Not enumerated in UT2004's UStruct::SerializeExpr (default
+            // appErrorf). Treat as no-op for now and let the next divergence
+            // surface naturally.
+        }
+        ExprToken::ExtendedNative | ExprToken::FirstNative => {
+            // Handled by the "native" branch above the switch.
+            unreachable!("native tokens are handled before the switch");
+        }
     }
 
     Ok(result)

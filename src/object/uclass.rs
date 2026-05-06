@@ -79,6 +79,10 @@ impl DeserializeUnrealObject for Class {
         }
 
         debug!("default_tags");
+        // Reset so the second-pass case (UE2's `Preload` re-runs the serialize
+        // body when the inner super-recursion already cleared RF_NeedLoad)
+        // doesn't accumulate duplicates.
+        self.default_tags.clear();
         loop {
             let mut tag = PropertyTag::default();
             tag.deserialize::<E, _>(runtime, linker, reader)?;
@@ -86,12 +90,47 @@ impl DeserializeUnrealObject for Class {
                 break;
             }
             trace!(
-                "skipping tagged property value: type={} size={:#X}",
+                "tag value: type={} size={:#X}",
                 tag.property_type, tag.size
             );
-            if tag.size > 0 {
-                let mut buf = vec![0u8; tag.size as usize];
-                reader.cheat(&mut buf)?;
+            // Match `FPropertyTag::SerializeTaggedProperty` in UnClass.cpp.
+            // BoolProperty value is in `Tag.Info & 0x80` (no extra bytes).
+            // ObjectProperty / ClassProperty / DelegateProperty values are
+            // packed_int object refs that need to trigger `CreateExport`
+            // via `read_object`. Other primitives we still consume as raw
+            // bytes through `cheat()` since they don't trigger object loads.
+            const NAME_BYTE_PROPERTY: u8 = 1;
+            const NAME_INT_PROPERTY: u8 = 2;
+            const NAME_BOOL_PROPERTY: u8 = 3;
+            const NAME_FLOAT_PROPERTY: u8 = 4;
+            const NAME_OBJECT_PROPERTY: u8 = 5;
+            const NAME_NAME_PROPERTY: u8 = 6;
+            const NAME_DELEGATE_PROPERTY: u8 = 7;
+            const NAME_CLASS_PROPERTY: u8 = 8;
+            match tag.property_type {
+                NAME_BOOL_PROPERTY => {
+                    // No extra value bytes.
+                }
+                NAME_OBJECT_PROPERTY | NAME_CLASS_PROPERTY | NAME_DELEGATE_PROPERTY => {
+                    let _ = reader.read_object::<E>(runtime, linker)?;
+                }
+                NAME_NAME_PROPERTY => {
+                    let _ = reader.read_packed_int()?;
+                }
+                NAME_INT_PROPERTY | NAME_FLOAT_PROPERTY => {
+                    let mut buf = [0u8; 4];
+                    reader.cheat(&mut buf)?;
+                }
+                NAME_BYTE_PROPERTY => {
+                    let mut buf = [0u8; 1];
+                    reader.cheat(&mut buf)?;
+                }
+                _ => {
+                    if tag.size > 0 {
+                        let mut buf = vec![0u8; tag.size as usize];
+                        reader.cheat(&mut buf)?;
+                    }
+                }
             }
             self.default_tags.push(tag);
         }

@@ -9,9 +9,11 @@ mod uconst;
 mod ucylinder;
 mod uenum;
 mod ufield;
+mod ufont;
 mod ufunction;
 mod ulanguage;
 mod uobject;
+mod upalette;
 mod uprimitive;
 mod uproperty;
 mod urenderdevice;
@@ -19,6 +21,7 @@ mod ustate;
 mod ustruct;
 mod usubsystem;
 mod utext_buffer;
+mod utexture;
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -40,9 +43,11 @@ pub mod builtins {
     pub use super::ucylinder::Cylinder;
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
+    pub use super::ufont::Font;
     pub use super::ufunction::Function;
     pub use super::ulanguage::Language;
     pub use super::uobject::Object;
+    pub use super::upalette::Palette;
     pub use super::uprimitive::Primitive;
     pub use super::uproperty::{
         ArrayProperty, BoolProperty, ByteProperty, ClassProperty, FloatProperty, IntProperty, Link,
@@ -53,6 +58,7 @@ pub mod builtins {
     pub use super::ustruct::Struct;
     pub use super::usubsystem::Subsystem;
     pub use super::utext_buffer::TextBuffer;
+    pub use super::utexture::Texture;
 }
 
 use builtins::*;
@@ -218,7 +224,10 @@ register_builtins!(
     StructProperty,
     ByteProperty,
     ArrayProperty,
-    Enum
+    Enum,
+    Font,
+    Texture,
+    Palette
 );
 
 macro_rules! make_inherited_objects {
@@ -324,7 +333,10 @@ make_inherited_objects!(
     StructProperty,
     ByteProperty,
     ArrayProperty,
-    Enum
+    Enum,
+    Font,
+    Texture,
+    Palette
 );
 
 macro_rules! register_linkable {

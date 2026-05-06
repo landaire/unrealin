@@ -241,12 +241,14 @@ where
                 .expect("conducting an IO op but there are no more IO ops")
             {
                 IoOp::Read { len } => {
+                    let remaining = ops.len();
                     assert_eq!(
                         buf.len() as u64,
                         len,
-                        "Expected a read of {:#X} bytes, got read of {:#X} instead",
+                        "Expected a read of {:#X} bytes, got read of {:#X} instead (remaining ops: {})",
                         len,
-                        buf.len()
+                        buf.len(),
+                        remaining
                     );
                 }
                 other => panic!(

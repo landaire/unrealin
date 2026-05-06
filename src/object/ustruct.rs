@@ -86,9 +86,14 @@ impl Struct {
             current_field = as_field.next();
         }
 
-        // Try to grab the super struct?
-        if let Some(super_field) = self.parent_object.super_field() {
-            let super_inner = super_field.borrow();
+        // Try to grab the super struct? Use try_borrow because the super may
+        // currently be borrowed by an outer `deserialize` higher in the stack
+        // (recursive super-preload re-entry through this same super chain).
+        // The super's children will be walked when its own deserialize ends,
+        // so skipping here is fine — this loop only checks `PropertyFlags::NET`.
+        if let Some(super_field) = self.parent_object.super_field()
+            && let Ok(super_inner) = super_field.try_borrow()
+        {
             let super_struct = super_inner
                 .parent_of_kind(UObjectKind::Struct)
                 .expect("failed to get parent Struct")

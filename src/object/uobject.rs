@@ -21,7 +21,6 @@ use crate::{
 pub struct Object {
     pub name: String,
     pub flags: ObjectFlags,
-    /// The concrete type of this object
     pub concrete_object_kind: Option<UObjectKind>,
     pub needs_load: bool,
     pub needs_post_load: bool,
@@ -29,9 +28,12 @@ pub struct Object {
     pub export_index: Option<ExportIndex>,
     pub outer_object: Option<RcUnrealObject>,
     pub concrete_obj: Option<WeakUnrealObject>,
-    // package_index: usize,
-    // class: i32,
-    // outer: i32, //RcUnrealObject,
+    /// Monotonic counter set the first time the object is constructed by the
+    /// runtime. Mirrors UE2's allocator-determined `ULinker*` ordering: the
+    /// engine's `EndLoad` sort uses raw `ULinker*` pointer values, which in
+    /// practice tracks "construction order" closely; we use an explicit
+    /// counter so behaviour is reproducible.
+    pub construction_index: u64,
 }
 
 impl Default for Object {
@@ -46,6 +48,7 @@ impl Default for Object {
             export_index: Default::default(),
             outer_object: None,
             concrete_obj: None,
+            construction_index: 0,
         }
     }
 }
@@ -137,6 +140,14 @@ impl Object {
             .and_then(|weak| weak.upgrade())
             .expect("concrete object pointer was never set or died")
     }
+
+    pub fn set_construction_index(&mut self, idx: u64) {
+        self.construction_index = idx;
+    }
+
+    pub fn construction_index(&self) -> u64 {
+        self.construction_index
+    }
 }
 
 impl DeserializeUnrealObject for Object {
@@ -173,7 +184,7 @@ impl DeserializeUnrealObject for Object {
                     break;
                 }
 
-                todo!("Tagged properties");
+                read_tag_value::<E, _>(&tag, runtime, linker, reader)?;
 
                 properties.push(tag);
             }
@@ -181,6 +192,55 @@ impl DeserializeUnrealObject for Object {
 
         Ok(())
     }
+}
+
+/// Reads the value bytes for a property tag, mirroring
+/// `FPropertyTag::SerializeTaggedProperty`. For object refs we use
+/// `read_object` so `IndexToObject`-style cascade fires; for primitives we
+/// consume the right number of bytes via `cheat()`.
+pub(crate) fn read_tag_value<E, R>(
+    tag: &PropertyTag,
+    runtime: &mut UnrealRuntime,
+    linker: &Rc<RefCell<Linker>>,
+    reader: &mut R,
+) -> io::Result<()>
+where
+    E: ByteOrder,
+    R: LinRead,
+{
+    use crate::reader::UnrealReadExt;
+    const NAME_BYTE_PROPERTY: u8 = 1;
+    const NAME_INT_PROPERTY: u8 = 2;
+    const NAME_BOOL_PROPERTY: u8 = 3;
+    const NAME_FLOAT_PROPERTY: u8 = 4;
+    const NAME_OBJECT_PROPERTY: u8 = 5;
+    const NAME_NAME_PROPERTY: u8 = 6;
+    const NAME_DELEGATE_PROPERTY: u8 = 7;
+    const NAME_CLASS_PROPERTY: u8 = 8;
+    match tag.property_type {
+        NAME_BOOL_PROPERTY => {}
+        NAME_OBJECT_PROPERTY | NAME_CLASS_PROPERTY | NAME_DELEGATE_PROPERTY => {
+            let _ = reader.read_object::<E>(runtime, linker)?;
+        }
+        NAME_NAME_PROPERTY => {
+            let _ = reader.read_packed_int()?;
+        }
+        NAME_INT_PROPERTY | NAME_FLOAT_PROPERTY => {
+            let mut buf = [0u8; 4];
+            reader.cheat(&mut buf)?;
+        }
+        NAME_BYTE_PROPERTY => {
+            let mut buf = [0u8; 1];
+            reader.cheat(&mut buf)?;
+        }
+        _ => {
+            if tag.size > 0 {
+                let mut buf = vec![0u8; tag.size as usize];
+                reader.cheat(&mut buf)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl UnrealObject for Object {
