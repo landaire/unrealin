@@ -42,7 +42,7 @@ impl DeserializeUnrealObject for PropertyTag {
 
         debug!("Deserializing name");
         self.name.deserialize::<E, _>(runtime, linker, reader)?;
-        if self.name.is_none() {
+        if self.name.is_none(&linker.borrow()) {
             trace!("Name is none");
             return Ok(());
         }

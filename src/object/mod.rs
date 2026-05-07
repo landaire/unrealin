@@ -12,7 +12,7 @@ mod ufield;
 mod ufont;
 mod ufunction;
 mod ulanguage;
-mod uobject;
+pub(crate) mod uobject;
 mod upackage;
 mod upalette;
 mod uprimitive;
@@ -20,6 +20,13 @@ mod uproperty;
 mod urenderdevice;
 mod usound;
 mod ustate;
+mod ulevel;
+mod ulevel_base;
+mod ulod_mesh;
+mod umesh;
+mod umodel;
+mod uskel_mesh;
+mod ustatic_mesh;
 mod ustruct;
 mod usubsystem;
 mod utext_buffer;
@@ -28,11 +35,9 @@ mod utexture;
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::rc::{Rc, Weak};
-use tracing::Level;
+use tracing::Level as TracingLevel;
 use tracing::span;
 use tracing::trace;
-
-const NAME_NONE: usize = 0;
 
 use bitflags::bitflags;
 use byteorder::ByteOrder;
@@ -56,9 +61,16 @@ pub mod builtins {
         ArrayProperty, BoolProperty, ByteProperty, ClassProperty, FloatProperty, IntProperty, Link,
         NameProperty, ObjectProperty, Property, PropertyFlags, StrProperty, StructProperty,
     };
+    pub use super::ulevel::Level;
+    pub use super::ulevel_base::LevelBase;
+    pub use super::ulod_mesh::LodMesh;
+    pub use super::umesh::Mesh;
+    pub use super::umodel::Model;
     pub use super::urenderdevice::RenderDevice;
+    pub use super::uskel_mesh::SkeletalMesh;
     pub use super::usound::Sound;
     pub use super::ustate::State;
+    pub use super::ustatic_mesh::StaticMesh;
     pub use super::ustruct::Struct;
     pub use super::usubsystem::Subsystem;
     pub use super::utext_buffer::TextBuffer;
@@ -183,7 +195,7 @@ macro_rules! register_builtins {
             R: LinRead,
             E: ByteOrder,
         {
-            let span = span!(Level::DEBUG,
+            let span = span!(TracingLevel::DEBUG,
                 "deserialize_object",
                 obj_ptr = format!("{:#x}", object.as_ptr().expose_provenance())
             );
@@ -233,7 +245,15 @@ register_builtins!(
     Texture,
     Palette,
     Sound,
-    Package
+    Package,
+    Primitive,
+    StaticMesh,
+    Mesh,
+    LodMesh,
+    SkeletalMesh,
+    LevelBase,
+    Level,
+    Model
 );
 
 macro_rules! make_inherited_objects {
@@ -344,7 +364,15 @@ make_inherited_objects!(
     Texture,
     Palette,
     Sound,
-    Package
+    Package,
+    Primitive,
+    StaticMesh,
+    Mesh,
+    LodMesh,
+    SkeletalMesh,
+    LevelBase,
+    Level,
+    Model
 );
 
 macro_rules! register_linkable {
@@ -359,7 +387,7 @@ macro_rules! register_linkable {
             R: LinRead,
             E: ByteOrder,
         {
-            let span = span!(Level::DEBUG, "link_object",
+            let span = span!(TracingLevel::DEBUG, "link_object",
                 obj_ptr = format!("{:#x}", object.as_ptr().expose_provenance())
             );
             let _enter = span.enter();

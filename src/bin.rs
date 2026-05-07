@@ -9,11 +9,10 @@ use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
-use tracing::Level;
-use tracing_subscriber::fmt;
+use tracing_subscriber::{EnvFilter, fmt};
 use unrealin::{
     ExportedData,
-    de::{self, LinearFileDecoder},
+    de::LinearFileDecoder,
 };
 
 #[derive(Parser, Debug)]
@@ -24,28 +23,38 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// File to extract
+    /// Skip trace verification. Use this for `.lin` pairs we don't have
+    /// a recorded I/O trace for (typical case: any map other than the
+    /// menu replay we recorded `reads.json` against). Bootstrap loads
+    /// only `MyLevel` and lets the dependency cascade pick up the rest.
+    #[arg(long)]
+    no_checked: bool,
+
+    /// Common `.lin` (file_table holder).
     common_lin: PathBuf,
 
+    /// Map `.lin` (level package).
     map_lin: PathBuf,
 }
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
 
-    let subscriber = fmt().pretty().with_max_level(Level::TRACE).finish();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let subscriber = fmt().pretty().with_env_filter(filter).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let mut common_file = std::fs::File::open(&args.common_lin)
+    let common_file = std::fs::File::open(&args.common_lin)
         .wrap_err_with(|| format!("failed to open {:?}", &args.common_lin))?;
-    let mut common_mmap = unsafe { memmap2::Mmap::map(&common_file)? };
+    let common_mmap = unsafe { memmap2::Mmap::map(&common_file)? };
     let mut raw_common_file = &common_mmap[..];
 
-    let mut map_file = std::fs::File::open(&args.map_lin)
+    let map_file = std::fs::File::open(&args.map_lin)
         .wrap_err_with(|| format!("failed to open {:?}", &args.map_lin))?;
-    let mut map_mmap = unsafe { memmap2::Mmap::map(&map_file)? };
+    let map_mmap = unsafe { memmap2::Mmap::map(&map_file)? };
     let mut raw_map_file = &map_mmap[..];
 
-    let mut output_dir = if let Some(output_dir) = args.output.take() {
+    let output_dir = if let Some(output_dir) = args.output.take() {
         output_dir
     } else {
         let Some(parent) = args.common_lin.parent() else {
@@ -62,12 +71,6 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .wrap_err_with(|| format!("failed to create output dir {:?}", &output_dir))?;
 
-    let output_path = output_dir.join("complete.bin");
-    let mut out_file = BufWriter::new(
-        std::fs::File::create(&output_path)
-            .wrap_err_with(|| format!("failed to create output file {output_path:?}"))?,
-    );
-
     let common_lin_data = if args
         .common_lin
         .extension()
@@ -81,7 +84,7 @@ fn main() -> Result<()> {
     };
 
     let map_lin_data = if args
-        .common_lin
+        .map_lin
         .extension()
         .as_ref()
         .map(|ext| ext.to_str().unwrap() == "lin")
@@ -89,38 +92,67 @@ fn main() -> Result<()> {
     {
         unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_map_file)?
     } else {
-        raw_common_file.to_vec()
+        raw_map_file.to_vec()
     };
-
-    std::io::copy(&mut common_lin_data.as_slice(), &mut out_file)
-        .wrap_err_with(|| format!("failed to copy data to output file {output_path:?}"))?;
-
-    let reader =
-        BufReader::new(std::fs::File::open("reads.json").expect("failed to open reads file"));
-
-    let mut metadata: ExportedData = serde_json::from_reader(reader).expect("failed to parse read");
-    metadata
-        .file_reads
-        .iter_mut()
-        .for_each(|(_k, v)| v.reverse());
-
-    let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
-        vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
-        metadata,
-    );
-    // The replay still hits a divergence partway through (Echelon
-    // ECanvas, see docs/io-mismatch-investigation.md). Catch the panic
-    // so we can still dump what was parsed before the failure.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = lin_decoder.decode_linear_file();
-    }));
 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
-    for (name, linker) in lin_decoder.linkers() {
+
+    if args.no_checked {
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
+            Cursor::new(common_lin_data),
+            Cursor::new(map_lin_data),
+        ]);
+        lin_decoder
+            .decode_unchecked()
+            .wrap_err("decode_unchecked failed")?;
+        write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+    } else {
+        let reader = BufReader::new(
+            std::fs::File::open("reads.json").wrap_err("failed to open reads.json")?,
+        );
+        let mut metadata: ExportedData = serde_json::from_reader(reader)
+            .wrap_err("failed to parse reads.json")?;
+        metadata
+            .file_reads
+            .iter_mut()
+            .for_each(|(_k, v)| v.reverse());
+
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+            vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
+            metadata,
+        );
+        // The trace replay can still hit per-class divergence; catch the
+        // panic so we still dump everything that was parsed before failure.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = lin_decoder.decode_linear_file() {
+                eprintln!("decode_linear_file err: {e}");
+            }
+        }));
+        write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+    }
+
+    Ok(())
+}
+
+fn write_packages(
+    pkg_out: &std::path::Path,
+    linkers: &std::collections::HashMap<String, std::rc::Rc<std::cell::RefCell<unrealin::de::Linker>>>,
+    filenames: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    for (name, linker) in linkers {
         let linker = linker.borrow();
-        let ext = unrealin::ser::extension_for(name);
-        let path = pkg_out.join(format!("{name}.{ext}"));
+        // The file_table holds the package's original path relative to
+        // the game's `System` dir (e.g. `Textures/HUD.utx`,
+        // `Sounds/Dog.uax`). Joining onto `pkg_out` rebuilds the tree.
+        let rel = filenames
+            .get(&name.to_ascii_lowercase())
+            .ok_or_else(|| eyre!("package {name:?} not in common.lin's file_table"))?;
+        let path = pkg_out.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("failed to create {parent:?}"))?;
+        }
         let f = std::fs::File::create(&path)
             .wrap_err_with(|| format!("failed to create {path:?}"))?;
         let mut bw = BufWriter::new(f);
@@ -133,6 +165,5 @@ fn main() -> Result<()> {
             linker.captured.bodies.len()
         );
     }
-
     Ok(())
 }

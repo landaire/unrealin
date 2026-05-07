@@ -2,6 +2,7 @@ pub mod de;
 pub mod ser;
 
 pub(crate) mod common;
+pub(crate) mod engine_warmup;
 pub(crate) mod object;
 pub(crate) mod reader;
 pub(crate) mod runtime;

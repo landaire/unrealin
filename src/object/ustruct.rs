@@ -126,7 +126,20 @@ impl DeserializeUnrealObject for Struct {
             .deserialize::<E, _>(runtime, linker, reader)?;
 
         debug!("deserializing script_text");
+        // SC's `UStruct::Serialize` (xbe `0x2b8c0`) reads ScriptText
+        // through `operator<<<UObject*>(&local_var)` where `local_var`
+        // is initialized to 0 — i.e. on load it reads-and-discards, on
+        // save it writes a null packed_int. Replicating that on the
+        // capture side: we still consume the source bytes (cursor must
+        // advance for the next field) but splice the captured frame so
+        // the re-emitted body holds a single 0x00 there. UExplorer was
+        // following the LIN's stale non-null reference into a
+        // `LOAD_FOR_EDIT`-only ScriptText export whose body is empty
+        // and throwing NullReferenceException.
+        let pre = reader.capture_len();
         self.script_text = reader.read_object::<E>(runtime, linker)?;
+        let consumed = reader.capture_len() - pre;
+        reader.splice_capture_tail(consumed, &[0]);
 
         debug!("deserializing children");
         self.children = reader.read_object::<E>(runtime, linker)?;

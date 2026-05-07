@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>13.0</LangVersion>
+    <RootNamespace>UnrealinValidator</RootNamespace>
+    <AssemblyName>unrealin-validator</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="/Users/lander/src/Unreal-Library/src/Eliot.UELib.csproj" />
+  </ItemGroup>
+</Project>

@@ -20,9 +20,16 @@ pub struct ExportRead {
     pub start_offset: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct ExportedData {
     pub file_load_order: Vec<String>,
+    /// Trace-op index at which each file in `file_load_order` had its
+    /// `ULinkerLoad` ctor entered. Index 0 means "before the first
+    /// trace op was recorded" (Engine.u, Core.u typically). Used by
+    /// `CheckedLinReader::expected_source_per_op` to verify our load
+    /// timing matches the engine's.
+    #[serde(default)]
+    pub file_load_op_index: Vec<usize>,
     pub file_reads: HashMap<u32, Vec<ExportRead>>,
     pub file_ptr_order: Vec<u32>,
     pub raw_io_ops: Vec<IoOp>,

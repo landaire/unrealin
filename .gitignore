@@ -1,3 +1,5 @@
 /target
 .claude
 /docs
+tools/validator/bin/
+tools/validator/obj/

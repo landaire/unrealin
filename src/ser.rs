@@ -182,15 +182,6 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     Ok(())
 }
 
-pub fn extension_for(name: &str) -> &'static str {
-    match name.to_ascii_lowercase().as_str() {
-        n if n.ends_with(".utx") => "utx",
-        n if n.ends_with(".uax") => "uax",
-        n if n.ends_with(".unr") => "unr",
-        _ => "u",
-    }
-}
-
 pub fn serialize_linker_le<W: Write + Seek>(linker: &Linker, writer: W) -> io::Result<()> {
     serialize_linker::<_, LittleEndian>(linker, writer)
 }

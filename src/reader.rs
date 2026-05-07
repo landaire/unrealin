@@ -128,11 +128,23 @@ pub trait UnrealReadExt: LinRead + Sized {
         }
 
         let is_unicode = string_len < 0;
-        let actual_len = string_len.abs() as usize;
+        let actual_len = string_len.unsigned_abs() as usize;
 
         if is_unicode {
-            // Unicode strings - read as wide chars (not implemented yet)
-            panic!("Unicode strings not yet implemented");
+            // UE2 unicode strings are UTF-16 LE wide chars, null-terminated.
+            // The packed_int magnitude is the wide-char count *including*
+            // the trailing null. Some training-map FURL strings hit this
+            // path; without it, read_string panics mid-Level deserialize.
+            let mut units: Vec<u16> = Vec::with_capacity(actual_len);
+            for _ in 0..actual_len {
+                let lo = self.read_u8()? as u16;
+                let hi = self.read_u8()? as u16;
+                units.push(lo | (hi << 8));
+            }
+            if units.last() == Some(&0) {
+                units.pop();
+            }
+            Ok(String::from_utf16_lossy(&units))
         } else {
             // ANSI strings - read byte by byte. UE2 ANSI strings are Latin-1
             // (e.g. SC has French asset names like `…Defé_GLW`); blindly
@@ -155,13 +167,17 @@ pub trait UnrealReadExt: LinRead + Sized {
 impl<R: LinRead + Sized> UnrealReadExt for R {}
 
 pub struct LinReader<R> {
-    source: R,
+    /// One source per `.lin` file. The runtime calls `switch_to_source`
+    /// at known boundary points (typically when bootstrap reaches
+    /// `None.MyLevel`, which lives in the secondary `.lin`). The active
+    /// source is `sources[current_source_idx]`.
+    sources: Vec<R>,
+    current_source_idx: usize,
     pos: u64,
-    /// Bytes consumed from `source` so far. Unlike `pos` (virtual), this
-    /// tracks the actual sequential byte stream position. Used by the
-    /// serializer to map exports back to their byte ranges in the
-    /// decompressed `.lin` for verbatim copy.
+    /// Total bytes consumed across all sources. `source_consumed_per_source`
+    /// breaks this down per source for the EOF safety net.
     source_consumed: u64,
+    source_consumed_per_source: Vec<u64>,
     /// Stack of capture buffers. Each `read` appends to the top frame.
     /// `push_capture` / `pop_capture` (the LinRead trait) wrap an
     /// export's deserialize so we can extract the exact bytes that
@@ -181,10 +197,17 @@ pub struct LinReader<R> {
 
 impl<R> LinReader<R> {
     pub fn new(reader: R) -> Self {
+        LinReader::new_multi(vec![reader])
+    }
+
+    pub fn new_multi(sources: Vec<R>) -> Self {
+        let n = sources.len();
         LinReader {
-            source: reader,
+            sources,
+            current_source_idx: 0,
             pos: 0,
             source_consumed: 0,
+            source_consumed_per_source: vec![0; n],
             capture_stack: Vec::new(),
             source_start: 0,
             source_start_stack: Vec::new(),
@@ -197,6 +220,10 @@ impl<R> LinReader<R> {
         self.source_consumed
     }
 
+    pub fn source_consumed_per_source(&self) -> &[u64] {
+        &self.source_consumed_per_source
+    }
+
     pub fn set_source_start(&mut self, start: u64) {
         self.source_start = start;
     }
@@ -207,9 +234,11 @@ where
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let bytes_read = self.source.read(buf)?;
+        let cur = self.current_source_idx;
+        let bytes_read = self.sources[cur].read(buf)?;
         self.pos += bytes_read as u64;
         self.source_consumed += bytes_read as u64;
+        self.source_consumed_per_source[cur] += bytes_read as u64;
         if let Some(top) = self.capture_stack.last_mut() {
             top.extend_from_slice(&buf[..bytes_read]);
         }
@@ -264,7 +293,22 @@ pub struct CheckedLinReader<R> {
     /// "skip IO op consumption" mode active across the whole nested span.
     /// Effective state: `linker_header_depth > 0`.
     linker_header_depth: u32,
+    /// Counter of trace ops popped (Read or Seek). Used to compute the
+    /// trace-op index for diagnostic logging only.
+    pub trace_ops_consumed: u64,
+    /// Optional per-trace-op expected source position from the engine.
+    /// When set, after each trace op pop we assert `source_consumed`
+    /// matches `expected_source[trace_ops_consumed]`. First mismatch
+    /// pinpoints the divergence.
+    pub expected_source_per_op: Option<Vec<u64>>,
+    /// Track the previous drift to only log the FIRST occurrence and
+    /// any change (avoid flooding output).
+    pub last_drift: i64,
     io_ops: Rc<RefCell<VecDeque<IoOp>>>,
+    /// Bytes consumed from each source individually. Indexed by
+    /// `current_source_idx` so the EOF safety net can verify both
+    /// `.lin` files were drained at the end of a run.
+    source_consumed_per_source: Vec<u64>,
     linker: Vec<RcLinker>,
 }
 
@@ -280,6 +324,7 @@ impl<R> CheckedLinReader<R> {
         for (i, ptr) in file_ptr_order.iter().enumerate() {
             file_ptr_to_index.insert(*ptr, i);
         }
+        let source_count = sources.len();
         CheckedLinReader {
             sources,
             file_ptr_to_index,
@@ -287,10 +332,14 @@ impl<R> CheckedLinReader<R> {
             current_source_idx: 0,
             pos: 0,
             source_consumed: 0,
+            source_consumed_per_source: vec![0; source_count],
             capture_stack: Vec::new(),
             source_start: 0,
             source_start_stack: Vec::new(),
             linker_header_depth: 0,
+            trace_ops_consumed: 0,
+            expected_source_per_op: None,
+            last_drift: 0,
             io_ops,
             version: 0,
             linker: Default::default(),
@@ -307,6 +356,10 @@ impl<R> CheckedLinReader<R> {
 
     pub fn ops_remaining(&self) -> usize {
         self.io_ops.borrow().len()
+    }
+
+    pub fn source_consumed_per_source(&self) -> &[u64] {
+        &self.source_consumed_per_source
     }
 
     /// Switch the active source to the one bound to `file_ptr`. Binds
@@ -353,6 +406,7 @@ where
                         buf.len(),
                         remaining
                     );
+                    self.trace_ops_consumed += 1;
                 }
                 other => panic!(
                     "doing a read of {:#X} bytes at {:#X}, expected: {:#X?}",
@@ -364,15 +418,44 @@ where
         }
 
         self.switch_source(next_file_ptr);
-        let source = &mut self.sources[self.current_source_idx];
+        // The engine has independent readers per `.lin`; reads stay
+        // within the current source. Cross-source spill is not
+        // engine-correct (verified via SC xbe RE: each `.lin` has
+        // its own `MmAllocateContiguousMemoryEx`-backed data buffer
+        // and there are two separate `compressed_file_reader`
+        // instances). The runtime is responsible for calling
+        // `switch_to_source` before invoking `load_linker` for a
+        // package known to live in a different `.lin`.
+        let cur_idx = self.current_source_idx;
+        let source = &mut self.sources[cur_idx];
         let bytes_read = source.read(buf)?;
         self.pos += bytes_read as u64;
         self.source_consumed += bytes_read as u64;
+        self.source_consumed_per_source[cur_idx] += bytes_read as u64;
         if let Some(top) = self.capture_stack.last_mut() {
             top.extend_from_slice(&buf[..bytes_read]);
         }
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
+        }
+
+        if self.linker_header_depth == 0
+            && self.trace_ops_consumed > 0
+            && let Some(expected) = self.expected_source_per_op.as_ref()
+            && let Some(&exp) = expected.get(self.trace_ops_consumed as usize - 1)
+        {
+            let drift = self.source_consumed as i64 - exp as i64;
+            if drift != self.last_drift {
+                eprintln!(
+                    "drift change at read trace op #{}: ours={:#X}, engine={:#X}, diff={:+} (was {:+})",
+                    self.trace_ops_consumed - 1,
+                    self.source_consumed,
+                    exp,
+                    drift,
+                    self.last_drift,
+                );
+                self.last_drift = drift;
+            }
         }
 
         Ok(bytes_read)
@@ -385,7 +468,6 @@ impl<R> Seek for CheckedLinReader<R> {
         let _enter = span.enter();
 
         let mut next_file_ptr: u32 = 0;
-        let mut do_source_seek_to: Option<u64> = None;
         let res = match pos {
             std::io::SeekFrom::Start(pos) => {
                 trace!("to= {:#X}, from= {:#X}", pos, self.pos);
@@ -399,27 +481,51 @@ impl<R> Seek for CheckedLinReader<R> {
                     {
                         IoOp::Seek { to, from, file_ptr } => {
                             next_file_ptr = file_ptr;
-                            do_source_seek_to = Some(to);
                             // Not checking `from` because there's some weird nuance with EOF
                             if from != self.pos || to != pos {
                                 let remaining = ops.len();
+                                let cur_file_ptr = self
+                                    .file_ptr_to_index
+                                    .iter()
+                                    .find(|&(_, &v)| v == self.current_source_idx)
+                                    .map(|(&k, _)| k)
+                                    .unwrap_or(0);
                                 panic!(
-                                    "Attempted to seek from {:#X} to {:#X}; should be seeking from {:#X} to {:#X}. Linker position: {:#X?}; remaining ops: {}",
+                                    "Attempted to seek from {:#X} to {:#X} (cur file_ptr=0x{:X}); should be seeking from {:#X} to {:#X} (file_ptr=0x{:X}). Linker stack: [{:#X?}]; remaining ops: {}",
                                     self.pos,
                                     pos,
+                                    cur_file_ptr,
                                     from,
                                     to,
+                                    file_ptr,
                                     self.linker
                                         .iter()
                                         .map(|linker| {
                                             let linker = linker.borrow();
 
-                                            format!("{}: {:#X}", linker.name, linker.reader_offset)
+                                            format!("{}: pos_saved={:#X} src_start={:#X}", linker.name, linker.reader_offset, linker.source_start)
                                         })
                                         .collect::<Vec<_>>()
                                         .join(", "),
                                     remaining,
                                 );
+                            }
+                            self.trace_ops_consumed += 1;
+                            if let Some(expected) = self.expected_source_per_op.as_ref()
+                                && let Some(&exp) = expected.get(self.trace_ops_consumed as usize - 1)
+                            {
+                                let drift = self.source_consumed as i64 - exp as i64;
+                                if drift != self.last_drift {
+                                    eprintln!(
+                                        "drift change at seek trace op #{}: ours={:#X}, engine={:#X}, diff={:+} (was {:+})",
+                                        self.trace_ops_consumed - 1,
+                                        self.source_consumed,
+                                        exp,
+                                        drift,
+                                        self.last_drift,
+                                    );
+                                    self.last_drift = drift;
+                                }
                             }
                         }
                         other => {
@@ -449,7 +555,6 @@ impl<R> Seek for CheckedLinReader<R> {
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         };
         self.switch_source(next_file_ptr);
-        let _ = do_source_seek_to;
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
         }
@@ -471,10 +576,24 @@ pub trait LinRead: io::Read + io::Seek {
     /// End the innermost capture frame and return the bytes read while
     /// it was active.
     fn pop_capture(&mut self) -> Vec<u8>;
+    /// Length of the innermost capture frame (0 if none active). Used
+    /// with `splice_capture_tail` to substitute the bytes captured for
+    /// a phantom field (e.g. UStruct::ScriptText) — SC's
+    /// `UStruct::Serialize` reads ScriptText into a discarded local on
+    /// load and writes a null on save, so the LIN bytes for that field
+    /// are noise that breaks UExplorer when re-emitted verbatim.
+    fn capture_len(&self) -> usize;
+    /// Replace the trailing `remove` bytes of the innermost capture
+    /// frame with `replacement`. No-op if no capture is active.
+    fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]);
     /// Cumulative bytes consumed from the underlying source. Unaffected
     /// by virtual seeks. Used to map sequential decompressed-`.lin`
     /// offsets to the right export bodies for static recompilation.
     fn source_consumed(&self) -> u64;
+    /// Cumulative bytes consumed per source. Same total as
+    /// `source_consumed()` but broken down so the EOF safety net can
+    /// pinpoint which `.lin` has leftover.
+    fn source_consumed_per_source(&self) -> &[u64];
     /// Set the source-absolute start of the current package. All
     /// subsequent `seek(SeekFrom::Start(virtual))` calls translate to
     /// `source_start + virtual` when seeking the underlying source.
@@ -482,6 +601,17 @@ pub trait LinRead: io::Read + io::Seek {
     /// its header (which seeks to package-relative name/import/export
     /// table offsets).
     fn set_source_start(&mut self, start: u64);
+    /// Trace ops consumed so far. Returns 0 for `LinReader` (no trace).
+    /// Useful for diagnostic prints when an assertion is about to fire.
+    fn trace_ops_consumed(&self) -> u64 {
+        0
+    }
+    /// Switch the active source to the given index. The runtime triggers
+    /// this at known boundary points where the engine moves between
+    /// `.lin` files (in particular, the `None.MyLevel` bootstrap entry
+    /// for the typical SC layout where the level lives in the second
+    /// `.lin`).
+    fn switch_to_source(&mut self, _idx: usize) {}
 }
 
 impl<R> LinRead for LinReader<R>
@@ -494,6 +624,12 @@ where
         self.read_exact(buf)
     }
 
+    fn switch_to_source(&mut self, idx: usize) {
+        if idx < self.sources.len() {
+            self.current_source_idx = idx;
+        }
+    }
+
     fn push_linker(&mut self, linker: RcLinker) {
         if let Some(prev) = self.linker.last() {
             prev.borrow_mut().set_position(self.pos);
@@ -501,6 +637,13 @@ where
         self.source_start_stack.push(self.source_start);
         self.source_start = linker.borrow().source_start;
         self.pos = linker.borrow().reader_offset;
+        debug!(
+            "push_linker {} (depth now {}): source_start={:#X}, pos={:#X}",
+            linker.borrow().name,
+            self.linker.len() + 1,
+            self.source_start,
+            self.pos
+        );
         self.linker.push(linker);
     }
 
@@ -511,6 +654,13 @@ where
         if let Some(prev) = self.linker.last() {
             self.pos = prev.borrow().reader_offset;
         }
+        debug!(
+            "pop_linker {} (depth now {}): source_start={:#X}, pos={:#X}",
+            linker.borrow().name,
+            self.linker.len(),
+            self.source_start,
+            self.pos
+        );
         linker
     }
 
@@ -522,12 +672,32 @@ where
         self.capture_stack.pop().unwrap_or_default()
     }
 
+    fn capture_len(&self) -> usize {
+        self.capture_stack.last().map(|v| v.len()).unwrap_or(0)
+    }
+
+    fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]) {
+        if let Some(top) = self.capture_stack.last_mut() {
+            let new_len = top.len().saturating_sub(remove);
+            top.truncate(new_len);
+            top.extend_from_slice(replacement);
+        }
+    }
+
     fn source_consumed(&self) -> u64 {
         self.source_consumed
     }
 
+    fn source_consumed_per_source(&self) -> &[u64] {
+        &self.source_consumed_per_source
+    }
+
     fn set_source_start(&mut self, start: u64) {
         self.source_start = start;
+    }
+
+    fn trace_ops_consumed(&self) -> u64 {
+        0
     }
 }
 
@@ -550,35 +720,58 @@ where
     }
 
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        // Remove however many io ops are part of this read
         let mut remove_len = 0;
-
+        let mut popped_count: u64 = 0;
         let mut io_ops = self.io_ops.borrow_mut();
         let mut last_file_ptr: u32 = 0;
         while remove_len < buf.len() {
             match io_ops.pop_front().expect("no io op?") {
-                IoOp::Seek { .. } => panic!("unexpected seek op while cheating reads"),
+                IoOp::Seek { from, to, file_ptr } => {
+                    let stack = self
+                        .linker
+                        .iter()
+                        .map(|l| {
+                            let l = l.borrow();
+                            format!(
+                                "{}: pos_saved={:#X} src_start={:#X}",
+                                l.name, l.reader_offset, l.source_start
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    panic!(
+                        "unexpected seek op while cheating reads: \
+                         seek from={:#X} to={:#X} file_ptr={:#X}; \
+                         buf.len={:#X} popped_count={} remove_len={:#X} \
+                         cur_pos={:#X} linker_stack=[{}]",
+                        from,
+                        to,
+                        file_ptr,
+                        buf.len(),
+                        popped_count,
+                        remove_len,
+                        self.pos,
+                        stack
+                    );
+                }
                 IoOp::Read { len, file_ptr } => {
                     last_file_ptr = file_ptr;
                     remove_len += len as usize;
+                    popped_count += 1;
                 }
             }
         }
-
         assert_eq!(remove_len, buf.len());
-
-        // Insert a fake read of this exact size. 0-sized reads are short-circuited
-        // by read_exact, so don't add this read if the data size is zero since the IO op
-        // will never be popped.
         if remove_len > 0 {
             io_ops.push_front(IoOp::Read {
                 len: buf.len() as u64,
                 file_ptr: last_file_ptr,
             });
         }
-
         drop(io_ops);
-
+        if popped_count > 1 {
+            self.trace_ops_consumed += popped_count - 1;
+        }
         self.read_exact(buf)
     }
 
@@ -589,6 +782,13 @@ where
         self.source_start_stack.push(self.source_start);
         self.source_start = linker.borrow().source_start;
         self.pos = linker.borrow().reader_offset;
+        debug!(
+            "push_linker {} (depth now {}): source_start={:#X}, pos={:#X}",
+            linker.borrow().name,
+            self.linker.len() + 1,
+            self.source_start,
+            self.pos
+        );
         self.linker.push(linker);
     }
 
@@ -599,6 +799,13 @@ where
         if let Some(prev) = self.linker.last() {
             self.pos = prev.borrow().reader_offset;
         }
+        debug!(
+            "pop_linker {} (depth now {}): source_start={:#X}, pos={:#X}",
+            linker.borrow().name,
+            self.linker.len(),
+            self.source_start,
+            self.pos
+        );
         linker
     }
 
@@ -610,11 +817,37 @@ where
         self.capture_stack.pop().unwrap_or_default()
     }
 
+    fn capture_len(&self) -> usize {
+        self.capture_stack.last().map(|v| v.len()).unwrap_or(0)
+    }
+
+    fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]) {
+        if let Some(top) = self.capture_stack.last_mut() {
+            let new_len = top.len().saturating_sub(remove);
+            top.truncate(new_len);
+            top.extend_from_slice(replacement);
+        }
+    }
+
     fn source_consumed(&self) -> u64 {
         self.source_consumed
     }
 
+    fn source_consumed_per_source(&self) -> &[u64] {
+        &self.source_consumed_per_source
+    }
+
     fn set_source_start(&mut self, start: u64) {
         self.source_start = start;
+    }
+
+    fn trace_ops_consumed(&self) -> u64 {
+        self.trace_ops_consumed
+    }
+
+    fn switch_to_source(&mut self, idx: usize) {
+        if idx < self.sources.len() {
+            self.current_source_idx = idx;
+        }
     }
 }

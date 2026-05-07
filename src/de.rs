@@ -97,11 +97,13 @@ impl Linker {
     }
 
     pub fn find_export_by_name(&self, name: &str) -> Option<(ExportIndex, &ObjectExport)> {
-        let index = self
-            .package
-            .exports
-            .iter()
-            .position(|export| export.object_name(self) == name)?;
+        // FName comparison is case-insensitive in UE2; the FName table
+        // interns by lowercased key. Match that here so e.g.
+        // `"ESam.SamAMesh"` from `object_load_order` resolves to the
+        // `samAMesh` export when the on-disk capitalization differs.
+        let index = self.package.exports.iter().position(|export| {
+            export.object_name(self).eq_ignore_ascii_case(name)
+        })?;
 
         Some((ExportIndex(index), &self.package.exports[index]))
     }
@@ -128,7 +130,7 @@ impl Linker {
                 if export.package_index != current_outer {
                     continue;
                 }
-                if export.object_name(self) != *part {
+                if !export.object_name(self).eq_ignore_ascii_case(part) {
                     continue;
                 }
                 found = Some(i);
@@ -154,13 +156,13 @@ impl Linker {
         class_package: &str,
     ) -> Option<(ExportIndex, &ObjectExport)> {
         for (i, export) in self.package.exports.iter().enumerate() {
-            if export.object_name(self) != name {
+            if !export.object_name(self).eq_ignore_ascii_case(name) {
                 continue;
             }
-            if export.class_name(self) != class_name {
+            if !export.class_name(self).eq_ignore_ascii_case(class_name) {
                 continue;
             }
-            if export.class_package(self) != class_package {
+            if !export.class_package(self).eq_ignore_ascii_case(class_package) {
                 continue;
             }
             return Some((ExportIndex(i), export));
@@ -518,7 +520,13 @@ where
     E: ByteOrder,
 {
     let tag = reader.read_u32::<E>()?;
-    assert_eq!(tag, PKG_TAG, "Invalid linker tag");
+    assert_eq!(
+        tag,
+        PKG_TAG,
+        "Invalid linker tag (source_consumed={:#X}, trace_ops_consumed={})",
+        reader.source_consumed(),
+        reader.trace_ops_consumed()
+    );
 
     let version = reader.read_u32::<E>()?;
     println!("Version: {:#X}", version);
@@ -680,6 +688,19 @@ where
         std::io::copy(&mut reader, &mut out_data).expect("failed to read zlib data");
     }
 
+    // Don't truncate or pad: the LIN file's decompressed data blocks
+    // (chunks 4..N) sum to slightly more than `uncompressed_data_size`
+    // due to zlib block alignment, but those trailing bytes ARE part
+    // of the engine's reader's data buffer. Verified against
+    // `splintercell.xbe.bndb`: the engine's compressed-file reader
+    // (`initialize_linear_loader` @ `0x1A2D0`) reads chunks 0..3 as
+    // metadata u32s and the rest as data. The texture_cache / VB / IB
+    // regions are allocated SEPARATELY via three independent
+    // `MmAllocateContiguousMemoryEx` calls (xbe `D3D_AllocContiguousMemory`
+    // @ `0x1F29A0`); they're NOT in the same buffer as the file
+    // data. So the engine has two truly independent readers; reads
+    // past `uncompressed_data_size` for one `.lin` shouldn't happen
+    // in a correct trace replay.
     Ok(out_data)
 }
 
@@ -687,8 +708,68 @@ pub struct LinearFileDecoder<E, R> {
     sources: VecDeque<R>,
     metadata: ExportedData,
     file_table: Vec<FileEntry>,
+    /// Package names for secondary `.lin` sources (source 1, 2, ...),
+    /// captured from each source's LIN-format prefix at startup. The
+    /// bootstrap routes `None.MyLevel` to `<this_name>.MyLevel` so the
+    /// resolver loads the right level package regardless of which map
+    /// the user is dumping (`menu`, `0_0_2_Training`, etc.).
+    secondary_package_names: Vec<String>,
     runtime: UnrealRuntime,
     _endian: PhantomData<E>,
+}
+
+/// Compute the engine's expected `source_consumed` after popping each
+/// trace op. Pre-trace: file_table (0x2C5AD) + Engine.u + Core.u headers
+/// (op_idx == 0). Subsequent cascades fire at the op_idx recorded in
+/// `file_load_op_index`; we add those linkers' header bytes once we
+/// reach that index.
+///
+/// We don't know per-linker header byte counts from the trace alone,
+/// so this stops computing past the first cascade event whose linker
+/// sizes we don't have. For the run from initial load through the
+/// Echelon cascade (op 100267) and the trace ops up to the next
+/// cascade (op 446904), our binary's header consumption matches the
+/// engine's exactly (verified at 0x17F197 post-cascade), so we
+/// hard-code that boundary and the trace-read sums.
+fn compute_expected_source_per_op(metadata: &ExportedData) -> Option<Vec<u64>> {
+    if metadata.file_load_op_index.is_empty() {
+        return None;
+    }
+    // pre_trace = file_table parse (0x2C5AD) + Engine.u + Core.u headers.
+    // After Echelon's cascade (43 more linkers loaded together at op_idx
+    // 100267), our log shows total = 0x17F197.
+    const PRE_TRACE: u64 = 0x50CDA;
+    const POST_FIRST_CASCADE: u64 = 0x17F197;
+
+    // Find the op_idx of the second cascade event (anything past
+    // file_load_op_index[0..2] = pre-trace). That's where our
+    // hard-coded knowledge ends.
+    let first_cascade_idx = *metadata.file_load_op_index.iter().find(|&&x| x > 0)?;
+    let next_cascade_idx = *metadata
+        .file_load_op_index
+        .iter()
+        .find(|&&x| x > first_cascade_idx)
+        .unwrap_or(&usize::MAX);
+
+    let mut out: Vec<u64> = Vec::with_capacity(metadata.raw_io_ops.len());
+    let mut source: u64 = PRE_TRACE;
+    let mut cascade_applied = false;
+    for (i, op) in metadata.raw_io_ops.iter().enumerate() {
+        if i >= next_cascade_idx {
+            break;
+        }
+        // Apply Echelon cascade ONCE, right at the moment its op_idx
+        // is reached (i.e. before processing op `first_cascade_idx`).
+        if !cascade_applied && i >= first_cascade_idx {
+            source = POST_FIRST_CASCADE;
+            cascade_applied = true;
+        }
+        if let IoOp::Read { len, .. } = op {
+            source += *len;
+        }
+        out.push(source);
+    }
+    Some(out)
 }
 
 impl<E, R> LinearFileDecoder<E, LinReader<R>>
@@ -696,25 +777,38 @@ where
     E: ByteOrder,
     R: Read,
 {
-    pub fn new(sources: Vec<R>, metadata: ExportedData) -> Self {
+    /// Build an unchecked decoder over the given `.lin` sources. No
+    /// recorded I/O trace is required; the decoder relies on engine-
+    /// correct deserialization to consume each source linearly. Source 0
+    /// is treated as `common.lin` (file_table holder), sources 1+ have
+    /// their LIN-format prefix consumed up front and contribute their
+    /// package name to `secondary_package_names`.
+    pub fn new_unchecked(mut sources: Vec<R>) -> Self {
+        let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
+        for source in sources.iter_mut().skip(1) {
+            let name = skip_secondary_lin_header::<E, _>(source)
+                .expect("failed to skip secondary lin header");
+            secondary_package_names.push(name);
+        }
+        let combined = LinReader::new_multi(sources);
         Self {
-            sources: VecDeque::from_iter(sources.into_iter().map(LinReader::new)),
+            sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
-                linkers: HashMap::with_capacity(metadata.file_load_order.len()),
+                linkers: HashMap::new(),
                 objects_full_loading: Default::default(),
                 loaded_objects: Default::default(),
                 package_file_size: HashMap::new(),
-                present_packages: metadata
-                    .file_load_order
-                    .iter()
-                    .filter_map(|p| package_name_from_path(p))
-                    .collect(),
+                // present_packages stays empty until `read_lin_header`
+                // populates it from the file_table; we don't have a
+                // recorded `file_load_order` to seed from.
+                present_packages: Default::default(),
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
             },
             file_table: Vec::new(),
-            metadata,
+            secondary_package_names,
+            metadata: ExportedData::default(),
             _endian: PhantomData,
         }
     }
@@ -725,14 +819,33 @@ where
     E: ByteOrder,
     R: Read,
 {
-    pub fn new_checked(sources: Vec<R>, mut metadata: ExportedData) -> Self {
+    pub fn new_checked(mut sources: Vec<R>, mut metadata: ExportedData) -> Self {
+        // Engine's `CreateFileReader` consumes each `.lin` file's
+        // LIN-format prefix (`u32 load_address + packed_int name_len +
+        // ANSI name`) at file-open time. The reader's `decompressed_size`
+        // then refers to the post-prefix data only. Source 0 (common.lin)
+        // is handled by `read_lin_header` via the regular read path
+        // because it has a file_table to parse anyway; source 1+ skip
+        // their prefix here. We capture the package name from each
+        // secondary source's prefix so the bootstrap can route
+        // `None.MyLevel` to the correct level package without
+        // hard-coding `"menu"` (works for any map: training, abattoir,
+        // etc.).
+        let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
+        for source in sources.iter_mut().skip(1) {
+            let name = skip_secondary_lin_header::<E, _>(source)
+                .expect("failed to skip secondary lin header");
+            secondary_package_names.push(name);
+        }
+        let expected_source_per_op = compute_expected_source_per_op(&metadata);
         let io_ops = Rc::new(RefCell::new(metadata.raw_io_ops.drain(..).collect()));
         let file_ptr_order = metadata.file_ptr_order.clone();
         // Single CheckedLinReader holds all sources and switches between
         // them based on each op's `file_ptr`. The trace's
         // `file_ptr_order` (already reversed by bin.rs to consumption
         // order) tells us which source each new file_ptr value maps to.
-        let combined = CheckedLinReader::new(sources, file_ptr_order, io_ops);
+        let mut combined = CheckedLinReader::new(sources, file_ptr_order, io_ops);
+        combined.expected_source_per_op = expected_source_per_op;
         Self {
             sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
@@ -750,6 +863,7 @@ where
                 next_construction_index: 0,
             },
             file_table: Vec::new(),
+            secondary_package_names,
             metadata,
             _endian: PhantomData,
         }
@@ -765,8 +879,91 @@ where
         &self.runtime.linkers
     }
 
+    /// Map from lowercased package name (the linker key style — `"engine"`,
+    /// `"hud"`) to its original relative path with forward-slash separators
+    /// (`"System/Engine.u"`, `"Textures/HUD.utx"`, `"Maps/menu.unr"`). Drawn
+    /// from common.lin's `file_table`; the leading `..\` (relative to the
+    /// game's `System` directory) is stripped so callers can join the
+    /// result onto an output dir to reconstruct the original tree.
+    pub fn package_filenames(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for entry in &self.file_table {
+            let mut path = entry.name.as_str();
+            // Strip leading `..\` (or repeated occurrences). Engine paths
+            // are always relative to `<game>\System\`, so a single `..\`
+            // walks up one level — but be defensive in case any entry has
+            // a different prefix.
+            while let Some(rest) = path.strip_prefix("..\\") {
+                path = rest;
+            }
+            let normalized = path.replace('\\', "/");
+            let leaf = normalized.rsplit('/').next().unwrap_or(&normalized);
+            let stem = leaf.rsplit_once('.').map(|(s, _)| s).unwrap_or(leaf);
+            if !stem.is_empty() {
+                map.insert(stem.to_ascii_lowercase(), normalized);
+            }
+        }
+        map
+    }
+
     fn reader(&mut self) -> &mut R {
         self.sources.front_mut().expect("no file reader available?")
+    }
+
+    /// Bootstrap a level without a recorded I/O trace. Replays the
+    /// engine's pre-MyLevel class warmup (153 hardcoded objects from
+    /// xbe `game_main`'s `StaticLoadObject` calls), then loads the
+    /// secondary `.lin`'s `MyLevel` to trigger the level cascade.
+    ///
+    /// The two tables in `engine_warmup` are derived from a recorded
+    /// menu trace and apply to every map because `common.lin` is
+    /// byte-identical across the SC NTSC build.
+    pub fn decode_unchecked(&mut self) -> io::Result<()> {
+        self.read_lin_header()?;
+        self.runtime.present_packages.extend(
+            crate::engine_warmup::COMMON_LIN_PACKAGES
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        self.runtime
+            .present_packages
+            .extend(self.secondary_package_names.iter().cloned());
+
+        // Stage 1: replay the pre-MyLevel warmup against source 0. Each
+        // call is idempotent — duplicates that the cascade already
+        // pulled in just no-op via `runtime.loaded_objects`.
+        for object in crate::engine_warmup::ENGINE_CLASS_WARMUP {
+            let reader = self.sources.front_mut().expect("no file reader available?");
+            self.runtime.begin_load();
+            self.runtime.load_object_by_full_name::<E, _>(
+                object,
+                crate::runtime::LoadKind::Load,
+                reader,
+            )?;
+            self.runtime.end_load::<E, _>(reader)?;
+        }
+
+        // Stage 2: load `<secondary>.MyLevel` from source 1. The
+        // ULevel cascade pulls in the post-MyLevel objects the menu
+        // trace records (game info, HUD, controller, etc.) via actor
+        // class refs.
+        let reader = self.sources.front_mut().expect("no file reader available?");
+        let secondary = self
+            .secondary_package_names
+            .first()
+            .cloned()
+            .expect("unchecked decode requires a secondary .lin source");
+        reader.switch_to_source(1);
+        let target = format!("{secondary}.MyLevel");
+        self.runtime.begin_load();
+        self.runtime.load_object_by_full_name::<E, _>(
+            &target,
+            crate::runtime::LoadKind::Load,
+            reader,
+        )?;
+        self.runtime.end_load::<E, _>(reader)?;
+
+        Ok(())
     }
 
     pub fn decode_linear_file(&mut self) -> io::Result<()> {
@@ -775,9 +972,32 @@ where
         for object in &self.metadata.object_load_order {
             let reader = self.sources.front_mut().expect("no file reader available?");
             println!("Loading {object}");
+            // `None.MyLevel` is the engine's bootstrap marker for the
+            // level-package load. SC's `game_main` (xbe `0x1F370`)
+            // translates this into `StaticLoadObject(MapName, ULevel,
+            // ...)` where MapName is the per-region map subdir
+            // (typically the same as the secondary `.lin`'s package
+            // name: `"menu"` for menu.lin, `"0_0_2_Training"` for
+            // training, etc.). The level package lives in a separate
+            // `.lin` source, so we explicitly switch to source 1
+            // before invoking `load_object_by_full_name`. Routing
+            // through `<secondary_name>.MyLevel` triggers the
+            // `ULevel::Serialize` stub via the existing module
+            // resolver.
+            let resolved = if object == "None.MyLevel" {
+                if let Some(secondary) = self.secondary_package_names.first() {
+                    reader.switch_to_source(1);
+                    Some(format!("{secondary}.MyLevel"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let target: &str = resolved.as_deref().unwrap_or(object.as_str());
             self.runtime.begin_load();
             self.runtime.load_object_by_full_name::<E, _>(
-                object,
+                target,
                 crate::runtime::LoadKind::Load,
                 reader,
             )?;
@@ -819,6 +1039,55 @@ where
         self.file_table = file_table;
         Ok(())
     }
+
+}
+
+/// Read past a secondary `.lin` source's LIN-format prefix:
+/// `u32 load_address + packed_int name_len + ANSI name`. Mirrors
+/// what the engine's `CreateFileReader` does at file-open time —
+/// those bytes never appear in the file-data stream, only in the
+/// reader's metadata. Returns the decoded package name (e.g.
+/// `"menu"` for `menu.lin`, `"0_0_2_Training"` for the training
+/// map's `.lin`) so the bootstrap can route `None.MyLevel` to the
+/// right secondary package.
+fn skip_secondary_lin_header<E, R>(source: &mut R) -> io::Result<String>
+where
+    E: ByteOrder,
+    R: Read,
+{
+    let mut tmp = [0u8; 4];
+    source.read_exact(&mut tmp)?; // load_address
+    let mut byte = [0u8; 1];
+    source.read_exact(&mut byte)?;
+    let b0 = byte[0];
+    let mut value: u32 = 0;
+    if (b0 & 0x40) != 0 {
+        source.read_exact(&mut byte)?;
+        let b1 = byte[0];
+        if (b1 & 0x80) != 0 {
+            source.read_exact(&mut byte)?;
+            let b2 = byte[0];
+            if (b2 & 0x80) != 0 {
+                source.read_exact(&mut byte)?;
+                let b3 = byte[0];
+                if (b3 & 0x80) != 0 {
+                    source.read_exact(&mut byte)?;
+                    value = byte[0] as u32;
+                }
+                value = (value << 7) + ((b3 & 0x7f) as u32);
+            }
+            value = (value << 7) + ((b2 & 0x7f) as u32);
+        }
+        value = (value << 7) + ((b1 & 0x7f) as u32);
+    }
+    value = (value << 6) + ((b0 & 0x3f) as u32);
+    let mut name_buf = vec![0u8; value as usize];
+    source.read_exact(&mut name_buf)?;
+    // Trim trailing NUL terminator from the ANSI name.
+    if name_buf.last() == Some(&0) {
+        name_buf.pop();
+    }
+    Ok(String::from_utf8_lossy(&name_buf).into_owned())
 }
 
 fn package_name_from_path(path: &str) -> Option<String> {

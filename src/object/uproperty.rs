@@ -43,6 +43,10 @@ impl Property {
     pub fn flags(&self) -> PropertyFlags {
         self.property_flags
     }
+
+    pub fn array_dim(&self) -> u16 {
+        self.array_dim
+    }
 }
 
 impl DeserializeUnrealObject for Property {

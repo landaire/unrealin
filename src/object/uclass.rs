@@ -4,7 +4,11 @@ use crate::{
     de::RcLinker,
     object::{
         DeserializeUnrealObject, RcUnrealObject, UnrealObject,
-        internal::{fdependency::FDependency, fname::FName, property::PropertyTag},
+        internal::{
+            fdependency::FDependency, fname::FName, property::PropertyTag,
+            serialize_item::collect_struct_properties_from_parts,
+        },
+        uobject::read_tag_value,
         ustate::State,
     },
     reader::{LinRead, UnrealReadExt},
@@ -78,60 +82,37 @@ impl DeserializeUnrealObject for Class {
             self.hide_categories = reader.read_serializable_array::<E, FName>(runtime, linker)?;
         }
 
+        // Pre-collect this class's property chain (own children + super)
+        // so the default_tags loop can dispatch SerializeItem on
+        // StructProperty/ArrayProperty values. We hold `&mut self`, so we
+        // must NOT acquire a `borrow()` on the same `RefCell` for `self`;
+        // instead we pull `children` and `super_field` directly from the
+        // already-mutably-borrowed fields. Each child / super is a
+        // separate `RefCell` from the one holding `&mut self`, so
+        // borrowing through the chain is safe.
+        let own_children = self.parent_object.parent_object.children.clone();
+        let super_field = self.parent_object.parent_object.parent_object.super_field();
+        let properties = collect_struct_properties_from_parts(own_children, super_field);
+        debug!(
+            "Class::deserialize: own+super property chain len={} (own_present={}, super_present={})",
+            properties.len(),
+            self.parent_object.parent_object.children.is_some(),
+            self.parent_object.parent_object.parent_object.super_field().is_some(),
+        );
+
         debug!("default_tags");
-        // Reset so the second-pass case (UE2's `Preload` re-runs the serialize
-        // body when the inner super-recursion already cleared RF_NeedLoad)
-        // doesn't accumulate duplicates.
         self.default_tags.clear();
         loop {
             let mut tag = PropertyTag::default();
             tag.deserialize::<E, _>(runtime, linker, reader)?;
-            if tag.name.is_none() {
+            if tag.name.is_none(&linker.borrow()) {
                 break;
             }
             trace!(
                 "tag value: type={} size={:#X}",
                 tag.property_type, tag.size
             );
-            // Match `FPropertyTag::SerializeTaggedProperty` in UnClass.cpp.
-            // BoolProperty value is in `Tag.Info & 0x80` (no extra bytes).
-            // ObjectProperty / ClassProperty / DelegateProperty values are
-            // packed_int object refs that need to trigger `CreateExport`
-            // via `read_object`. Other primitives we still consume as raw
-            // bytes through `cheat()` since they don't trigger object loads.
-            const NAME_BYTE_PROPERTY: u8 = 1;
-            const NAME_INT_PROPERTY: u8 = 2;
-            const NAME_BOOL_PROPERTY: u8 = 3;
-            const NAME_FLOAT_PROPERTY: u8 = 4;
-            const NAME_OBJECT_PROPERTY: u8 = 5;
-            const NAME_NAME_PROPERTY: u8 = 6;
-            const NAME_DELEGATE_PROPERTY: u8 = 7;
-            const NAME_CLASS_PROPERTY: u8 = 8;
-            match tag.property_type {
-                NAME_BOOL_PROPERTY => {
-                    // No extra value bytes.
-                }
-                NAME_OBJECT_PROPERTY | NAME_CLASS_PROPERTY | NAME_DELEGATE_PROPERTY => {
-                    let _ = reader.read_object::<E>(runtime, linker)?;
-                }
-                NAME_NAME_PROPERTY => {
-                    let _ = reader.read_packed_int()?;
-                }
-                NAME_INT_PROPERTY | NAME_FLOAT_PROPERTY => {
-                    let mut buf = [0u8; 4];
-                    reader.cheat(&mut buf)?;
-                }
-                NAME_BYTE_PROPERTY => {
-                    let mut buf = [0u8; 1];
-                    reader.cheat(&mut buf)?;
-                }
-                _ => {
-                    if tag.size > 0 {
-                        let mut buf = vec![0u8; tag.size as usize];
-                        reader.cheat(&mut buf)?;
-                    }
-                }
-            }
+            read_tag_value::<E, _>(&tag, &properties, runtime, linker, reader)?;
             self.default_tags.push(tag);
         }
 

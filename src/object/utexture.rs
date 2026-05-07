@@ -12,26 +12,27 @@ use crate::{
     runtime::UnrealRuntime,
 };
 
-/// SC's `UTexture::Serialize` (Engine_demo 0x103067b2, 0x104f9890):
-///   - `Super::Serialize` (UMaterial, tagged-property loop only).
-///   - Three `TArray<FMipmap>` serializes for the mip levels (we collapse
-///     these into a single `mips` vector since SC's three calls write
-///     the same array three times. See 0x104f9b60).
+/// SC's `UTexture::Serialize` (Engine_demo `0x103067b2` -> `0x104f9890`):
+///   - `UMaterial::Serialize` -> `UObject::Serialize` (tagged-property loop).
+///   - `sub_104f9b60` reads the mip array.
 ///
-/// Each `FMipmap::operator<<` (0x104fe2b0) reads:
-///   - `TLazyArray<BYTE> DataArray`.
-///   - `INT USize`, `INT VSize`.
-///   - `BYTE UBits`, `BYTE VBits`.
+/// `sub_104f9b60` runs `*GLazyLoad = 1` then `if (*GUglyHackFlags & 8 != 0)
+/// *GLazyLoad = 0`. SC's runtime has bit 0x08 of `GUglyHackFlags` set, so
+/// `GLazyLoad = 0` for the inner `FMipmap::operator<<` calls, which means
+/// `TLazyArray<BYTE>::operator<<` (`sub_103cf0b0`) takes the `if
+/// (*GLazyLoad == 0) Load();` branch and runs the lazy body inline.
 ///
-/// `TLazyArray<BYTE>::operator<<` (UT2004's `UnTemplate.h` matches
-/// SC's 0x103cf0b0) does, on the loading path:
-///   - `Ar << SeekPos` (4 bytes)
-///   - `Ar.AttachLazyLoader(this)`. Internally `SavedPos = Ar.Tell()`.
-///   - if `!GLazyLoad`: `this->Load()`, which does
-///     `PushedPos = Ar.Tell(); Ar.Seek(SavedPos); Ar << TArray; Ar.Seek(PushedPos);`.
-///     The `Ar.Seek(SavedPos)` is a no-op (we just set SavedPos=Tell)
-///     but the QEMU plugin still records the `fseek`.
-///   - `Ar.Seek(SeekPos)`. Moves to the post-data position.
+/// `FMipmap::operator<<` (`sub_104fe2b0`) per mip:
+///   - `TLazyArray<BYTE> DataArray` (`sub_103cf0b0`):
+///     - Read 4 bytes (`SeekPos`).
+///     - `Ar.AttachLazyLoader(this)` (memory write, no IO).
+///     - `Load()`:
+///       - `PushedPos = Tell()`.
+///       - `Ar.Seek(SavedPos)`: no-op since `SavedPos == Tell()`.
+///       - `Ar << TArray<BYTE>`: read array length packed-int + bytes.
+///       - `Ar.Seek(PushedPos)`: back to before the array.
+///     - `Ar.Seek(SeekPos)`: final move past the lazy body.
+///   - 4 bytes `USize`, 4 bytes `VSize`, 1 byte `UBits`, 1 byte `VBits`.
 #[derive(Default, Debug)]
 pub struct Texture {
     pub parent_object: Object,
@@ -75,9 +76,6 @@ impl DeserializeUnrealObject for Texture {
             .map(|_| -> io::Result<Mipmap> {
                 let skip_offset = reader.read_i32::<E>()?;
                 let saved_pos = reader.stream_position()?;
-                // `AttachLazyLoader` records `SavedPos = Ar.Tell()` and
-                // `Load()` then does `Ar.Seek(SavedPos)`, a no-op move, but
-                // QEMU records the fseek so we must emit the seek too.
                 reader.seek(SeekFrom::Start(saved_pos))?;
 
                 let data_len = reader.read_packed_int()?;
@@ -87,9 +85,6 @@ impl DeserializeUnrealObject for Texture {
                     reader.cheat(&mut data)?;
                 }
 
-                // `Load()` ends with `Ar.Seek(PushedPos)` (back to before the
-                // array was read); then `TLazyArray::operator<<` does
-                // `Ar.Seek(SeekPos)` to the post-skip-block position.
                 reader.seek(SeekFrom::Start(saved_pos))?;
                 reader.seek(SeekFrom::Start(skip_offset as u64))?;
 
