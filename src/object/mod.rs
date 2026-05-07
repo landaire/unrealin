@@ -13,6 +13,7 @@ mod ufont;
 mod ufunction;
 mod ulanguage;
 mod uobject;
+mod upackage;
 mod upalette;
 mod uprimitive;
 mod uproperty;
@@ -48,6 +49,7 @@ pub mod builtins {
     pub use super::ufunction::Function;
     pub use super::ulanguage::Language;
     pub use super::uobject::Object;
+    pub use super::upackage::Package;
     pub use super::upalette::Palette;
     pub use super::uprimitive::Primitive;
     pub use super::uproperty::{
@@ -230,7 +232,8 @@ register_builtins!(
     Font,
     Texture,
     Palette,
-    Sound
+    Sound,
+    Package
 );
 
 macro_rules! make_inherited_objects {
@@ -340,7 +343,8 @@ make_inherited_objects!(
     Font,
     Texture,
     Palette,
-    Sound
+    Sound,
+    Package
 );
 
 macro_rules! register_linkable {
