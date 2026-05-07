@@ -17,6 +17,7 @@ mod upalette;
 mod uprimitive;
 mod uproperty;
 mod urenderdevice;
+mod usound;
 mod ustate;
 mod ustruct;
 mod usubsystem;
@@ -54,6 +55,7 @@ pub mod builtins {
         NameProperty, ObjectProperty, Property, PropertyFlags, StrProperty, StructProperty,
     };
     pub use super::urenderdevice::RenderDevice;
+    pub use super::usound::Sound;
     pub use super::ustate::State;
     pub use super::ustruct::Struct;
     pub use super::usubsystem::Subsystem;
@@ -227,7 +229,8 @@ register_builtins!(
     Enum,
     Font,
     Texture,
-    Palette
+    Palette,
+    Sound
 );
 
 macro_rules! make_inherited_objects {
@@ -336,7 +339,8 @@ make_inherited_objects!(
     Enum,
     Font,
     Texture,
-    Palette
+    Palette,
+    Sound
 );
 
 macro_rules! register_linkable {
