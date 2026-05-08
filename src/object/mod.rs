@@ -15,6 +15,7 @@ mod ulanguage;
 pub(crate) mod uobject;
 mod upackage;
 mod upalette;
+mod upolys;
 mod uprimitive;
 mod uproperty;
 mod urenderdevice;
@@ -56,6 +57,7 @@ pub mod builtins {
     pub use super::uobject::Object;
     pub use super::upackage::Package;
     pub use super::upalette::Palette;
+    pub use super::upolys::Polys;
     pub use super::uprimitive::Primitive;
     pub use super::uproperty::{
         ArrayProperty, BoolProperty, ByteProperty, ClassProperty, FloatProperty, IntProperty, Link,
@@ -98,22 +100,49 @@ use crate::runtime::UnrealRuntime;
 ///   `UStruct::Serialize` reading ScriptText into a discarded local;
 ///   the `handle_optional_debug_info` peek-back contaminating the
 ///   captured stream with phantom bytes).
+///
+/// * `Patched` is captured/reconstructed bytes plus a set of
+///   body-relative offsets to patch at write time. Used for fields
+///   that hold absolute file offsets pointing INSIDE the same body
+///   (e.g. UTexture mipmap `SeekPos` values, which point past the
+///   mip's lazy data). The original bytes have stale absolute
+///   offsets baked in; ser.rs computes each new offset as
+///   `body_file_position + target_offset_within_body` and overwrites
+///   the 4 bytes at `body_offset` before flushing the body.
 #[derive(Debug, Clone)]
 pub enum BodyKind {
     Opaque(Vec<u8>),
     Reconstructed(Vec<u8>),
+    Patched {
+        bytes: Vec<u8>,
+        patches: Vec<BodyOffsetPatch>,
+    },
+}
+
+/// A 4-byte little-endian u32 inside a body whose value is an
+/// absolute file offset. `target_offset_within_body` is the position
+/// (relative to the body's first byte) that the patched value should
+/// resolve to. ser.rs writes
+/// `body_file_position + target_offset_within_body` as a LE u32 at
+/// `body[body_offset..body_offset + 4]`.
+#[derive(Debug, Clone, Copy)]
+pub struct BodyOffsetPatch {
+    pub body_offset: usize,
+    pub target_offset_within_body: usize,
 }
 
 impl BodyKind {
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
             BodyKind::Opaque(b) | BodyKind::Reconstructed(b) => b,
+            BodyKind::Patched { bytes, .. } => bytes,
         }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             BodyKind::Opaque(b) | BodyKind::Reconstructed(b) => b,
+            BodyKind::Patched { bytes, .. } => bytes,
         }
     }
 
@@ -351,7 +380,8 @@ register_builtins!(
     SkeletalMesh,
     LevelBase,
     Level,
-    Model
+    Model,
+    Polys
 );
 
 // Bulk-impl `SerializeUnrealObject` with the trait's default (Opaque
@@ -362,6 +392,10 @@ register_builtins!(
 //   - `Function`, `State`, `Class` (UStruct subtypes; their impls in
 //     their respective files delegate to Struct's serialize so the
 //     splice covers function/state/class bodies too)
+//   - `Texture` (custom impl in `utexture.rs`: patches stale absolute
+//     mipmap `SeekPos` offsets to their new positions on re-emit)
+//   - `StaticMesh` (custom impl in `ustatic_mesh.rs`: same TLazyArray
+//     pattern as Texture; patches the lazy-body skip offset)
 impl_default_serialize!(
     Object,
     Field,
@@ -380,18 +414,17 @@ impl_default_serialize!(
     ArrayProperty,
     Enum,
     Font,
-    Texture,
     Palette,
     Sound,
     Package,
     Primitive,
-    StaticMesh,
     Mesh,
     LodMesh,
     SkeletalMesh,
     LevelBase,
     Level,
     Model,
+    Polys,
 );
 
 macro_rules! make_inherited_objects {
@@ -510,7 +543,8 @@ make_inherited_objects!(
     SkeletalMesh,
     LevelBase,
     Level,
-    Model
+    Model,
+    Polys
 );
 
 macro_rules! register_linkable {

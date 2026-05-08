@@ -395,7 +395,7 @@ where
                 .pop_front()
                 .expect("conducting an IO op but there are no more IO ops")
             {
-                IoOp::Read { len, file_ptr } => {
+                IoOp::Read { len, file_ptr, .. } => {
                     next_file_ptr = file_ptr;
                     let remaining = ops.len();
                     assert_eq!(
@@ -462,7 +462,7 @@ where
     }
 }
 
-impl<R> Seek for CheckedLinReader<R> {
+impl<R: Read> Seek for CheckedLinReader<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         let span = span!(Level::TRACE, "seek");
         let _enter = span.enter();
@@ -479,7 +479,7 @@ impl<R> Seek for CheckedLinReader<R> {
                         .pop_front()
                         .expect("conducting an IO op but there are no more IO ops")
                     {
-                        IoOp::Seek { to, from, file_ptr } => {
+                        IoOp::Seek { to, from, file_ptr, .. } => {
                             next_file_ptr = file_ptr;
                             // Not checking `from` because there's some weird nuance with EOF
                             if from != self.pos || to != pos {
@@ -540,8 +540,8 @@ impl<R> Seek for CheckedLinReader<R> {
                                     }
                                 });
                             panic!(
-                                "doing a seek from {:#X} to {:#X}. Bytes until next seek: {bytes_until_next_seek:#X}. Expected op: {other:#X?}",
-                                self.pos, pos
+                                "doing a seek from {:#X} to {:#X}. Bytes until next seek: {bytes_until_next_seek:#X}. Expected op: {other:#X?}. source_consumed_per_source: {:#X?}, current_source_idx: {}",
+                                self.pos, pos, self.source_consumed_per_source, self.current_source_idx
                             )
                         }
                     }
@@ -566,6 +566,16 @@ impl<R> Seek for CheckedLinReader<R> {
 pub trait LinRead: io::Read + io::Seek {
     fn set_reading_linker_header(&mut self, reading_linker_header: bool);
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()>;
+    /// Read `buf.len()` bytes from the underlying source as if a *different*
+    /// FArchive (sharing the same FFile) had issued the read. The bytes are
+    /// removed from the source cursor and one matching trace `Read` op is
+    /// popped, but `self.pos` is left untouched — mirroring the engine's
+    /// behavior when one FArchive's Serialize call advances the shared FFile
+    /// past the linker's logical archive position. Used by
+    /// `USound::Serialize`'s inline lipsynch load: SC opens a separate
+    /// FArchive for the `.bin`, reads the whole body, then frees the archive
+    /// before continuing the outer linker's serialize.
+    fn read_aliased(&mut self, buf: &mut [u8]) -> io::Result<()>;
     fn push_linker(&mut self, linker: RcLinker);
     fn pop_linker(&mut self) -> RcLinker;
     /// Begin capturing bytes read into a new buffer. Subsequent `read`
@@ -611,6 +621,11 @@ pub trait LinRead: io::Read + io::Seek {
     fn trace_ops_consumed(&self) -> u64 {
         0
     }
+    /// Trace ops still queued (not yet consumed). Returns 0 for
+    /// `LinReader` since it has no trace.
+    fn trace_ops_remaining(&self) -> usize {
+        0
+    }
     /// Switch the active source to the given index. The runtime triggers
     /// this at known boundary points where the engine moves between
     /// `.lin` files (in particular, the `None.MyLevel` bootstrap entry
@@ -627,6 +642,18 @@ where
 
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
         self.read_exact(buf)
+    }
+
+    fn read_aliased(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        // No trace: read straight from the source. We deliberately do NOT
+        // advance `self.pos` so the surrounding archive's logical position
+        // matches the engine's (whose lipsynch FArchive is independent of
+        // the outer linker). Source consumption tracking advances naturally
+        // through the read.
+        let saved_pos = self.pos;
+        self.read_exact(buf)?;
+        self.pos = saved_pos;
+        Ok(())
     }
 
     fn switch_to_source(&mut self, idx: usize) {
@@ -732,13 +759,34 @@ where
     }
 
     fn cheat(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        // Empty-buffer call mirrors the engine's `Ar.Serialize(buf, 0)`
+        // (e.g. an empty `TArray<BYTE>` lazy mip body). The kernel still
+        // records that as a `Read(len=0)` syscall, so we pop exactly one
+        // op of that shape. Asserting `len == 0` keeps the call explicit:
+        // the only way to reach this branch is the engine's matching
+        // 0-byte serialize, and the trace must have that 0-byte op queued.
+        if buf.is_empty() {
+            let mut io_ops = self.io_ops.borrow_mut();
+            match io_ops.pop_front().expect("no io op?") {
+                IoOp::Read { len, .. } => {
+                    assert_eq!(
+                        len, 0,
+                        "cheat(empty) expected Read(len=0) but got Read(len={len:#X})"
+                    );
+                }
+                other => panic!("cheat(empty) expected Read(len=0) but got {other:#X?}"),
+            }
+            drop(io_ops);
+            self.trace_ops_consumed += 1;
+            return Ok(());
+        }
         let mut remove_len = 0;
         let mut popped_count: u64 = 0;
         let mut io_ops = self.io_ops.borrow_mut();
         let mut last_file_ptr: u32 = 0;
         while remove_len < buf.len() {
             match io_ops.pop_front().expect("no io op?") {
-                IoOp::Seek { from, to, file_ptr } => {
+                IoOp::Seek { from, to, file_ptr, .. } => {
                     let stack = self
                         .linker
                         .iter()
@@ -766,7 +814,7 @@ where
                         stack
                     );
                 }
-                IoOp::Read { len, file_ptr } => {
+                IoOp::Read { len, file_ptr, .. } => {
                     last_file_ptr = file_ptr;
                     remove_len += len as usize;
                     popped_count += 1;
@@ -778,6 +826,8 @@ where
             io_ops.push_front(IoOp::Read {
                 len: buf.len() as u64,
                 file_ptr: last_file_ptr,
+                archive_open: -1,
+                archive_pos: 0,
             });
         }
         drop(io_ops);
@@ -785,6 +835,65 @@ where
             self.trace_ops_consumed += popped_count - 1;
         }
         self.read_exact(buf)
+    }
+
+    fn read_aliased(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        // Pop the one matching trace Read op without going through the
+        // assertion-rich `<Self as Read>::read` path: source advances by
+        // buf.len() bytes but the linker's logical archive position stays
+        // put. Mirrors the engine's behavior when one FArchive (the
+        // lipsynch loader) does Ar.Serialize on a SECOND archive that
+        // shares the same underlying FFile — the FFile's position
+        // advances; the OUTER linker's logical position doesn't.
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if self.linker_header_depth == 0 {
+            let mut ops = self.io_ops.borrow_mut();
+            match ops
+                .pop_front()
+                .expect("read_aliased: no io op queued")
+            {
+                IoOp::Read { len, file_ptr, .. } => {
+                    assert_eq!(
+                        buf.len() as u64,
+                        len,
+                        "read_aliased expected Read(len={:#X}), got Read(len={:#X})",
+                        buf.len(),
+                        len
+                    );
+                    self.trace_ops_consumed += 1;
+                    drop(ops);
+                    self.switch_source(file_ptr);
+                }
+                other => panic!(
+                    "read_aliased: expected Read op but got {:#X?} at pos {:#X}",
+                    other, self.pos
+                ),
+            }
+        }
+        let cur_idx = self.current_source_idx;
+        let saved_pos = self.pos;
+        // Read from the current source. We deliberately bypass `<Self as
+        // Read>::read` to avoid the per-op pop+assert path (already done
+        // above) and the self.pos advance.
+        let n = self.sources[cur_idx].read(buf)?;
+        if n != buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read_aliased: source short read",
+            ));
+        }
+        self.source_consumed += n as u64;
+        self.source_consumed_per_source[cur_idx] += n as u64;
+        if let Some(top) = self.capture_stack.last_mut() {
+            top.extend_from_slice(&buf[..n]);
+        }
+        self.pos = saved_pos;
+        if let Some(linker) = self.linker.last_mut() {
+            linker.borrow_mut().set_position(self.pos);
+        }
+        Ok(())
     }
 
     fn push_linker(&mut self, linker: RcLinker) {
@@ -862,6 +971,10 @@ where
 
     fn trace_ops_consumed(&self) -> u64 {
         self.trace_ops_consumed
+    }
+
+    fn trace_ops_remaining(&self) -> usize {
+        self.io_ops.borrow().len()
     }
 
     fn switch_to_source(&mut self, idx: usize) {

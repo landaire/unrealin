@@ -98,6 +98,12 @@ fn main() -> Result<()> {
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
 
+    eprintln!(
+        "decompressed sizes: common.lin={:#x}, map.lin={:#x}",
+        common_lin_data.len(),
+        map_lin_data.len(),
+    );
+
     if args.no_checked {
         let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
             Cursor::new(common_lin_data),
@@ -142,6 +148,15 @@ fn main() -> Result<()> {
                 eprintln!("decode_linear_file err: {e}");
             }
         }));
+        eprintln!(
+            "trace ops consumed={} remaining={} ({:.1}%)",
+            lin_decoder.trace_ops_consumed(),
+            lin_decoder.trace_ops_remaining(),
+            (lin_decoder.trace_ops_consumed() as f64
+                / (lin_decoder.trace_ops_consumed() as f64
+                    + lin_decoder.trace_ops_remaining() as f64).max(1.0))
+                * 100.0,
+        );
         write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
         stats.print_summary(20);

@@ -3,3 +3,7 @@
 /docs
 tools/validator/bin/
 tools/validator/obj/
+# Recorded I/O traces (large; one is staged as `reads.json` for replay,
+# the rest are session backups).
+reads.json
+reads.json.*

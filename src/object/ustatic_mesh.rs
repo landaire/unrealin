@@ -4,8 +4,11 @@ use byteorder::{ByteOrder, ReadBytesExt};
 use tracing::{Level, debug, span};
 
 use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uprimitive::Primitive},
+    de::{ExportIndex, Linker, RcLinker},
+    object::{
+        BodyKind, BodyOffsetPatch, DeserializeUnrealObject, RcUnrealObject, SerializeUnrealObject,
+        uprimitive::Primitive,
+    },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -70,6 +73,13 @@ pub struct StaticMesh {
     pub field_88: Vec<Option<RcUnrealObject>>,
 
     pub lazy_seek_pos: i32,
+    /// Body-relative byte offset of the `lazy_seek_pos` field within
+    /// the captured StaticMesh body. `serialize` uses this to emit a
+    /// `BodyOffsetPatch` so ser.rs can rewrite the stale absolute
+    /// offset when the body lands at a new file position on re-emit.
+    /// 0 if the version-gate at `Ver >= 0x61` doesn't fire (no patch
+    /// needed in that case).
+    pub lazy_seek_field_pos: usize,
     pub field_ac: u32,
     pub field_b0: u32,
 }
@@ -105,6 +115,41 @@ where
     }
     let trailing = reader.read_u32::<E>()?;
     Ok(FRawIndexBuffer { indices, trailing })
+}
+
+impl SerializeUnrealObject for StaticMesh {
+    /// Patch the stale absolute `lazy_seek_pos` to its new position.
+    /// Same pattern as `Texture::serialize` — only the 4-byte
+    /// TLazyArray skip target gets rewritten; everything else in the
+    /// body stays verbatim. If the version gate didn't fire (no
+    /// lazy_seek_pos was read), the recorded field position is 0 and
+    /// we fall back to Opaque.
+    fn serialize<E>(
+        &self,
+        linker: &Linker,
+        export_index: ExportIndex,
+        captured: &[u8],
+    ) -> std::io::Result<BodyKind>
+    where
+        E: byteorder::ByteOrder,
+    {
+        if self.lazy_seek_field_pos == 0 {
+            return Ok(BodyKind::Opaque(captured.to_vec()));
+        }
+        let old_body_offset = linker
+            .find_export_by_index(export_index)
+            .map(|e| e.serial_offset())
+            .unwrap_or(0);
+        let target =
+            (self.lazy_seek_pos as u64).saturating_sub(old_body_offset) as usize;
+        Ok(BodyKind::Patched {
+            bytes: captured.to_vec(),
+            patches: vec![BodyOffsetPatch {
+                body_offset: self.lazy_seek_field_pos,
+                target_offset_within_body: target,
+            }],
+        })
+    }
 }
 
 impl DeserializeUnrealObject for StaticMesh {
@@ -197,6 +242,11 @@ impl DeserializeUnrealObject for StaticMesh {
         }
 
         if file_version >= 0x61 {
+            // `capture_len` BEFORE the read = body-relative byte
+            // offset of the 4 LE bytes about to land in capture.
+            // serialize emits a BodyOffsetPatch using this so ser.rs
+            // can rewrite the stale absolute file offset on re-emit.
+            self.lazy_seek_field_pos = reader.capture_len();
             self.lazy_seek_pos = reader.read_i32::<E>()?;
             reader.seek(SeekFrom::Start(self.lazy_seek_pos as u64))?;
         }

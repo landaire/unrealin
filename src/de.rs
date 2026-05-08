@@ -805,6 +805,8 @@ where
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
+                preload_stack: Vec::new(),
+                file_table_entries: Vec::new(),
             },
             file_table: Vec::new(),
             secondary_package_names,
@@ -861,6 +863,8 @@ where
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
+                preload_stack: Vec::new(),
+                file_table_entries: Vec::new(),
             },
             file_table: Vec::new(),
             secondary_package_names,
@@ -877,6 +881,20 @@ where
 {
     pub fn linkers(&self) -> &HashMap<String, Rc<RefCell<Linker>>> {
         &self.runtime.linkers
+    }
+
+    pub fn trace_ops_consumed(&self) -> u64 {
+        self.sources
+            .front()
+            .map(|r| r.trace_ops_consumed())
+            .unwrap_or(0)
+    }
+
+    pub fn trace_ops_remaining(&self) -> usize {
+        self.sources
+            .front()
+            .map(|r| r.trace_ops_remaining())
+            .unwrap_or(0)
     }
 
     /// Map from lowercased package name (the linker key style — `"engine"`,
@@ -1032,9 +1050,25 @@ where
             if let Some(pkg) = package_name_from_path(&entry.name) {
                 self.runtime
                     .package_file_size
-                    .insert(pkg, entry.len as u64);
+                    .insert(pkg.clone(), entry.len as u64);
+                // Mark the package as physically present in this `.lin` so
+                // `verify_imports` will cascade-load it. Without this gate
+                // any package that's in the file_table but not in our
+                // hardcoded warmup list is treated as an engine intrinsic
+                // and skipped — leaving its header bytes in the source
+                // unread, which then misaligns subsequent reads.
+                self.runtime.present_packages.insert(pkg);
             }
         }
+
+        // Mirror the full file_table to the runtime so non-package lookups
+        // (lipsynch `.bin`, language-localized assets) can resolve a body-stored
+        // filename to its on-disk size. Stored lowercased so suffix lookups
+        // are case-insensitive.
+        self.runtime.file_table_entries = file_table
+            .iter()
+            .map(|entry| (entry.name.to_lowercase(), entry.len as u64))
+            .collect();
 
         self.file_table = file_table;
         Ok(())

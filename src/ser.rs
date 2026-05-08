@@ -18,7 +18,7 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
 use crate::PKG_TAG;
 use crate::de::{ExportIndex, GenerationInfo, Linker};
-use crate::object::serialize_object;
+use crate::object::{BodyKind, BodyOffsetPatch, serialize_object};
 
 pub(crate) fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
     let sign = if value < 0 { 0x80u8 } else { 0 };
@@ -44,6 +44,24 @@ pub(crate) fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()
         }
     }
     Ok(())
+}
+
+/// Number of bytes [`write_packed_int`] would emit for `value`. Mirrors
+/// the encoding loop above: 1 byte for `|value| < 0x40`, then +1 byte
+/// per 7 bits of magnitude beyond that. Caps at 5 bytes (33 bits of
+/// magnitude — beyond what an `i32` can encode anyway).
+pub(crate) fn packed_int_size(value: i32) -> usize {
+    let mut v: u32 = value.unsigned_abs();
+    if v < 0x40 {
+        return 1;
+    }
+    v >>= 6;
+    let mut n = 2; // first byte plus the first continuation byte
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
 }
 
 fn write_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
@@ -184,14 +202,17 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         write_packed_int(&mut writer, import.object_name)?;
     }
 
-    // Pre-compute the body bytes for each export by dispatching through
-    // each constructed object's `SerializeUnrealObject::serialize`.
-    // Default impls return the captured raw stream verbatim; per-class
-    // overrides (e.g. `Struct`'s script-section splice) substitute
-    // canonical bytes. We need every body's length up-front so the
-    // export table's serial_size is correct before the bodies are
-    // written.
-    let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(pkg.exports.len());
+    // Pre-compute the body bytes (and any per-body patches) for each
+    // export by dispatching through each constructed object's
+    // `SerializeUnrealObject::serialize`. Default impls return the
+    // captured raw stream verbatim (Opaque); per-class overrides
+    // substitute canonical bytes (Reconstructed) or attach patches
+    // for absolute file offsets baked into the body (Patched).
+    struct PendingBody {
+        bytes: Vec<u8>,
+        patches: Vec<BodyOffsetPatch>,
+    }
+    let mut bodies: Vec<PendingBody> = Vec::with_capacity(pkg.exports.len());
     for i in 0..pkg.exports.len() {
         let captured: &[u8] = linker
             .captured
@@ -200,31 +221,98 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
         if captured.is_empty() {
-            bodies.push(Vec::new());
+            bodies.push(PendingBody {
+                bytes: Vec::new(),
+                patches: Vec::new(),
+            });
             continue;
         }
         let export_index = ExportIndex(i);
-        let body = match linker.objects.get(&export_index) {
+        let kind = match linker.objects.get(&export_index) {
             Some(obj) => {
                 let inner = obj.borrow();
-                let kind = serialize_object::<E>(&*inner, linker, export_index, captured)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                kind.into_bytes()
+                serialize_object::<E>(&*inner, linker, export_index, captured)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             }
-            None => captured.to_vec(),
+            None => BodyKind::Opaque(captured.to_vec()),
         };
-        bodies.push(body);
+        let (bytes, patches) = match kind {
+            BodyKind::Opaque(b) | BodyKind::Reconstructed(b) => (b, Vec::new()),
+            BodyKind::Patched { bytes, patches } => (bytes, patches),
+        };
+        bodies.push(PendingBody { bytes, patches });
     }
 
-    let effective_size: Vec<i32> = bodies.iter().map(|b| b.len() as i32).collect();
+    let effective_size: Vec<i32> = bodies.iter().map(|b| b.bytes.len() as i32).collect();
 
+    // Standard UE2 layout (what UPK Explorer / Unreal-Library expect)
+    // is: header → names → imports → exports table → body data, with
+    // each `serial_offset` pointing forward into the body region.
+    // The challenge is that `serial_offset` is a packed_int whose width
+    // depends on its value — but the value depends on the table's size,
+    // which depends on the widths. We resolve the chicken-and-egg with
+    // a fixed-point iteration: assume every `serial_offset` takes 4
+    // bytes initially, compute resulting offsets, observe the actual
+    // packed_int width each one needs, and repeat until the width
+    // assumption stabilises. Two iterations is enough for typical
+    // SC packages (offsets well under 2 GB so width tops out at 4).
     let exports_pos = writer.stream_position()? as u32;
     corrections.push(Correction {
         at: export_offset_pos,
         value: exports_pos,
         encoding: CorrectionEncoding::U32Le,
     });
-    let mut export_serial_offset_pos: Vec<u64> = Vec::with_capacity(pkg.exports.len());
+
+    // Per-entry size of everything in the export table EXCEPT the
+    // serial_offset. Combined with each entry's serial_offset width
+    // this gives the total table size.
+    let mut entry_fixed_sizes: Vec<usize> = Vec::with_capacity(pkg.exports.len());
+    for (i, export) in pkg.exports.iter().enumerate() {
+        let mut sz = packed_int_size(export.class_index);
+        sz += packed_int_size(export.super_index);
+        sz += 4; // package_index (raw u32)
+        sz += packed_int_size(export.object_name);
+        sz += 4; // object_flags (raw u32)
+        sz += packed_int_size(effective_size[i]); // serial_size
+        entry_fixed_sizes.push(sz);
+    }
+
+    let mut serial_offset_widths: Vec<usize> = vec![4; pkg.exports.len()];
+    let mut serial_offsets: Vec<u32> = vec![0; pkg.exports.len()];
+    for _attempt in 0..6 {
+        let table_size: usize = (0..pkg.exports.len())
+            .map(|i| {
+                entry_fixed_sizes[i]
+                    + if effective_size[i] > 0 {
+                        serial_offset_widths[i]
+                    } else {
+                        0
+                    }
+            })
+            .sum();
+        let body_region_start = exports_pos as u64 + table_size as u64;
+        let mut cur = body_region_start;
+        for i in 0..pkg.exports.len() {
+            if effective_size[i] > 0 {
+                serial_offsets[i] = cur as u32;
+                cur += effective_size[i] as u64;
+            } else {
+                serial_offsets[i] = 0;
+            }
+        }
+        let new_widths: Vec<usize> = serial_offsets
+            .iter()
+            .map(|o| packed_int_size(*o as i32))
+            .collect();
+        if new_widths == serial_offset_widths {
+            break;
+        }
+        serial_offset_widths = new_widths;
+    }
+
+    // Now write the export table with the resolved widths. `write_packed_int`
+    // produces the same width we just budgeted for, so the bodies that
+    // follow land at exactly the offsets we've stamped in.
     for (i, export) in pkg.exports.iter().enumerate() {
         write_packed_int(&mut writer, export.class_index)?;
         write_packed_int(&mut writer, export.super_index)?;
@@ -232,24 +320,40 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         write_packed_int(&mut writer, export.object_name)?;
         writer.write_u32::<E>(export.object_flags)?;
         write_packed_int(&mut writer, effective_size[i])?;
-        let offset_field_pos = writer.stream_position()?;
         if effective_size[i] > 0 {
-            writer.write_all(&[0xC0, 0x80, 0x80, 0x80, 0x00])?;
+            let pre = writer.stream_position()?;
+            write_packed_int(&mut writer, serial_offsets[i] as i32)?;
+            let actual_w = (writer.stream_position()? - pre) as usize;
+            debug_assert_eq!(
+                actual_w, serial_offset_widths[i],
+                "serial_offset width mismatch for export {} (actual {}, planned {})",
+                i, actual_w, serial_offset_widths[i]
+            );
         }
-        export_serial_offset_pos.push(offset_field_pos);
     }
 
-    for (i, body) in bodies.iter().enumerate() {
-        if body.is_empty() {
+    // Write bodies, applying per-body BodyOffsetPatches now that each
+    // body's absolute file position is known (e.g. UTexture mipmap
+    // `SeekPos` fields baked into the captured bytes).
+    for (i, body) in bodies.iter_mut().enumerate() {
+        if body.bytes.is_empty() {
             continue;
         }
         let body_pos = writer.stream_position()? as u32;
-        writer.write_all(body)?;
-        corrections.push(Correction {
-            at: export_serial_offset_pos[i],
-            value: body_pos,
-            encoding: CorrectionEncoding::PaddedPackedInt,
-        });
+        debug_assert_eq!(
+            body_pos, serial_offsets[i],
+            "body {i} placed at {body_pos:#X} but table says {:#X}",
+            serial_offsets[i]
+        );
+        for patch in &body.patches {
+            let new_value = body_pos + patch.target_offset_within_body as u32;
+            let bytes_le = new_value.to_le_bytes();
+            if patch.body_offset + 4 <= body.bytes.len() {
+                body.bytes[patch.body_offset..patch.body_offset + 4]
+                    .copy_from_slice(&bytes_le);
+            }
+        }
+        writer.write_all(&body.bytes)?;
     }
 
     apply_corrections::<_, E>(&mut writer, &corrections)?;

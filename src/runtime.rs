@@ -60,6 +60,45 @@ pub struct UnrealRuntime {
     /// address; in our heap that doesn't match construction order naturally, so
     /// we attach an explicit construction index and sort by that.
     pub next_construction_index: u64,
+    /// Stack of full names of preloads currently in progress. Innermost
+    /// is at the top; used by `ENQ#` diagnostics to attribute newly-
+    /// constructed objects to whoever's `deserialize` triggered them.
+    pub preload_stack: Vec<String>,
+    /// Full LIN file_table as `(lowercase_path, len)` pairs. Used for
+    /// suffix-keyed lookups of non-package files (lipsynch `.bin`,
+    /// language-localized assets, etc.) that the engine loads inline
+    /// from a Serialize body. Populated once at file_table parse time;
+    /// scanned linearly because the count is small (~3.5k entries) and
+    /// lookups are rare (~hundreds of sounds per session).
+    pub file_table_entries: Vec<(String, u64)>,
+}
+
+impl UnrealRuntime {
+    /// Find a file in the LIN file_table whose path ends with `body_filename`
+    /// (case-insensitive). Used to resolve lipsynch `.bin` references stored
+    /// in `USound.lipsynch_filename`: the body holds a relative path like
+    /// `\S0_0_Voice\00_25_01.bin`, and the file_table entry for it is
+    /// `Lipsynch\int\S0_0_Voice\00_25_01.bin` (the engine's `FindFile`
+    /// resolves the full path through localized search dirs we don't model).
+    /// Returns `Some(len)` for the first suffix match, `None` if not found —
+    /// matching the engine's behavior of bailing out (no read) on open
+    /// failure rather than panicking.
+    pub fn find_file_by_suffix(&self, body_filename: &str) -> Option<u64> {
+        let normalized = body_filename
+            .trim_start_matches('\\')
+            .trim_start_matches('/')
+            .to_lowercase();
+        if normalized.is_empty() {
+            return None;
+        }
+        for (path, size) in &self.file_table_entries {
+            // file_table_entries paths are stored lowercased, so direct ends_with works.
+            if path.ends_with(&normalized) {
+                return Some(*size);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -358,6 +397,11 @@ impl UnrealRuntime {
         reader.seek(SeekFrom::Start(export.serial_offset()))?;
 
         self.objects_full_loading.insert(pointer_value);
+        let preload_full_name = {
+            let l = linker.borrow();
+            format!("{} ({})", export.full_name(&l), export.class_name(&l))
+        };
+        self.preload_stack.push(preload_full_name.clone());
 
         // Capture the raw bytes consumed for this export. Nested
         // preloads push their own frames so they don't pollute ours;
@@ -402,10 +446,25 @@ impl UnrealRuntime {
                 reader.cheat(&mut buf)?;
             }
             std::cmp::Ordering::Greater => {
-                panic!(
-                    "preload over-read: consumed {:#X} bytes, expected {:#X}",
+                // SC's `Preload` (xbe `0x38390`) does NOT bound reads by
+                // `serial_size` — it calls `Precache(serial_size)` which
+                // resolves to a no-op (`vtable[0x4c]` = `FArchive::Precache`
+                // tail-calls `sub_101071a0`, an immediate-return). Several
+                // SC native classes legitimately read past the export's
+                // `serial_size`: `USound::Serialize` appends an inline
+                // lipsynch `.bin` body when `+0x38 != 0`. Treat over-read
+                // as expected behavior.
+                let (full_name, class_name) = {
+                    let l = linker.borrow();
+                    (export.full_name(&l), export.class_name(&l).to_owned())
+                };
+                debug!(
+                    "preload over-read for {} (class {}): consumed {:#X}/{:#X}, +{:#X} extra",
+                    full_name,
+                    class_name,
                     read_size,
-                    export.serial_size()
+                    export.serial_size(),
+                    read_size - export.serial_size()
                 );
             }
         }
@@ -419,6 +478,7 @@ impl UnrealRuntime {
 
         reader.seek(SeekFrom::Start(saved_pos))?;
         reader.pop_linker();
+        self.preload_stack.pop();
 
         Ok(())
     }

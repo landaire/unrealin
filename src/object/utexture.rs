@@ -6,8 +6,10 @@ use tracing::{Level, debug, span, trace};
 use std::io::Seek;
 
 use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
+    de::{ExportIndex, Linker, RcLinker},
+    object::{
+        BodyKind, BodyOffsetPatch, DeserializeUnrealObject, SerializeUnrealObject, uobject::Object,
+    },
     reader::{LinRead, UnrealReadExt},
     runtime::UnrealRuntime,
 };
@@ -48,6 +50,53 @@ pub struct Mipmap {
     pub v_size: i32,
     pub u_bits: u8,
     pub v_bits: u8,
+    /// Body-relative byte offset of this mip's `skip_offset` field
+    /// within the captured Texture body. `Texture::serialize` uses
+    /// this to emit a `BodyOffsetPatch` so ser.rs can rewrite the
+    /// stale absolute offset when the body lands at a new file
+    /// position on re-emit.
+    pub skip_offset_field_pos: usize,
+}
+
+impl SerializeUnrealObject for Texture {
+    /// Patch each mipmap's stale absolute `SeekPos` to its new
+    /// position. The body bytes themselves stay verbatim (we don't
+    /// reconstruct mipmap data); only the 4-byte skip targets get
+    /// rewritten when ser.rs places the body at its new file offset.
+    fn serialize<E>(
+        &self,
+        linker: &Linker,
+        export_index: ExportIndex,
+        captured: &[u8],
+    ) -> std::io::Result<BodyKind>
+    where
+        E: byteorder::ByteOrder,
+    {
+        if self.mips.is_empty() {
+            return Ok(BodyKind::Opaque(captured.to_vec()));
+        }
+        let old_body_offset = linker
+            .find_export_by_index(export_index)
+            .map(|e| e.serial_offset())
+            .unwrap_or(0);
+        let mut patches = Vec::with_capacity(self.mips.len());
+        for mip in &self.mips {
+            // The on-disk skip_offset = absolute file offset of the
+            // byte right after the mip's lazy `TArray<BYTE>` data
+            // (the engine seeks there to skip past it). Subtract the
+            // body's original file offset to get the body-relative
+            // target, then ser.rs adds the new body offset on patch.
+            let target = (mip.skip_offset as u64).saturating_sub(old_body_offset) as usize;
+            patches.push(BodyOffsetPatch {
+                body_offset: mip.skip_offset_field_pos,
+                target_offset_within_body: target,
+            });
+        }
+        Ok(BodyKind::Patched {
+            bytes: captured.to_vec(),
+            patches,
+        })
+    }
 }
 
 impl DeserializeUnrealObject for Texture {
@@ -74,6 +123,12 @@ impl DeserializeUnrealObject for Texture {
 
         self.mips = (0..mip_count)
             .map(|_| -> io::Result<Mipmap> {
+                // `capture_len` BEFORE the read = body-relative byte
+                // offset where the skip_offset's 4 LE bytes will land.
+                // Texture::serialize emits a BodyOffsetPatch using
+                // this so ser.rs can rewrite the stale absolute file
+                // offset when the body is placed at a new position.
+                let skip_offset_field_pos = reader.capture_len();
                 let skip_offset = reader.read_i32::<E>()?;
                 let saved_pos = reader.stream_position()?;
                 reader.seek(SeekFrom::Start(saved_pos))?;
@@ -81,9 +136,12 @@ impl DeserializeUnrealObject for Texture {
                 let data_len = reader.read_packed_int()?;
                 assert!(data_len >= 0, "negative DataArray length");
                 let mut data = vec![0u8; data_len as usize];
-                if data_len > 0 {
-                    reader.cheat(&mut data)?;
-                }
+                // The engine's `Ar.Serialize(buf, data_len)` runs even
+                // when data_len == 0; that emits a `Read(len=0)` syscall
+                // which we must consume here. Skipping the call when
+                // empty would leave the no-op trace event queued and
+                // collide with the seek that immediately follows.
+                reader.cheat(&mut data)?;
 
                 reader.seek(SeekFrom::Start(saved_pos))?;
                 reader.seek(SeekFrom::Start(skip_offset as u64))?;
@@ -95,6 +153,7 @@ impl DeserializeUnrealObject for Texture {
                     v_size: reader.read_i32::<E>()?,
                     u_bits: reader.read_u8()?,
                     v_bits: reader.read_u8()?,
+                    skip_offset_field_pos,
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;

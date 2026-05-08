@@ -648,6 +648,8 @@ mod tests {
             pending_loads: Vec::new(),
             begin_load_count: 0,
             next_construction_index: 0,
+            preload_stack: Vec::new(),
+            file_table_entries: Vec::new(),
         }
     }
 
