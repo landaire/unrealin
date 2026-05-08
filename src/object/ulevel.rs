@@ -97,8 +97,6 @@ impl DeserializeUnrealObject for Level {
         // Step 9: `if (Model && !Ar.IsTrans()) Ar.Preload(Model)`.
         // ULinkerLoad::Preload synchronously seeks to Model's
         // serial_offset, deserializes Model's body, and seeks back.
-        // The seek-to and seek-back ARE in the trace (as Seek ops),
-        // so we mirror the call here via `full_load_object`.
         if let Some(model) = self.model.clone() {
             runtime.full_load_object::<E, _>(&model, reader)?;
         }

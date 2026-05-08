@@ -1,0 +1,24 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        New,
+    ),
+    Token(
+        SelfObj,
+    ),
+    Token(
+        NoObject,
+    ),
+    Token(
+        ObjectConst,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        NoObject,
+    ),
+]

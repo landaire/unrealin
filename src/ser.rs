@@ -1,16 +1,26 @@
 //! Per-package serializer. Splits a loaded `LinearFileDecoder` back into
-//! its natural .u/.utx files. Body bytes come from the captured frames
-//! the deserializer recorded for each export, so packed_int FName and
-//! object indices remain valid in the output without rewriting.
+//! its natural .u/.utx files. Body bytes come from each export's
+//! `SerializeUnrealObject::serialize` (default: captured raw stream;
+//! per-class override: e.g. `Struct`'s canonical-script splice).
+//!
+//! ## Corrections
+//!
+//! Placeholder offsets are written as fixed-width zeros (or the padded
+//! packed_int sentinel) during the forward pass, then patched at the
+//! end via the [`Correction`] list. This keeps the forward pass linear
+//! (no mid-write seeks) and unifies header-table offsets, per-export
+//! `serial_offset`, and any future per-type position-dependent fields
+//! under a single late-binding mechanism.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 
 use crate::PKG_TAG;
-use crate::de::{GenerationInfo, Linker};
+use crate::de::{ExportIndex, GenerationInfo, Linker};
+use crate::object::serialize_object;
 
-fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
+pub(crate) fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
     let sign = if value < 0 { 0x80u8 } else { 0 };
     let mut v: u32 = value.unsigned_abs();
     let mut b0 = (v & 0x3f) as u8;
@@ -48,8 +58,6 @@ fn write_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
     Ok(())
 }
 
-// Always emit serial_offset as a fixed 5-byte packed_int so we can patch
-// it in place without rewriting the rest of the export table.
 fn write_padded_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
     let sign = if value < 0 { 0x80u8 } else { 0 };
     let mut v = value.unsigned_abs();
@@ -66,12 +74,56 @@ fn write_padded_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
     Ok(())
 }
 
+/// Encoding to use when applying a [`Correction`].
+#[derive(Debug, Copy, Clone)]
+pub enum CorrectionEncoding {
+    /// Plain little-endian u32 (4 bytes). Used for header-table offsets.
+    U32Le,
+    /// Fixed 5-byte padded packed_int. Used for the export-table
+    /// `serial_offset` field, where the placeholder must be a fixed
+    /// width but the value is a packed_int on disk.
+    PaddedPackedInt,
+}
+
+/// A pending overwrite of a placeholder field. Pushed during the
+/// forward write pass at the moment the placeholder is emitted; the
+/// resolved value is filled in later (typically once enough has been
+/// written to know the absolute file offset of the target). Applied
+/// in a single seek-and-write pass at the end of `serialize_linker`.
+#[derive(Debug, Copy, Clone)]
+pub struct Correction {
+    /// Absolute file offset of the placeholder bytes.
+    pub at: u64,
+    /// Value to write.
+    pub value: u32,
+    pub encoding: CorrectionEncoding,
+}
+
+fn apply_corrections<W, E>(writer: &mut W, corrections: &[Correction]) -> io::Result<()>
+where
+    W: Write + Seek,
+    E: ByteOrder,
+{
+    for c in corrections {
+        writer.seek(SeekFrom::Start(c.at))?;
+        match c.encoding {
+            CorrectionEncoding::U32Le => writer.write_u32::<E>(c.value)?,
+            CorrectionEncoding::PaddedPackedInt => {
+                write_padded_packed_int(writer, c.value as i32)?
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     linker: &Linker,
     mut writer: W,
 ) -> io::Result<()> {
     let pkg = &linker.package;
     let header = &pkg.header;
+
+    let mut corrections: Vec<Correction> = Vec::new();
 
     writer.write_u32::<E>(PKG_TAG)?;
     writer.write_u32::<E>(header.version)?;
@@ -109,12 +161,22 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     }
 
     let names_pos = writer.stream_position()? as u32;
+    corrections.push(Correction {
+        at: name_offset_pos,
+        value: names_pos,
+        encoding: CorrectionEncoding::U32Le,
+    });
     for name in &pkg.names {
         write_string(&mut writer, &name.name)?;
         writer.write_u32::<E>(name.flags)?;
     }
 
     let imports_pos = writer.stream_position()? as u32;
+    corrections.push(Correction {
+        at: import_offset_pos,
+        value: imports_pos,
+        encoding: CorrectionEncoding::U32Le,
+    });
     for import in &pkg.imports {
         write_packed_int(&mut writer, import.class_package)?;
         write_packed_int(&mut writer, import.class_name)?;
@@ -122,22 +184,47 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         write_packed_int(&mut writer, import.object_name)?;
     }
 
-    let effective_size: Vec<i32> = pkg
-        .exports
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
-            linker
-                .captured
-                .bodies
-                .get(&i)
-                .map(|b| b.len() as i32)
-                .unwrap_or(0)
-        })
-        .collect();
+    // Pre-compute the body bytes for each export by dispatching through
+    // each constructed object's `SerializeUnrealObject::serialize`.
+    // Default impls return the captured raw stream verbatim; per-class
+    // overrides (e.g. `Struct`'s script-section splice) substitute
+    // canonical bytes. We need every body's length up-front so the
+    // export table's serial_size is correct before the bodies are
+    // written.
+    let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(pkg.exports.len());
+    for i in 0..pkg.exports.len() {
+        let captured: &[u8] = linker
+            .captured
+            .bodies
+            .get(&i)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        if captured.is_empty() {
+            bodies.push(Vec::new());
+            continue;
+        }
+        let export_index = ExportIndex(i);
+        let body = match linker.objects.get(&export_index) {
+            Some(obj) => {
+                let inner = obj.borrow();
+                let kind = serialize_object::<E>(&*inner, linker, export_index, captured)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                kind.into_bytes()
+            }
+            None => captured.to_vec(),
+        };
+        bodies.push(body);
+    }
+
+    let effective_size: Vec<i32> = bodies.iter().map(|b| b.len() as i32).collect();
 
     let exports_pos = writer.stream_position()? as u32;
-    let mut export_table_entries: Vec<u64> = Vec::with_capacity(pkg.exports.len());
+    corrections.push(Correction {
+        at: export_offset_pos,
+        value: exports_pos,
+        encoding: CorrectionEncoding::U32Le,
+    });
+    let mut export_serial_offset_pos: Vec<u64> = Vec::with_capacity(pkg.exports.len());
     for (i, export) in pkg.exports.iter().enumerate() {
         write_packed_int(&mut writer, export.class_index)?;
         write_packed_int(&mut writer, export.super_index)?;
@@ -149,35 +236,23 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         if effective_size[i] > 0 {
             writer.write_all(&[0xC0, 0x80, 0x80, 0x80, 0x00])?;
         }
-        export_table_entries.push(offset_field_pos);
+        export_serial_offset_pos.push(offset_field_pos);
     }
 
-    let mut new_serial_offsets: Vec<u32> = Vec::with_capacity(pkg.exports.len());
-    for (i, _export) in pkg.exports.iter().enumerate() {
-        if effective_size[i] <= 0 {
-            new_serial_offsets.push(0);
+    for (i, body) in bodies.iter().enumerate() {
+        if body.is_empty() {
             continue;
         }
         let body_pos = writer.stream_position()? as u32;
-        let body = &linker.captured.bodies[&i];
         writer.write_all(body)?;
-        new_serial_offsets.push(body_pos);
+        corrections.push(Correction {
+            at: export_serial_offset_pos[i],
+            value: body_pos,
+            encoding: CorrectionEncoding::PaddedPackedInt,
+        });
     }
 
-    for (i, offset_field_pos) in export_table_entries.iter().enumerate() {
-        if effective_size[i] <= 0 {
-            continue;
-        }
-        writer.seek(SeekFrom::Start(*offset_field_pos))?;
-        write_padded_packed_int(&mut writer, new_serial_offsets[i] as i32)?;
-    }
-
-    writer.seek(SeekFrom::Start(name_offset_pos))?;
-    writer.write_u32::<E>(names_pos)?;
-    writer.seek(SeekFrom::Start(import_offset_pos))?;
-    writer.write_u32::<E>(imports_pos)?;
-    writer.seek(SeekFrom::Start(export_offset_pos))?;
-    writer.write_u32::<E>(exports_pos)?;
+    apply_corrections::<_, E>(&mut writer, &corrections)?;
 
     Ok(())
 }

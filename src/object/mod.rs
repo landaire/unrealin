@@ -1,5 +1,5 @@
 /// Internal types that are not directly exposed to the scripting engine
-mod internal;
+pub(crate) mod internal;
 #[cfg(test)]
 mod test_common;
 mod uaudio_subsystem;
@@ -82,6 +82,64 @@ use builtins::*;
 use crate::de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker};
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
+
+/// How an export's body bytes were produced for re-emit. Drives the
+/// per-class story for moving off captured-bytes-verbatim:
+///
+/// * `Opaque` is the captured raw stream from `preload`. Used for
+///   classes whose load/save are byte-identical AND for classes we
+///   haven't yet stood up a per-field re-emit path for. The bytes go
+///   straight to disk; correctness depends on the original LIN.
+///
+/// * `Reconstructed` is bytes produced by walking the parsed Rust
+///   fields and re-emitting them via canonical encoders. Correctness
+///   depends on the deserialize path having captured every field
+///   losslessly. Required wherever load and save diverge (e.g.
+///   `UStruct::Serialize` reading ScriptText into a discarded local;
+///   the `handle_optional_debug_info` peek-back contaminating the
+///   captured stream with phantom bytes).
+#[derive(Debug, Clone)]
+pub enum BodyKind {
+    Opaque(Vec<u8>),
+    Reconstructed(Vec<u8>),
+}
+
+impl BodyKind {
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            BodyKind::Opaque(b) | BodyKind::Reconstructed(b) => b,
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            BodyKind::Opaque(b) | BodyKind::Reconstructed(b) => b,
+        }
+    }
+
+    pub fn is_reconstructed(&self) -> bool {
+        matches!(self, BodyKind::Reconstructed(_))
+    }
+}
+
+pub trait SerializeUnrealObject {
+    /// Produce the body bytes for this export. The default returns
+    /// `BodyKind::Opaque(captured)` (captured raw stream verbatim).
+    /// Override to return `BodyKind::Reconstructed(...)` once a
+    /// per-field re-emit is wired up; the dispatcher in
+    /// `serialize_object` will route the call to the override.
+    fn serialize<E>(
+        &self,
+        _linker: &Linker,
+        _export_index: ExportIndex,
+        captured: &[u8],
+    ) -> io::Result<BodyKind>
+    where
+        E: ByteOrder,
+    {
+        Ok(BodyKind::Opaque(captured.to_vec()))
+    }
+}
 
 pub type RcUnrealObject = Rc<RefCell<dyn UnrealObject>>;
 pub type WeakUnrealObject = Weak<RefCell<dyn UnrealObject>>;
@@ -217,6 +275,46 @@ macro_rules! register_builtins {
                 )*
             }
         }
+
+        /// Polymorphic dispatch from `&dyn UnrealObject` to the type's
+        /// `SerializeUnrealObject::serialize` impl. Each type gets the
+        /// default `BodyKind::Opaque(captured)` unless it has a custom
+        /// `impl SerializeUnrealObject` overriding `serialize` (e.g.
+        /// `ustruct.rs` splices canonical script bytes).
+        pub(crate) fn serialize_object<E>(
+            object: &dyn UnrealObject,
+            linker: &Linker,
+            export_index: ExportIndex,
+            captured: &[u8],
+        ) -> io::Result<BodyKind>
+        where
+            E: ByteOrder,
+        {
+            match object.kind() {
+                $(
+                    UObjectKind::$name => {
+                        let concrete_ty = object
+                            .as_any()
+                            .downcast_ref::<$name>()
+                            .unwrap_or_else(|| panic!("failed to cast to {}", stringify!($name)));
+
+                        concrete_ty.serialize::<E>(linker, export_index, captured)
+                    }
+                )*
+            }
+        }
+    };
+}
+
+/// Bulk-impls `SerializeUnrealObject` with the trait's default body for
+/// every type that doesn't need a custom serialize. Types with custom
+/// re-emit (e.g. `Struct`'s script-section splice) are intentionally
+/// omitted here and provide their own `impl SerializeUnrealObject`.
+macro_rules! impl_default_serialize {
+    ($($name:ident),* $(,)?) => {
+        $(
+            impl SerializeUnrealObject for $name {}
+        )*
     };
 }
 
@@ -254,6 +352,46 @@ register_builtins!(
     LevelBase,
     Level,
     Model
+);
+
+// Bulk-impl `SerializeUnrealObject` with the trait's default (Opaque
+// captured bytes) for every type that doesn't have a custom serialize.
+// Absent here:
+//   - `Struct` (custom impl in `ustruct.rs`: splices canonical script
+//     bytes into the body)
+//   - `Function`, `State`, `Class` (UStruct subtypes; their impls in
+//     their respective files delegate to Struct's serialize so the
+//     splice covers function/state/class bodies too)
+impl_default_serialize!(
+    Object,
+    Field,
+    Const,
+    TextBuffer,
+    Property,
+    FloatProperty,
+    StrProperty,
+    BoolProperty,
+    ObjectProperty,
+    ClassProperty,
+    IntProperty,
+    NameProperty,
+    StructProperty,
+    ByteProperty,
+    ArrayProperty,
+    Enum,
+    Font,
+    Texture,
+    Palette,
+    Sound,
+    Package,
+    Primitive,
+    StaticMesh,
+    Mesh,
+    LodMesh,
+    SkeletalMesh,
+    LevelBase,
+    Level,
+    Model,
 );
 
 macro_rules! make_inherited_objects {

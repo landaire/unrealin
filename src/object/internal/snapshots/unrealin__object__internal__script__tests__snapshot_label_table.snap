@@ -1,0 +1,15 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        LabelTable,
+    ),
+    Name(
+        0,
+    ),
+    Int(
+        42,
+    ),
+]

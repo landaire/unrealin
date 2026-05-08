@@ -1,0 +1,39 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        Nothing,
+    ),
+    Token(
+        IntZero,
+    ),
+    Token(
+        IntOne,
+    ),
+    Token(
+        True,
+    ),
+    Token(
+        False,
+    ),
+    Token(
+        NoObject,
+    ),
+    Token(
+        SelfObj,
+    ),
+    Token(
+        Stop,
+    ),
+    Token(
+        IteratorPop,
+    ),
+    Token(
+        IteratorNext,
+    ),
+    Token(
+        EndOfScript,
+    ),
+]

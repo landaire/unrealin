@@ -1,9 +1,9 @@
 use std::io;
 
 use crate::{
-    de::RcLinker,
+    de::{ExportIndex, Linker, RcLinker},
     object::{
-        DeserializeUnrealObject, RcUnrealObject, UnrealObject,
+        BodyKind, DeserializeUnrealObject, RcUnrealObject, SerializeUnrealObject, UnrealObject,
         internal::{
             fdependency::FDependency, fname::FName, property::PropertyTag,
             serialize_item::collect_struct_properties_from_parts,
@@ -30,6 +30,23 @@ pub struct Class {
     pub class_config_name: FName,
     pub hide_categories: Vec<FName>,
     pub default_tags: Vec<PropertyTag>,
+}
+
+impl SerializeUnrealObject for Class {
+    /// Class -> State -> Struct. Delegate to State (which delegates to
+    /// Struct's splice).
+    fn serialize<E>(
+        &self,
+        linker: &Linker,
+        export_index: ExportIndex,
+        captured: &[u8],
+    ) -> std::io::Result<BodyKind>
+    where
+        E: byteorder::ByteOrder,
+    {
+        self.parent_object
+            .serialize::<E>(linker, export_index, captured)
+    }
 }
 
 impl DeserializeUnrealObject for Class {

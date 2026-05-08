@@ -1,0 +1,54 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        Jump,
+    ),
+    Word(
+        48879,
+    ),
+    Token(
+        JumpIfNot,
+    ),
+    Word(
+        4660,
+    ),
+    Token(
+        Nothing,
+    ),
+    Token(
+        Assert,
+    ),
+    Word(
+        22136,
+    ),
+    Token(
+        True,
+    ),
+    Token(
+        Case,
+    ),
+    Word(
+        16,
+    ),
+    Token(
+        IntZero,
+    ),
+    Token(
+        Case,
+    ),
+    Word(
+        65535,
+    ),
+    Token(
+        Skip,
+    ),
+    Word(
+        66,
+    ),
+    Token(
+        SelfObj,
+    ),
+]

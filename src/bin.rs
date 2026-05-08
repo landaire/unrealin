@@ -107,6 +107,19 @@ fn main() -> Result<()> {
             .decode_unchecked()
             .wrap_err("decode_unchecked failed")?;
         write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+        let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
+        stats.print_summary(20);
+        // Dump all mismatches to a side file for grep-ability.
+        if let Ok(mut f) = std::fs::File::create(output_dir.join("script_roundtrip_mismatches.txt")) {
+            for m in &stats.mismatches {
+                let _ = writeln!(
+                    f,
+                    "{} | {} | {} | captured={:#X} serialized={:#X} first_diff_at={:?}",
+                    m.package, m.export_name, m.class_name,
+                    m.captured_len, m.serialized_len, m.first_diff_at,
+                );
+            }
+        }
     } else {
         let reader = BufReader::new(
             std::fs::File::open("reads.json").wrap_err("failed to open reads.json")?,
@@ -130,6 +143,8 @@ fn main() -> Result<()> {
             }
         }));
         write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+        let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
+        stats.print_summary(20);
     }
 
     Ok(())

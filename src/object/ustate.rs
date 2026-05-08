@@ -4,8 +4,8 @@ use byteorder::ReadBytesExt;
 use tracing::{Level, span, trace};
 
 use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, builtins::Link, ustruct::Struct},
+    de::{ExportIndex, Linker, RcLinker},
+    object::{BodyKind, DeserializeUnrealObject, SerializeUnrealObject, ustruct::Struct},
     reader::LinRead,
     runtime::UnrealRuntime,
 };
@@ -18,6 +18,21 @@ pub struct State {
     ignore_mask: u64,
     label_table_offset: u16,
     state_flags: u32,
+}
+
+impl SerializeUnrealObject for State {
+    fn serialize<E>(
+        &self,
+        linker: &Linker,
+        export_index: ExportIndex,
+        captured: &[u8],
+    ) -> std::io::Result<BodyKind>
+    where
+        E: byteorder::ByteOrder,
+    {
+        self.parent_object
+            .serialize::<E>(linker, export_index, captured)
+    }
 }
 
 impl DeserializeUnrealObject for State {

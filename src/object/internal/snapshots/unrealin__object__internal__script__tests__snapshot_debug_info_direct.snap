@@ -1,0 +1,21 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        DebugInfo,
+    ),
+    Int(
+        100,
+    ),
+    Int(
+        42,
+    ),
+    Int(
+        7,
+    ),
+    Byte(
+        171,
+    ),
+]

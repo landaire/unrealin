@@ -2,7 +2,10 @@ use bitflags::bitflags;
 use byteorder::ReadBytesExt;
 use tracing::{Level, debug, span};
 
-use crate::object::{DeserializeUnrealObject, builtins::Link, ustruct::Struct};
+use crate::de::{ExportIndex, Linker};
+use crate::object::{
+    BodyKind, DeserializeUnrealObject, SerializeUnrealObject, ustruct::Struct,
+};
 
 #[derive(Default, Debug)]
 pub struct Function {
@@ -14,6 +17,24 @@ pub struct Function {
     operator_precedence: u8,
     return_value_offset: u16,
     function_flags: FunctionFlags,
+}
+
+impl SerializeUnrealObject for Function {
+    /// Delegate to the underlying `Struct`'s splice so script-section
+    /// canonicalization covers Function bodies (which is exactly where
+    /// the peek-back artifacts live).
+    fn serialize<E>(
+        &self,
+        linker: &Linker,
+        export_index: ExportIndex,
+        captured: &[u8],
+    ) -> std::io::Result<BodyKind>
+    where
+        E: byteorder::ByteOrder,
+    {
+        self.parent_object
+            .serialize::<E>(linker, export_index, captured)
+    }
 }
 
 impl DeserializeUnrealObject for Function {

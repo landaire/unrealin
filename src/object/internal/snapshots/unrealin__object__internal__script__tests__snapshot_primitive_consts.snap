@@ -1,0 +1,30 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        IntConst,
+    ),
+    Int(
+        305419896,
+    ),
+    Token(
+        FloatConst,
+    ),
+    Float(
+        1.5,
+    ),
+    Token(
+        ByteConst,
+    ),
+    Byte(
+        171,
+    ),
+    Token(
+        IntConstByte,
+    ),
+    Byte(
+        127,
+    ),
+]

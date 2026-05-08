@@ -583,6 +583,11 @@ pub trait LinRead: io::Read + io::Seek {
     /// load and writes a null on save, so the LIN bytes for that field
     /// are noise that breaks UExplorer when re-emitted verbatim.
     fn capture_len(&self) -> usize;
+    /// Owned copy of the innermost capture frame's bytes from `from..`.
+    /// Used by callers that want to extract a contiguous sub-region of
+    /// the in-progress body (e.g. just the script-bytecode section)
+    /// without ending the capture frame.
+    fn capture_slice_from(&self, from: usize) -> Vec<u8>;
     /// Replace the trailing `remove` bytes of the innermost capture
     /// frame with `replacement`. No-op if no capture is active.
     fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]);
@@ -674,6 +679,13 @@ where
 
     fn capture_len(&self) -> usize {
         self.capture_stack.last().map(|v| v.len()).unwrap_or(0)
+    }
+
+    fn capture_slice_from(&self, from: usize) -> Vec<u8> {
+        self.capture_stack
+            .last()
+            .map(|v| v.get(from..).map(|s| s.to_vec()).unwrap_or_default())
+            .unwrap_or_default()
     }
 
     fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]) {
@@ -819,6 +831,13 @@ where
 
     fn capture_len(&self) -> usize {
         self.capture_stack.last().map(|v| v.len()).unwrap_or(0)
+    }
+
+    fn capture_slice_from(&self, from: usize) -> Vec<u8> {
+        self.capture_stack
+            .last()
+            .map(|v| v.get(from..).map(|s| s.to_vec()).unwrap_or_default())
+            .unwrap_or_default()
     }
 
     fn splice_capture_tail(&mut self, remove: usize, replacement: &[u8]) {

@@ -1,0 +1,15 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        PrimitiveCast,
+    ),
+    Byte(
+        3,
+    ),
+    Token(
+        IntZero,
+    ),
+]

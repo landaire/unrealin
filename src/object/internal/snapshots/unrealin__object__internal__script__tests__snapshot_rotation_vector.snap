@@ -1,0 +1,30 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        RotationConst,
+    ),
+    Int(
+        100,
+    ),
+    Int(
+        200,
+    ),
+    Int(
+        300,
+    ),
+    Token(
+        VectorConst,
+    ),
+    Float(
+        1.0,
+    ),
+    Float(
+        2.0,
+    ),
+    Float(
+        3.0,
+    ),
+]

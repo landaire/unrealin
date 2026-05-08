@@ -1,0 +1,29 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        StringConst,
+    ),
+    Data(
+        [
+            104,
+            105,
+            0,
+        ],
+    ),
+    Token(
+        UnicodeStringConst,
+    ),
+    Data(
+        [
+            104,
+            0,
+            105,
+            0,
+            0,
+            0,
+        ],
+    ),
+]

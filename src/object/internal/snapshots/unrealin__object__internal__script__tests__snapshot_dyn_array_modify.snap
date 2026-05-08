@@ -1,0 +1,36 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        DynArrayInsert,
+    ),
+    Token(
+        LocalVariable,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        IntZero,
+    ),
+    Token(
+        IntOne,
+    ),
+    Token(
+        DynArrayRemove,
+    ),
+    Token(
+        LocalVariable,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        IntZero,
+    ),
+    Token(
+        IntOne,
+    ),
+]

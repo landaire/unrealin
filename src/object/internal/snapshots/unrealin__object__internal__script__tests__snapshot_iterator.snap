@@ -1,0 +1,15 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        Iterator,
+    ),
+    Token(
+        SelfObj,
+    ),
+    Word(
+        66,
+    ),
+]

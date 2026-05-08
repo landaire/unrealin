@@ -1,0 +1,42 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        Let,
+    ),
+    Token(
+        LocalVariable,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        IntZero,
+    ),
+    Token(
+        LetBool,
+    ),
+    Token(
+        LocalVariable,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        True,
+    ),
+    Token(
+        LetDelegate,
+    ),
+    Token(
+        LocalVariable,
+    ),
+    Object(
+        0,
+    ),
+    Token(
+        NoObject,
+    ),
+]

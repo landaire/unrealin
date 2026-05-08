@@ -1,0 +1,21 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        Context,
+    ),
+    Token(
+        SelfObj,
+    ),
+    Word(
+        4660,
+    ),
+    Byte(
+        5,
+    ),
+    Token(
+        IntZero,
+    ),
+]

@@ -1,0 +1,18 @@
+---
+source: src/object/internal/script.rs
+expression: tree
+---
+[
+    Token(
+        NameConst,
+    ),
+    Name(
+        0,
+    ),
+    Token(
+        DelegateProperty,
+    ),
+    Name(
+        0,
+    ),
+]
