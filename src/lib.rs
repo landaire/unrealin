@@ -1,5 +1,6 @@
 pub mod de;
 pub mod diag;
+pub mod merge;
 pub mod ser;
 
 pub(crate) mod common;
