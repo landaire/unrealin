@@ -212,17 +212,19 @@ impl DeserializeUnrealObject for Struct {
         debug!("deserializing children");
         self.children = reader.read_object::<E>(runtime, linker)?;
 
-        // Three more phantom fields with the same pattern as ScriptText:
-        // SC's `UStruct::Serialize` reads them but the save path writes
-        // zeros (FriendlyName as packed_int(0) = single 0x00; Line and
-        // TextPos as u32(0) = four 0x00). LIN preserves the originals so
-        // we capture variable bytes; splice each to its zero form so the
-        // re-emitted body matches engine save output.
+        // FriendlyName, Line, TextPos: SC's `UStruct::Serialize` reads
+        // them; the engine's save path writes zeros for all three. UE2
+        // tools split on FriendlyName: UELib's export-table load uses
+        // `ObjectName` (correct), but UE-Explorer's decompiler reads the
+        // in-bytecode FriendlyName from this position (UStruct.cs:255 in
+        // Unreal-Library), so a spliced zero renders every function as
+        // `event None(...)` in decompiled output. We preserve the
+        // captured original here so decompilers see the real name.
+        // Line and TextPos still get spliced because they're not visible
+        // in decompile and zero-splicing keeps closer parity with the
+        // engine save output.
         debug!("deserializing friendly_name");
-        let pre = reader.capture_len();
         self.friendly_name = reader.read_packed_int()?;
-        let consumed = reader.capture_len() - pre;
-        reader.splice_capture_tail(consumed, &[0]);
 
         if licensee_version > 0x1A {
             self.flags = reader.read_u32::<E>()?;
