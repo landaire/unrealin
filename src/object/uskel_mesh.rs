@@ -30,7 +30,7 @@ use crate::{
 ///    packed_int outer count, per element `FName + 4 + 16 (FQuat
 ///    via `sub_104bd2e0`) + 12 (FVector via `sub_1033a110`) + 6*4`.
 /// 5. `Ar << UObject*` at `+0x170` (`vtable[6]`, the `DefaultAnim`
-///    ref). **CASCADE** — fires `MeshAnimation` load.
+///    ref). **CASCADE**: fires `MeshAnimation` load.
 /// 6. 4 raw bytes at `+0x13c`.
 /// 7. `TArray<{TArray<u16> + 4 raw}>` at `+0x158` (`sub_104c2040`).
 /// 8. `TArray<2 u16 = 4 raw>` at `+0x164` (`sub_104c2240`).
@@ -43,7 +43,7 @@ use crate::{
 ///     branch fires inside per element).
 /// 14. (`Ver > 2`): `TArray<4 u32>` at `+0x23c` (same `Ver >= 9`
 ///     branch).
-/// 15. (`Ver >= 6`, fires for SC — Binja flipped this gate):
+/// 15. (`Ver >= 6`, fires for SC; Binja flipped this gate):
 ///     - `TArray<88-byte = 9 u16>` at `+0x140` (`sub_104c04f0`):
 ///       per element 9*2=18 raw bytes (the `!IsPersistent`-gated
 ///       inner FRawIndexBuffer block is skipped at SC's
@@ -51,16 +51,16 @@ use crate::{
 ///     - `TArray<88-byte>` at `+0x14c` (same serializer).
 ///     - `TArray<u16>` at `+0x130` (`sub_10417f60`).
 /// 16. (`Ver >= 7`, fires for SC):
-///     - 4 raw bytes at `+0x248` (count_inner — bone-influence
+///     - 4 raw bytes at `+0x248` (count_inner: bone-influence
 ///       row width).
-///     - 4 raw bytes at `+0x24c` (count_outer — number of
+///     - 4 raw bytes at `+0x24c` (count_outer: number of
 ///       influence rows).
 ///     - `TArray<FString>` at `+0x250` (`sub_104bfd20`).
 ///     - **`FString` at `+0x25c`** (`operator<<(FArchive&,
 ///       FString&)`, not `Ar << UObject*` as Binja's pseudo-c
-///       suggested — the actual call resolves through
+///       suggested; the actual call resolves through
 ///       `[0x10688db4]` which is the FString thunk).
-///     - 2D loop: `count_outer × count_inner` elements, each 3*4
+///     - 2D loop: `count_outer * count_inner` elements, each 3*4
 ///       raw + 16 (FQuat) = 28 bytes.
 /// 17. (`!IsPersistent`, never fires for SC): the tail block
 ///     reading `+0x278` etc. is skipped.
@@ -80,7 +80,7 @@ where
     if count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("USkeletalMesh {ctx} count negative ({count}) — body misaligned"),
+            format!("USkeletalMesh {ctx} count negative ({count}); body misaligned"),
         ));
     }
     let total = (count as usize).saturating_mul(stride);
@@ -101,7 +101,7 @@ where
     if count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("USkeletalMesh {ctx} count negative ({count}) — body misaligned"),
+            format!("USkeletalMesh {ctx} count negative ({count}); body misaligned"),
         ));
     }
     for _ in 0..count {
@@ -229,7 +229,7 @@ impl DeserializeUnrealObject for SkeletalMesh {
             // FString at +0x25c (NOT UObject*).
             let _ = reader.read_string()?;
 
-            // 2D loop: count_outer × count_inner × 28 bytes raw.
+            // 2D loop: count_outer x count_inner x 28 bytes raw.
             let total_2d = (count_outer as u64)
                 .checked_mul(count_inner as u64)
                 .and_then(|v| v.checked_mul(28))
