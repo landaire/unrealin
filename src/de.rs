@@ -996,6 +996,15 @@ where
         // ULevel cascade pulls in the post-MyLevel objects the menu
         // trace records (game info, HUD, controller, etc.) via actor
         // class refs.
+        //
+        // Class filter is `Engine.Level` (`ULevel::StaticClass`) — SC's
+        // `LoadMap` (xbe `0x81860`) calls
+        // `StaticLoadObject(Engine.Level, MyLevel, FileName, ...)`,
+        // and that filter is load-bearing for maps that ship two
+        // `MyLevel` exports: `2_1_0CIA` has both `class=Level`
+        // (the real ULevel with all actor children) and `class=Package`
+        // (a wrapper container). Without the type filter our resolver
+        // could land on the Package export and miss the level cascade.
         let reader = self.sources.front_mut().expect("no file reader available?");
         let secondary = self
             .secondary_package_names
@@ -1005,8 +1014,10 @@ where
         reader.switch_to_source(1);
         let target = format!("{secondary}.MyLevel");
         self.runtime.begin_load();
-        self.runtime.load_object_by_full_name::<E, _>(
+        self.runtime.load_object_by_full_name_with_class::<E, _>(
             &target,
+            Some(("Level", "Engine")),
+            true,
             crate::runtime::LoadKind::Load,
             reader,
         )?;
@@ -1022,17 +1033,17 @@ where
             let reader = self.sources.front_mut().expect("no file reader available?");
             println!("Loading {object}");
             // `None.MyLevel` is the engine's bootstrap marker for the
-            // level-package load. SC's `game_main` (xbe `0x1F370`)
-            // translates this into `StaticLoadObject(MapName, ULevel,
-            // ...)` where MapName is the per-region map subdir
-            // (typically the same as the secondary `.lin`'s package
-            // name: `"menu"` for menu.lin, `"0_0_2_Training"` for
-            // training, etc.). The level package lives in a separate
-            // `.lin` source, so we explicitly switch to source 1
-            // before invoking `load_object_by_full_name`. Routing
-            // through `<secondary_name>.MyLevel` triggers the
-            // `ULevel::Serialize` stub via the existing module
-            // resolver.
+            // level-package load. SC's `LoadMap` (xbe `0x81860`)
+            // resolves it via `StaticLoadObject(Engine.Level,
+            // MyLevel, FileName, ...)` where FileName is the per-region
+            // map subdir (typically the same as the secondary `.lin`'s
+            // package name: `"menu"` for menu.lin, `"0_0_2_Training"`
+            // for training, etc.). The level package lives in a
+            // separate `.lin` source, so we explicitly switch to source
+            // 1 and then invoke the resolver with the engine's class
+            // filter (`Engine.Level` = `ULevel::StaticClass`). The
+            // class filter matters for maps that ship two `MyLevel`
+            // exports — see comment in `decode_unchecked`.
             let resolved = if object == "None.MyLevel" {
                 if let Some(secondary) = self.secondary_package_names.first() {
                     reader.switch_to_source(1);
@@ -1045,11 +1056,21 @@ where
             };
             let target: &str = resolved.as_deref().unwrap_or(object.as_str());
             self.runtime.begin_load();
-            self.runtime.load_object_by_full_name::<E, _>(
-                target,
-                crate::runtime::LoadKind::Load,
-                reader,
-            )?;
+            if resolved.is_some() {
+                self.runtime.load_object_by_full_name_with_class::<E, _>(
+                    target,
+                    Some(("Level", "Engine")),
+                    true,
+                    crate::runtime::LoadKind::Load,
+                    reader,
+                )?;
+            } else {
+                self.runtime.load_object_by_full_name::<E, _>(
+                    target,
+                    crate::runtime::LoadKind::Load,
+                    reader,
+                )?;
+            }
             self.runtime.end_load::<E, _>(reader)?;
         }
 

@@ -10,7 +10,7 @@ use tracing::{Level, debug, info, span, trace};
 
 use crate::object::{DeserializeUnrealObject, RcUnrealObject, deserialize_object};
 use crate::{
-    de::{ExportIndex, ImportIndex, Linker, read_package},
+    de::{ExportIndex, ImportIndex, Linker, ObjectExport, read_package},
     object::builtins::*,
     object::{ObjectFlags, UObjectKind, UnrealObject},
     reader::LinRead,
@@ -623,6 +623,7 @@ impl UnrealRuntime {
             self.load_object_by_full_name_with_class::<E, _>(
                 import_full_name.as_str(),
                 Some((class_name.as_str(), class_package.as_str())),
+                false,
                 load_kind,
                 reader,
             )
@@ -873,15 +874,35 @@ impl UnrealRuntime {
         self.load_object_by_full_name_with_class::<E, _>(
             full_name,
             Some(("Class", "Core")),
+            false,
             load_kind,
             reader,
         )
     }
 
+    /// Looks up `full_name` in the package referenced by its top-level
+    /// segment, optionally filtering on the engine's static class.
+    ///
+    /// `class_info`:
+    /// - `None` — accept the first match by name regardless of class.
+    /// - `Some((class, package))` — prefer this class. With
+    ///   `strict_class=false` we fall back to a name-only match if no
+    ///   strict candidate exists (preserves engine-warmup behavior:
+    ///   the QEMU plugin can't capture `StaticLoadObject`'s `InClass`
+    ///   so our hint defaults to `Core.Class` and we'd otherwise
+    ///   over-filter). With `strict_class=true` the wrong-class match
+    ///   is retained for diagnostics only — we warn with both the
+    ///   expected and observed class, then return `None`. Use strict
+    ///   when you can guarantee the engine's filter (e.g. the level
+    ///   cascade always uses `Engine.Level`), so a same-named export
+    ///   of a different class can't silently shadow the right one
+    ///   (the `MyLevel` package wrapper vs. the `Level` actor in
+    ///   `2_1_0CIA`).
     pub fn load_object_by_full_name_with_class<E, R>(
         &mut self,
         full_name: &str,
         class_info: Option<(&str, &str)>,
+        strict_class: bool,
         load_kind: LoadKind,
         reader: &mut R,
     ) -> io::Result<Option<RcUnrealObject>>
@@ -953,7 +974,7 @@ impl UnrealRuntime {
         // which mishandles cases like "Engine.Console" (the top-level Class)
         // vs "Engine.Engine.Console" (a ClassProperty nested in the Engine
         // class) where a property shares a leaf name with a top-level Class.
-        let lookup = linker_inner
+        let strict_match = linker_inner
             .find_export_by_path(path_parts)
             .filter(|(_, export)| match class_info {
                 Some((cn, cp)) => {
@@ -967,31 +988,55 @@ impl UnrealRuntime {
                     linker_inner.find_export_by_name_and_class(object_name, cn, cp)
                 }
                 None => None,
-            })
-            .or_else(|| {
-                // Any-class fallback: when the engine called StaticLoadObject
-                // with a non-Core.Class static class (e.g. USkelMesh for
-                // ESam.SamAMesh), the QEMU plugin doesn't capture InClass,
-                // so our default Some(("Class", "Core")) over-filters. Try
-                // finding the export by path/name without class filter, but
-                // reject `*Property` and `Function` matches: those exist as
-                // top-level exports for script reasons but aren't loadable
-                // as standalone objects via StaticLoadObject. This preserves
-                // SubActionFade's Class disambiguation (Class match wins
-                // earlier) AND avoids `Engine.Primitive` falsely resolving
-                // to a stray ObjectProperty named Primitive.
-                if class_info.is_some() {
-                    let candidate = linker_inner
-                        .find_export_by_path(path_parts)
-                        .or_else(|| linker_inner.find_export_by_name(object_name));
-                    candidate.filter(|(_, export)| {
+            });
+        // Any-class candidate: when the engine called StaticLoadObject with
+        // a non-Core.Class static class (e.g. USkelMesh for ESam.SamAMesh),
+        // the QEMU plugin doesn't capture InClass, so our default Some
+        // (("Class", "Core")) over-filters. We compute a name-only match
+        // separately for two reasons: when `strict_class=false`, it serves
+        // as a fallback that preserves engine-warmup behavior; when
+        // `strict_class=true`, it serves as a diagnostic so we can warn
+        // with the actual on-disc class even though we discard the match.
+        // Either way we reject `*Property` and `Function`: those exist as
+        // top-level exports for script reasons but aren't loadable as
+        // standalone objects via StaticLoadObject (preserves
+        // SubActionFade's Class disambiguation AND avoids `Engine.Primitive`
+        // falsely resolving to a stray ObjectProperty named Primitive).
+        let any_class_candidate: Option<(ExportIndex, &ObjectExport)> =
+            if strict_match.is_none() && class_info.is_some() {
+                linker_inner
+                    .find_export_by_path(path_parts)
+                    .or_else(|| linker_inner.find_export_by_name(object_name))
+                    .filter(|(_, export)| {
                         let cn = export.class_name(&linker_inner);
                         !cn.ends_with("Property") && cn != "Function"
                     })
-                } else {
-                    None
-                }
-            });
+            } else {
+                None
+            };
+
+        let lookup = if strict_class {
+            strict_match
+        } else {
+            strict_match.or(any_class_candidate)
+        };
+
+        // Warn when strict mode discards a wrong-class candidate. The
+        // candidate is retained only for this diagnostic; the function
+        // returns None below so no body is loaded under the wrong type.
+        if strict_class
+            && lookup.is_none()
+            && let Some((_, candidate)) = any_class_candidate
+            && let Some((expected_cn, expected_cp)) = class_info
+        {
+            let actual_cn = candidate.class_name(&linker_inner);
+            let actual_cp = candidate.class_package(&linker_inner);
+            tracing::warn!(
+                "lookup {full_name:?}: found name match with class {actual_cp}.{actual_cn} \
+                 but caller required {expected_cp}.{expected_cn}; returning None"
+            );
+        }
+
         let Some((export_index, _)) = lookup else {
             drop(linker_inner);
             tracing::warn!(
