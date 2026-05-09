@@ -57,7 +57,18 @@ where
     R: LinRead,
 {
     let count = reader.read_packed_int()?;
-    assert!(count >= 0, "ULodMesh TArray count negative");
+    if count < 0 {
+        // Negative TArray counts can't be written by the engine; reaching
+        // this means our cursor is misaligned with the engine's read
+        // sequence. Returning an error (rather than panicking) lets the
+        // surrounding `preload`/`decode_unchecked` path unwind cleanly so
+        // captured bodies upstream of this mismatch still make it into
+        // `merge::write_packages`.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ULodMesh TArray count negative ({count}); body misaligned"),
+        ));
+    }
     let total = (count as usize) * stride;
     let mut buf = vec![0u8; total];
     if !buf.is_empty() {

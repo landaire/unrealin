@@ -10,23 +10,25 @@ use crate::{
     ser::write_packed_int,
 };
 
-/// Mirrors SC's `UStruct::SerializeExpr` post-call peek-and-rewind:
+/// Mirrors SC's `UStruct::SerializeExpr` post-call peek-and-rewind
+/// (`Core_retail.dll` `0x1012f3c0`, peek block `0x1012f41a..0x1012f481`):
 /// after each `Native` / `Virtual` / `Global` / `Final` function call,
 /// the engine reads the next byte (and 4 more if it was a DebugInfo
-/// token) to decide whether to recurse into a DebugInfo block, then
-/// seeks back to before the peek and either consumes the full block
-/// (if `version == 100`) or leaves the cursor for the outer parser.
+/// token), restores `Ar.Position`, calls `Ar.Seek(restored_pos)`, then
+/// recurses into a full DebugInfo block iff the peeked version is 100.
 ///
-/// On a real seekable archive the peeked bytes overlap with the
-/// post-rewind reads, but `.lin` is laid out for streaming load: the
-/// peek prefix is emitted *into the file* alongside the canonical
-/// payload that follows. So in our sequential `LinReader` the source
-/// genuinely advances by `1` (peek non-DI) or `5` (peek DI) bytes,
-/// and the recursive parse below reads the next bytes — those bytes
-/// also exist in the file. We capture the peek prefix as
-/// `Expr::Data` so `serialize_expr` re-emits the same on-disk shape;
-/// dropping the prefix would shrink every Function body that contains
-/// at least one function-call site.
+/// `Ar.Seek` is a no-op for the underlying `.lin` source (FArchive base
+/// vtable entry is `ret`-only at `0x10107140`; the LIN compactor lays
+/// bytes out in the engine's exact read order). So the peek physically
+/// advances the source by 1 or 5 bytes, and those bytes are *not*
+/// counted toward `script_size` (which mirrors the engine's logical
+/// `iCode` counter). The next parent read consumes whatever follows
+/// the peek bytes in the file. The peek prefix bytes are filler from
+/// the script tree's perspective: they are NOT a structural element of
+/// any expression and would never be emitted by a canonical save.
+/// Dropping them here is correct; the splice in `Struct::serialize`
+/// reconstructs the body without them so UE Explorer sees clean script
+/// bytecode (matching what SC's `SavePackage` would emit).
 fn handle_optional_debug_info<E, R>(
     runtime: &mut UnrealRuntime,
     linker: &RcLinker,
@@ -44,21 +46,12 @@ where
     }
     let before_pos = reader.stream_position()?;
     let peek = reader.read_u8()?;
-    let mut prefix_bytes = vec![peek];
     let mut version: Option<u32> = None;
     if let Ok(ExprToken::DebugInfo) = ExprToken::try_from(peek) {
         let v = reader.read_u32::<E>()?;
-        let mut v_le = [0u8; 4];
-        E::write_u32(&mut v_le, v);
-        prefix_bytes.extend_from_slice(&v_le);
         version = Some(v);
     }
     reader.seek(SeekFrom::Start(before_pos))?;
-
-    // The peek prefix is part of the on-disk script section in
-    // `.lin`. Record it so `serialize_expr` re-emits the bytes the
-    // engine's load path will peek+rewind on the next round-trip.
-    out.push(Expr::Data(prefix_bytes));
 
     if version == Some(100) {
         out.append(&mut deserialize_expr::<E, _>(

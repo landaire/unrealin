@@ -125,6 +125,68 @@ enum AudioCmd {
         #[arg(long)]
         raw: bool,
     },
+
+    /// Decode a `.LS2` / `.SS2` codec_id=3 file (DARE IMA-ADPCM
+    /// variant) end-to-end and write a `.wav`. The 28-byte header
+    /// is parsed by `audio::codec3::parse_header`; ADPCM data
+    /// starts at offset `0x48` and is decoded by the planar
+    /// `sub_1983a0` kernel (mode=0, the dominant case) or the
+    /// interleaved-stereo `sub_1984a0` kernel (mode=1, music).
+    ///
+    /// For `mode=0`, `track_count` mono ADPCM clips are
+    /// concatenated head-to-tail in the file. The engine plays
+    /// them in sequence as the mission progresses (track 0 first,
+    /// then track 1, etc.). Output is one continuous mono WAV.
+    DecodeLs2 {
+        /// Input `.LS2` / `.SS2` file.
+        input: PathBuf,
+        /// Output `.wav` path.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Override the sample rate. By default, the rate is
+        /// hardcoded to 36000 Hz (matches the engine's
+        /// `WAVEFORMATEX` builder at `sub_182b50`). Pass an
+        /// explicit value to force a different rate for A/B
+        /// testing.
+        #[arg(long)]
+        sample_rate: Option<u32>,
+        /// Forensic / experimental: reset ADPCM state to
+        /// (0,0,0,0) every N blocks (block = 1440 frames
+        /// stereo / 720 bytes mono per the QEMU plugin trace of
+        /// `sub_198600`). Tested 1/3/5/10 against
+        /// `Music_Birmanie.SS2` — every cadence introduced
+        /// audible clicks at boundaries without removing the
+        /// late-stream blow-out, suggesting the engine does NOT
+        /// periodic-reset. Kept here for future debugging.
+        #[arg(long)]
+        reset_every: Option<usize>,
+    },
+
+    /// List the banks in a multi-bank `.SS2` container (e.g.
+    /// `STREAM.SS2`). Each bank has a 0x2C-byte wrapper followed
+    /// by an embedded codec_id=3 stream; the wrapper's `+0x08`
+    /// field gives the bank size.
+    Ss2List {
+        /// Input multi-bank `.SS2` (e.g. `STREAM.SS2`).
+        input: PathBuf,
+    },
+
+    /// Extract one or all embedded codec_id=3 streams from a
+    /// multi-bank `.SS2` container into individual `.wav` files.
+    Ss2Extract {
+        /// Input multi-bank `.SS2` (e.g. `STREAM.SS2`).
+        input: PathBuf,
+        /// Output directory. Defaults to `<input_stem>_banks/`.
+        /// Each bank lands at `<bank_index>.wav`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Extract a single bank by index instead of all.
+        #[arg(long)]
+        bank: Option<usize>,
+        /// Override sample rate (default 36000 Hz, see DecodeLs2).
+        #[arg(long)]
+        sample_rate: Option<u32>,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -156,6 +218,13 @@ struct MergeArgs {
 
     /// Game root containing the `LMaps/` directory.
     game_dir: PathBuf,
+
+    /// Directory containing recorded I/O traces (`reads.json.<...>.bak`
+    /// or `reads.json` itself). Each pair is matched by session
+    /// basename or `<map_dir>_<basename>`. Pairs without a trace fall
+    /// back to `decode_unchecked`. Defaults to the current working dir.
+    #[arg(long)]
+    trace_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -194,7 +263,159 @@ fn run_audio(cmd: AudioCmd) -> Result<()> {
         } => run_audio_decode_region(
             input, offset, length, channels, sample_rate, output, raw,
         ),
+        AudioCmd::DecodeLs2 {
+            input,
+            output,
+            sample_rate,
+            reset_every,
+        } => run_decode_ls2(input, output, sample_rate, reset_every),
+        AudioCmd::Ss2List { input } => run_ss2_list(input),
+        AudioCmd::Ss2Extract {
+            input,
+            output,
+            bank,
+            sample_rate,
+        } => run_ss2_extract(input, output, bank, sample_rate),
     }
+}
+
+fn write_wav(path: &PathBuf, pcm: &[i16], channels: u16, sample_rate: u32) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)
+        .wrap_err_with(|| format!("failed to create {path:?}"))?;
+    for s in pcm {
+        writer.write_sample(*s)?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+fn run_decode_ls2(
+    input: PathBuf,
+    output: PathBuf,
+    sample_rate: Option<u32>,
+    reset_every: Option<usize>,
+) -> Result<()> {
+    let file_bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {input:?}"))?;
+    if audio::ss2::is_multibank(&file_bytes) {
+        return Err(eyre!(
+            "{input:?}: multi-bank container; use `audio ss2-list` / `ss2-extract` instead"
+        ));
+    }
+    let header = audio::codec3::parse_header(&file_bytes)
+        .map_err(|e| eyre!("{input:?}: {e}"))?;
+    let pcm = match reset_every {
+        Some(n) => audio::codec3::decode_file_with_reset(&file_bytes, n),
+        None => audio::codec3::decode_file(&file_bytes),
+    }
+    .map_err(|e| eyre!("{input:?}: decode failed: {e}"))?;
+
+    let rate = sample_rate.unwrap_or_else(|| audio::codec3::header_sample_rate(&header));
+    // mode=0: continuous mono (one ADPCM stream end-to-end).
+    // mode=1: interleaved stereo (true stereo, music tracks).
+    let channels: u16 = if header.mode == 1 { 2 } else { 1 };
+    let frame_count = pcm.len() / channels as usize;
+
+    write_wav(&output, &pcm, channels, rate)?;
+    eprintln!(
+        "decoded {input:?}: codec_id=3 v{} tracks={} mode={} block_period={:.4} -> {frame_count} frames @ {rate} Hz ({}ch) -> {output:?}",
+        header.version, header.track_count, header.mode, header.block_period, channels,
+    );
+    Ok(())
+}
+
+fn run_ss2_list(input: PathBuf) -> Result<()> {
+    let file_bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {input:?}"))?;
+    if !audio::ss2::is_multibank(&file_bytes) {
+        return Err(eyre!(
+            "{input:?}: not a multi-bank container (first 8 bytes don't match `02 00 00 00 03 00 00 00`)"
+        ));
+    }
+    let banks = audio::ss2::list(&file_bytes)
+        .map_err(|e| eyre!("{input:?}: {e}"))?;
+    println!("{}: {} bank(s)", input.display(), banks.len());
+    println!("idx  offset      size       payload    bp        tracks  mode");
+    for bank in &banks {
+        let header = audio::codec3::parse_header(bank.main_payload).ok();
+        match header {
+            Some(h) => println!(
+                "{:3}  {:#010x}  {:>10}  {:>10}  {:.5}   {:>4}    {}",
+                bank.index,
+                bank.offset,
+                bank.bank_size,
+                bank.main_payload.len(),
+                h.block_period,
+                h.track_count,
+                h.mode,
+            ),
+            None => println!(
+                "{:3}  {:#010x}  {:>10}  {:>10}  (header parse failed)",
+                bank.index,
+                bank.offset,
+                bank.bank_size,
+                bank.main_payload.len(),
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn run_ss2_extract(
+    input: PathBuf,
+    output: Option<PathBuf>,
+    bank_idx: Option<usize>,
+    sample_rate: Option<u32>,
+) -> Result<()> {
+    let file_bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {input:?}"))?;
+    if !audio::ss2::is_multibank(&file_bytes) {
+        return Err(eyre!(
+            "{input:?}: not a multi-bank container; use `audio decode-ls2` for single-stream files"
+        ));
+    }
+    let banks = audio::ss2::list(&file_bytes)
+        .map_err(|e| eyre!("{input:?}: {e}"))?;
+
+    let out_dir = output.unwrap_or_else(|| {
+        let stem = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "ss2".into());
+        PathBuf::from(format!("{stem}_banks"))
+    });
+    std::fs::create_dir_all(&out_dir)
+        .wrap_err_with(|| format!("failed to create {out_dir:?}"))?;
+
+    let selected: Vec<&audio::ss2::Bank<'_>> = match bank_idx {
+        Some(n) => {
+            let bank = banks
+                .get(n)
+                .ok_or_else(|| eyre!("bank {n} out of range (file has {})", banks.len()))?;
+            vec![bank]
+        }
+        None => banks.iter().collect(),
+    };
+
+    for bank in selected {
+        let header = audio::codec3::parse_header(bank.main_payload)
+            .map_err(|e| eyre!("bank {} header: {e}", bank.index))?;
+        let pcm = audio::codec3::decode_file(bank.main_payload)
+            .map_err(|e| eyre!("bank {} decode: {e}", bank.index))?;
+        let rate = sample_rate.unwrap_or_else(|| audio::codec3::header_sample_rate(&header));
+        let channels: u16 = if header.mode == 1 { 2 } else { 1 };
+        let frame_count = pcm.len() / channels as usize;
+        let out_path = out_dir.join(format!("{:03}.wav", bank.index));
+        write_wav(&out_path, &pcm, channels, rate)?;
+        eprintln!(
+            "bank {:3} @ {:#010x} ({} bytes): mode={} tracks={} -> {frame_count} frames @ {rate} Hz ({}ch) -> {out_path:?}",
+            bank.index, bank.offset, bank.main_payload.len(), header.mode, header.track_count, channels,
+        );
+    }
+    Ok(())
 }
 
 fn load_map_descriptor(input: &PathBuf, map_name: &str) -> Result<(audio::sm2::Record, Option<u32>, Vec<u8>)> {
@@ -543,9 +764,17 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         for name in extra_packages {
             lin_decoder.runtime_mut().present_packages.insert(name);
         }
-        lin_decoder
-            .decode_unchecked()
-            .wrap_err("decode_unchecked failed")?;
+        // Tolerate late-cascade EOFs: the cascade may walk into
+        // misaligned territory after consuming all of common.lin (e.g.
+        // a verify_imports call for a secondary-package import whose
+        // header position drifts from the engine's cumulative reads).
+        // Anything captured up to that point is still useful — every
+        // texture body that was preloaded before the failure makes it
+        // into the linkers' `captured.bodies`. Log and continue so
+        // `write_packages` emits what we did get.
+        if let Err(e) = lin_decoder.decode_unchecked() {
+            eprintln!("decode_unchecked partial (continuing with captured): {e}");
+        }
         merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
         stats.print_summary(20);
@@ -604,7 +833,11 @@ fn run_merge_cmd(args: MergeArgs) -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .wrap_err_with(|| format!("failed to create output dir {output_dir:?}"))?;
 
-    let report = merge::run_merge(&args.game_dir, &output_dir)?;
+    let trace_dir = args
+        .trace_dir
+        .clone()
+        .or_else(|| std::env::current_dir().ok());
+    let report = merge::run_merge(&args.game_dir, &output_dir, trace_dir.as_deref())?;
     report.print_summary();
     Ok(())
 }

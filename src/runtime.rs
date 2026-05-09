@@ -119,6 +119,14 @@ impl UnrealRuntime {
             "load_linker {} starting at source 0x{:X}",
             expected_name, pkg_source_start
         );
+        if std::env::var("UNREALIN_LINKER_TRACE").is_ok() {
+            eprintln!(
+                "LOAD_LINKER {} @ src_consumed=0x{:X} (per_src={:?})",
+                expected_name,
+                pkg_source_start,
+                reader.source_consumed_per_source()
+            );
+        }
         reader.set_reading_linker_header(true);
         let package = read_package::<E, _>(reader)?;
         let pkg_source_end = reader.source_consumed();
@@ -217,7 +225,30 @@ impl UnrealRuntime {
             if !self.present_packages.contains(&pkg_name) {
                 continue;
             }
-            self.load_linker::<E, _>(pkg_name, reader)?;
+            // Some level-specific texture packages (e.g.
+            // `3-3MiningTown_tex` in PresidentialPalace's secondary
+            // `.lin`) ship at licensee version 0xa instead of the
+            // expected 0x11. `read_package_header` rejects those so it
+            // doesn't read 0xa's different layout with v17 expectations
+            // (which would misalign the cascade catastrophically). When
+            // that happens, swallow the error here and continue with
+            // the next import. The cursor is left at the start of the
+            // mid-package bytes, which means the *next* import's
+            // load_linker will not find a PKG_TAG. Bail the whole
+            // cascade in that case so the caller (`bin::run_extract`'s
+            // `--no-checked` partial-decode path) still emits the
+            // bodies captured before this point.
+            match self.load_linker::<E, _>(pkg_name.clone(), reader) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                    tracing::warn!(
+                        "skipping linker {} (unsupported header): {e}",
+                        pkg_name
+                    );
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }
@@ -410,7 +441,36 @@ impl UnrealRuntime {
         // so its bytes also land in the captured body — required for
         // re-emit to write a serial_size that matches the original.
         reader.push_capture();
-        deserialize_object::<E, _>(self, Rc::clone(obj), &linker, reader)?;
+        let pre_per_src = reader.source_consumed_per_source().to_vec();
+        let result = deserialize_object::<E, _>(self, Rc::clone(obj), &linker, reader);
+        if let Err(ref e) = result {
+            if std::env::var("UNREALIN_PRELOAD_RANGES").is_ok() {
+                eprintln!("PRELOAD_FAIL {preload_full_name}: {e}");
+            }
+        }
+        result?;
+        // Diagnostic: when set, log per-source byte ranges consumed by
+        // each preload. Used to pinpoint which export's body covers a
+        // suspected-missing texture's mip0 region in the decompressed
+        // .lin (see docs/io-mismatch-investigation.md `texture coverage
+        // gap`). Off by default; off-cost is one Vec clone of
+        // (sources.len() * 8 bytes) per preload.
+        if std::env::var("UNREALIN_PRELOAD_RANGES").is_ok() {
+            let post_per_src = reader.source_consumed_per_source().to_vec();
+            let l = linker.borrow();
+            for (i, (pre, post)) in pre_per_src.iter().zip(post_per_src.iter()).enumerate() {
+                if pre != post {
+                    eprintln!(
+                        "PRELOAD_RANGE src{} {:#x}..{:#x} {} ({})",
+                        i,
+                        pre,
+                        post,
+                        export.full_name(&l),
+                        export.class_name(&l)
+                    );
+                }
+            }
+        }
 
         self.objects_full_loading.remove(&pointer_value);
         self.loaded_objects.insert(pointer_value);
@@ -426,24 +486,48 @@ impl UnrealRuntime {
                 // before serial_size; cheating the remainder keeps the
                 // source cursor aligned with the engine. The principled
                 // replacement is a real per-class stub that reads exactly
-                // serial_size bytes via structured Ar.Serialize / Ar << X
-                // calls. Until then, this fallback turns a missing stub
-                // into a logged warning rather than a hard crash.
-                let missing = export.serial_size() - read_size;
+                // the bytes the engine consumes (which is NOT necessarily
+                // `serial_size`: SC's `Preload` doesn't `SetStopper`, so
+                // `serial_size` is a stale authoring-time hint, not a
+                // bound).
+                //
+                // Skip the cheat for classes whose stubs are known
+                // complete: the under-read there means `serial_size` is
+                // stale (`samAMesh` in `012_PresidentialPalace`'s
+                // `common.lin` reads 0x1B802 but `serial_size` says
+                // 0x1CA66), and cheating the 0x1264 "missing" bytes
+                // would consume the start of the NEXT export's body and
+                // misalign every subsequent preload.
                 let (full_name, class_name) = {
                     let l = linker.borrow();
                     (export.full_name(&l), export.class_name(&l).to_owned())
                 };
-                tracing::warn!(
-                    "preload short-read for {} (class {}): consumed {:#X}/{:#X}, cheating {:#X} remainder",
-                    full_name,
-                    class_name,
-                    read_size,
-                    export.serial_size(),
-                    missing,
+                let stub_complete = matches!(
+                    class_name.as_str(),
+                    "SkeletalMesh"
                 );
-                let mut buf = vec![0u8; missing];
-                reader.cheat(&mut buf)?;
+                let missing = export.serial_size() - read_size;
+                if stub_complete {
+                    debug!(
+                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, NOT cheating ({} stub trusts its own reads)",
+                        full_name,
+                        class_name,
+                        read_size,
+                        export.serial_size(),
+                        class_name,
+                    );
+                } else {
+                    tracing::warn!(
+                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, cheating {:#X} remainder",
+                        full_name,
+                        class_name,
+                        read_size,
+                        export.serial_size(),
+                        missing,
+                    );
+                    let mut buf = vec![0u8; missing];
+                    reader.cheat(&mut buf)?;
+                }
             }
             std::cmp::Ordering::Greater => {
                 // SC's `Preload` (xbe `0x38390`) does NOT bound reads by

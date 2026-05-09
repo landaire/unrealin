@@ -106,6 +106,9 @@ pub fn pairs_from_map_dir_entries(entries: &[PathBuf]) -> Vec<(PathBuf, PathBuf)
 pub struct MergeReport {
     pub pairs_scheduled: usize,
     pub pairs_panicked: usize,
+    /// Pairs that ran via `decode_linear_file` against a recorded I/O
+    /// trace. The remainder ran via `decode_unchecked`.
+    pub traces_used: usize,
     pub unique_packages: usize,
     pub body_entries: usize,
     pub bodies_grafted: usize,
@@ -117,6 +120,7 @@ impl MergeReport {
     pub fn print_summary(&self) {
         eprintln!("merge summary");
         eprintln!("  pairs scheduled:      {}", self.pairs_scheduled);
+        eprintln!("  pairs trace-driven:   {}", self.traces_used);
         eprintln!("  pairs panicked:       {}", self.pairs_panicked);
         eprintln!("  unique packages:      {}", self.unique_packages);
         eprintln!("  body entries:         {}", self.body_entries);
@@ -130,6 +134,10 @@ struct PairOutcome {
     linkers: HashMap<String, Rc<RefCell<Linker>>>,
     filenames: HashMap<String, String>,
     panicked: bool,
+    /// `true` if this pair ran via `decode_linear_file` against a recorded
+    /// I/O trace (engine-faithful). `false` if it ran via
+    /// `decode_unchecked` (best-effort cascade replay).
+    used_trace: bool,
 }
 
 fn read_and_decompress_lin(path: &Path) -> io::Result<Vec<u8>> {
@@ -139,7 +147,96 @@ fn read_and_decompress_lin(path: &Path) -> io::Result<Vec<u8>> {
     crate::de::decompress_linear_file::<LittleEndian, _>(&mut slice)
 }
 
-fn run_pair(common_path: &Path, session_path: &Path) -> io::Result<PairOutcome> {
+/// Index every `reads.json.*` (trace) under `trace_dir` by the session
+/// basename of its target map. The session basename is derived from the
+/// trace's own `file_load_order` last `Maps\\<level>.unr` entry, so the
+/// trace filename can be anything (`reads.json.menu.bak`,
+/// `reads.json.training.bak`, `reads.json.003_DefenseMinistry_..._.bak`,
+/// or even the live `reads.json` itself). Each session basename is
+/// matched case-insensitively to the corresponding `.lin` file in the
+/// game tree.
+fn index_traces(trace_dir: &Path) -> HashMap<String, PathBuf> {
+    let mut by_session: HashMap<String, PathBuf> = HashMap::new();
+    let entries = match std::fs::read_dir(trace_dir) {
+        Ok(e) => e,
+        Err(_) => return by_session,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !(name == "reads.json"
+            || (name.starts_with("reads.json.") && !name.contains("unknown")))
+        {
+            continue;
+        }
+        let session = match level_basename_from_trace(&path) {
+            Some(s) => s,
+            None => {
+                tracing::debug!("trace {path:?}: could not derive level basename, skipping");
+                continue;
+            }
+        };
+        // First trace wins for a given session. The user can disambiguate
+        // by deleting / renaming the loser; we just log.
+        by_session.entry(session).or_insert(path);
+    }
+    by_session
+}
+
+/// Read the `file_load_order` array from a trace JSON and return the
+/// level package's basename (the entry under `..\\Maps\\<basename>.unr`).
+/// Streams just the first 64 KiB of the file so we don't materialise the
+/// 500 MiB trace bodies during indexing — `file_load_order` is the first
+/// top-level field in every recorded trace.
+fn level_basename_from_trace(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    let s = std::str::from_utf8(&buf[..n]).ok()?;
+    // Look for `Maps\\<name>.unr` (escaped backslash in JSON). Examples:
+    //   "..\\Maps\\menu\\menu.unr"
+    //   "..\\Maps\\1_1_0Tbilisi.unr"
+    //   "..\\Maps\\0_0_2_Training.unr"
+    let pat = "Maps\\\\";
+    let mut i = 0;
+    while let Some(off) = s[i..].find(pat) {
+        let start = i + off + pat.len();
+        let rest = &s[start..];
+        let end = rest.find(".unr")?;
+        let segment = &rest[..end];
+        // Take the last `\\`-separated segment so `menu\\menu` → `menu`.
+        let basename = segment.rsplit("\\\\").next().unwrap_or(segment);
+        if !basename.is_empty() {
+            return Some(basename.to_string());
+        }
+        i = start + end;
+    }
+    None
+}
+
+fn locate_trace_for_pair(traces: &HashMap<String, PathBuf>, session_path: &Path) -> Option<PathBuf> {
+    let session_stem = session_path
+        .file_stem()
+        .and_then(|s| s.to_str())?
+        .to_string();
+    // Direct name match (case-insensitive lookup).
+    for (k, v) in traces {
+        if k.eq_ignore_ascii_case(&session_stem) {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
+fn run_pair(
+    common_path: &Path,
+    session_path: &Path,
+    trace_path: Option<&Path>,
+) -> io::Result<PairOutcome> {
     let common_data = read_and_decompress_lin(common_path)?;
     let session_data = read_and_decompress_lin(session_path)?;
 
@@ -150,6 +247,54 @@ fn run_pair(common_path: &Path, session_path: &Path) -> io::Result<PairOutcome> 
     // misalign and downstream parsers (script bytecode, StaticMesh
     // index buffers) hit garbage bytes.
     let extra_packages = crate::de::discover_secondary_package_names(&session_data);
+
+    if let Some(trace_path) = trace_path {
+        // Trace-driven path: the recorded I/O ops drive `LinReader`'s
+        // every read and seek, so the cascade order matches the engine's
+        // exactly. This is the path that recovers the full cross-source
+        // texture coverage — `decode_unchecked`'s natural cascade only
+        // hits ~71/110 character textures because src0's cursor doesn't
+        // line up for stage-2-cross-source preloads without trace data.
+        let f = std::fs::File::open(trace_path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("failed to open trace {trace_path:?}: {e}"),
+            )
+        })?;
+        let reader = io::BufReader::new(f);
+        let mut metadata: crate::common::ExportedData =
+            serde_json::from_reader(reader).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("trace parse: {e}"))
+            })?;
+        metadata
+            .file_reads
+            .iter_mut()
+            .for_each(|(_k, v)| v.reverse());
+
+        let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+            vec![Cursor::new(common_data), Cursor::new(session_data)],
+            metadata,
+        );
+        for name in extra_packages {
+            decoder.runtime_mut().present_packages.insert(name);
+        }
+
+        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if let Err(e) = decoder.decode_linear_file() {
+                tracing::warn!(?session_path, ?trace_path, "decode_linear_file err: {e}");
+            }
+        }))
+        .is_err();
+
+        let linkers = decoder.linkers().clone();
+        let filenames = decoder.package_filenames();
+        return Ok(PairOutcome {
+            linkers,
+            filenames,
+            panicked,
+            used_trace: true,
+        });
+    }
 
     let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
         Cursor::new(common_data),
@@ -172,6 +317,7 @@ fn run_pair(common_path: &Path, session_path: &Path) -> io::Result<PairOutcome> 
         linkers,
         filenames,
         panicked,
+        used_trace: false,
     })
 }
 
@@ -290,12 +436,23 @@ fn write_diagnostics(path: &Path, merged: &MergedLinkers) -> io::Result<()> {
     Ok(())
 }
 
-pub fn run_merge(game_dir: &Path, output_dir: &Path) -> io::Result<MergeReport> {
+pub fn run_merge(game_dir: &Path, output_dir: &Path, trace_dir: Option<&Path>) -> io::Result<MergeReport> {
     let pairs = discover_pairs(game_dir)?;
     let mut report = MergeReport::default();
     report.pairs_scheduled = pairs.len();
 
+    let traces = trace_dir.map(index_traces).unwrap_or_default();
+    if !traces.is_empty() {
+        eprintln!("indexed {} traces:", traces.len());
+        let mut keys: Vec<_> = traces.keys().collect();
+        keys.sort();
+        for k in keys {
+            eprintln!("  {k} -> {:?}", traces[k]);
+        }
+    }
+
     let mut merged = MergedLinkers::new();
+    let mut traces_used = 0usize;
 
     for (common, session) in &pairs {
         let label = session
@@ -315,11 +472,18 @@ pub fn run_merge(game_dir: &Path, output_dir: &Path) -> io::Result<MergeReport> 
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
-        eprintln!("pair: {common:?} + {session:?}");
-        match run_pair(common, session) {
+        let trace = locate_trace_for_pair(&traces, session);
+        match &trace {
+            Some(t) => eprintln!("pair: {common:?} + {session:?} (trace: {t:?})"),
+            None => eprintln!("pair: {common:?} + {session:?} (no trace, --no-checked path)"),
+        }
+        match run_pair(common, session, trace.as_deref()) {
             Ok(out) => {
                 if out.panicked {
                     report.pairs_panicked += 1;
+                }
+                if out.used_trace {
+                    traces_used += 1;
                 }
                 fold_pair_into(&mut merged, &out.linkers, &out.filenames, &label, &group);
             }
@@ -328,6 +492,7 @@ pub fn run_merge(game_dir: &Path, output_dir: &Path) -> io::Result<MergeReport> 
             }
         }
     }
+    report.traces_used = traces_used;
 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;

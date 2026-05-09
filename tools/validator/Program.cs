@@ -33,6 +33,14 @@ internal static class Program
             return ListExports(args[1]);
         }
 
+        if (args[0] == "dump-mip" && args.Length >= 3)
+        {
+            // dump-mip <package.utx> <ExportName> [outDir]
+            // Writes <outDir>/<ExportName>.mip<N>.bin for every mip of every
+            // texture export whose object name contains <ExportName>.
+            return DumpMip(args[1], args[2], args.Length >= 4 ? args[3] : ".");
+        }
+
         int errors = 0;
         foreach (string path in args)
         {
@@ -83,6 +91,48 @@ internal static class Program
         }
         Console.Error.WriteLine($"export not found: {exportFullName}");
         return 1;
+    }
+
+    private static int DumpMip(string path, string nameFilter, string outDir)
+    {
+        Directory.CreateDirectory(outDir);
+        var pkg = UnrealLoader.LoadPackage(path);
+#pragma warning disable CS0618
+        pkg.InitializePackage(UnrealPackage.InitFlags.RegisterClasses | UnrealPackage.InitFlags.Construct);
+#pragma warning restore CS0618
+        int hits = 0;
+        foreach (var exp in pkg.Exports)
+        {
+            var obj = exp.Object;
+            if (obj is null or UnknownObject) continue;
+            string objName = exp.ObjectName.ToString() ?? "";
+            if (!objName.Contains(nameFilter, StringComparison.OrdinalIgnoreCase)) continue;
+            try { obj.Load(); } catch { continue; }
+            if (obj is not UELib.Engine.UTexture tex) continue;
+            for (int i = 0; i < (tex.Mips?.Count ?? 0); i++)
+            {
+                var mip = tex.Mips[i];
+                // UELib's TLazyArray Deserialize records storage offset/size but
+                // skips reading the bytes; LoadData has to be invoked explicitly
+                // to populate ElementData.
+                if (mip.Data.ElementData == null || mip.Data.ElementData.Length == 0)
+                {
+                    try { mip.Data.LoadData(pkg.Stream); } catch { continue; }
+                }
+                var bytes = mip.Data.ElementData;
+                if (bytes == null || bytes.Length == 0) continue;
+                string fn = Path.Combine(outDir, $"{objName}.mip{i}.bin");
+                File.WriteAllBytes(fn, bytes);
+                Console.WriteLine($"{objName} mip{i} -> {fn} ({bytes.Length} bytes, {mip.USize}x{mip.VSize})");
+                hits++;
+            }
+        }
+        if (hits == 0)
+        {
+            Console.Error.WriteLine($"no texture matched '{nameFilter}' in {path}");
+            return 1;
+        }
+        return 0;
     }
 
     private static int ListExports(string path)

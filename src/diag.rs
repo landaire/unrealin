@@ -13,11 +13,14 @@ use crate::object::{UObjectKind, UnrealObject, builtins::Struct, internal::scrip
 /// Per-export round-trip outcome for a UStruct subtype. `script_capture`
 /// is the verbatim source bytes consumed by `Struct::deserialize`'s
 /// script section; `serialize_expr(parsed_script)` is the canonical
-/// re-emit. They diverge only where the parsed tree is lossy or where
-/// the source-side reads diverged from a clean linear byte stream
-/// (for example, the `handle_optional_debug_info` peek-and-rewind:
-/// the source advances on the peek but the tree doesn't always end
-/// up with an entry for those bytes).
+/// re-emit. The two are EXPECTED to diverge by exactly the peek-prefix
+/// bytes that `handle_optional_debug_info` consumes from the .lin
+/// without recording into the tree (see comment there for the
+/// rationale). A captured length larger than the serialized length by
+/// `1` or `5` per peek-and-rewind site is normal for any function body
+/// containing at least one function-call expression; only mismatches
+/// of a different shape (length-shorter-than-canonical, byte-level
+/// diff at non-peek positions) point at real parse drift.
 #[derive(Debug)]
 pub struct ScriptRoundtripMismatch {
     pub package: String,
@@ -122,6 +125,17 @@ pub fn script_roundtrip_stats<E: ByteOrder>(
                             None
                         }
                     });
+                if std::env::var("UNREALIN_DUMP_DIFF").is_ok() && stats.mismatches.is_empty() {
+                    eprintln!(
+                        "=== DIFF DUMP for {} (cap={:#X}, ser={:#X}, diff_at={:?}) ===",
+                        format_export_name(&linker, *export_index),
+                        s.script_capture.len(),
+                        buf.len(),
+                        first_diff,
+                    );
+                    eprintln!("  captured:  {:02x?}", s.script_capture);
+                    eprintln!("  canonical: {:02x?}", buf);
+                }
                 stats.mismatches.push(ScriptRoundtripMismatch {
                     package: pkg_name.clone(),
                     export_name: format_export_name(&linker, *export_index),

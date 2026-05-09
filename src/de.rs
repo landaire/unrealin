@@ -539,10 +539,26 @@ where
     let import_count = reader.read_u32::<E>()?;
     let import_offset = reader.read_u32::<E>()?;
 
-    let unk = reader.read_u32::<E>()?;
-    println!("Unknown value: {:#X}", unk);
-
-    let unknown_data = reader.read_array()?;
+    // Mirror SC's `serialize_package_header` (xbe `0x39830`) gate at
+    // `0x398c0`: `if (Version_upper16 < 0xc) skip_unknown_block`.
+    // The `unk` u32 (= `0xff0adde`) and following packed_int /
+    // byte-array are read only when licensee >= 0xc. Most SC packages
+    // ship at licensee=0x11 so they take the fast path; a handful of
+    // older level-specific texture packages (e.g.
+    // `3-3MiningTown_tex` referenced from
+    // `5_1_1_PresidentialPalace.lin`) ship at licensee=0xa and
+    // legitimately omit the block. Reading it for those misaligns
+    // the cursor by exactly 5 bytes (`unk` + packed_int(0)) and the
+    // surrounding cascade explodes a few packages later.
+    let licensee_version = (version >> 16) as u16;
+    let (unk, unknown_data) = if licensee_version >= 0xc {
+        let unk = reader.read_u32::<E>()?;
+        println!("Unknown value: {:#X}", unk);
+        let unknown_data = reader.read_array()?;
+        (unk, unknown_data)
+    } else {
+        (0, Vec::new())
+    };
 
     let guid_a = reader.read_u32::<E>()?;
     let guid_b = reader.read_u32::<E>()?;
