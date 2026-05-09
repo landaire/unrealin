@@ -573,17 +573,22 @@ impl UnrealRuntime {
 
         let linker_inner = linker.borrow();
 
-        let export = linker_inner
-            .find_export_by_index(export_index)
-            .unwrap_or_else(|| {
-                panic!(
-                    "could not find export {} in {} (export table len {})",
-                    export_index.0,
-                    linker_inner.name,
-                    linker_inner.package.exports.len()
-                )
-            })
-            .clone();
+        // Mirror SC's `IndexToObject` (xbe `0x39620`) for a positive,
+        // out-of-range export index: the engine calls
+        // `log_error("ExportIndex", "Core", ...)` and still proceeds into
+        // `CreateExport(arg2 - 1)`, which on Xbox accesses memory past the
+        // export table, usually returning nullptr. We can't safely
+        // dereference past our table, so log the same diagnostic and
+        // return None — the closest safe match to "engine read NULL".
+        let Some(export) = linker_inner.find_export_by_index(export_index).cloned() else {
+            tracing::warn!(
+                "out-of-range export index {} in {:?} (export table len {}); treating as None",
+                export_index.0,
+                linker_inner.name,
+                linker_inner.package.exports.len()
+            );
+            return Ok(None);
+        };
         let export_full_name = export.full_name(&linker_inner);
         let class_name = export.class_name(&linker_inner).to_string();
 
