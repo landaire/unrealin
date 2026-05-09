@@ -151,6 +151,18 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // (see export-table write below). Most SC packages already have
     // "None" in their name table; if a package somehow lacks it, append
     // one and bump the name count by 1.
+    //
+    // ENGINE PARITY: this is intentional, not a coverage bug. When a
+    // session never preloads a particular export, SC writes the slot in
+    // its neutral form; UELib / UPK Explorer / the engine itself all
+    // read the result the same way the engine produced it. Do not
+    // "preserve" the original class/name as a way to inflate
+    // list-exports counts on never-loaded exports — the bytes on disk
+    // would diverge from what `SavePackage` would have written, and
+    // we'd be re-introducing a heuristic the engine deliberately doesn't
+    // do. The right place to recover missing exports is upstream, by
+    // capturing more of the cascade (traces, cross-pair body grafting),
+    // not by lying in the export table.
     let existing_none_idx = pkg.names.iter().position(|n| n.name.eq_ignore_ascii_case("None"));
     let appended_none = existing_none_idx.is_none();
     let none_idx: i32 = match existing_none_idx {
@@ -351,6 +363,11 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // hook, and lets natural readers (UPK Explorer's UClass adapter is
     // trivial for empty bodies; its Texture adapter is not) skip them
     // without tripping `EndOffset = -1` bounds checks on absent data.
+    //
+    // ENGINE PARITY (see the leading comment block at the top of this
+    // function): the neutralisation here mirrors what SC does. Don't
+    // change it to preserve the original schema "for visibility" —
+    // recover missing bodies upstream instead.
     for (i, export) in pkg.exports.iter().enumerate() {
         let (ci, si, pi, on, ofl) = if effective_size[i] == 0 {
             (0i32, 0i32, 0i32, none_idx, 0u32)
