@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod de;
 pub mod diag;
 pub mod merge;

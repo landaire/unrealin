@@ -15,6 +15,7 @@ byteorder = "1.5.0"
 clap = { version = "4.5.50", features = ["derive"], optional = true }
 color-eyre = { version = "0.6.5", optional = true }
 flate2 = "1.1.4"
+hound = { version = "3.5.1", optional = true }
 memmap2 = "0.9.8"
 paste = "1.0.15"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -23,7 +24,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"], optional = true }
 
 [features]
-bin = ["dep:clap", "dep:color-eyre", "dep:tracing-subscriber"]
+bin = ["dep:clap", "dep:color-eyre", "dep:tracing-subscriber", "dep:hound"]
 
 [dev-dependencies]
 insta = "1.41"

@@ -12,6 +12,7 @@ use color_eyre::{
 use tracing_subscriber::{EnvFilter, fmt};
 use unrealin::{
     ExportedData,
+    audio::{self, ImaHeader},
     de::LinearFileDecoder,
     merge,
 };
@@ -31,6 +32,42 @@ enum Cmd {
     /// Walk a game directory's `LMaps/`, parse every `(common.lin, session.lin)`
     /// pair, and union the partial captures into a single per-package tree.
     Merge(MergeArgs),
+
+    /// Inspect or decode a Splinter Cell 1 Xbox audio file (.SS2 / .LS2).
+    /// Format is the DARE IMA-ADPCM v3 variant; see docs/AUDIO.md for the
+    /// known fields and the still-open questions.
+    Audio {
+        #[command(subcommand)]
+        cmd: AudioCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AudioCmd {
+    /// Print the 28-byte DARE IMA-ADPCM v3 header for an SS2/LS2 file.
+    Info { input: PathBuf },
+
+    /// Decode an SS2/LS2 single-stream file to PCM. Writes WAV by
+    /// default; pass `--raw` for headerless little-endian 16-bit PCM.
+    /// The decoder is best-effort and may produce noise until the
+    /// chunk-prologue cadence is fully reverse-engineered.
+    Decode {
+        input: PathBuf,
+
+        /// Output path. Defaults to `<input>.wav` (or `.pcm` with --raw).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Write raw little-endian 16-bit interleaved PCM instead of WAV.
+        #[arg(long)]
+        raw: bool,
+
+        /// Override the sample rate the decoder writes into the WAV
+        /// header (default: 22050). The actual rate field in the SS2
+        /// header is not yet decoded.
+        #[arg(long, default_value_t = 22050)]
+        sample_rate: u32,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -74,7 +111,121 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Extract(args) => run_extract(args),
         Cmd::Merge(args) => run_merge_cmd(args),
+        Cmd::Audio { cmd } => run_audio(cmd),
     }
+}
+
+fn run_audio(cmd: AudioCmd) -> Result<()> {
+    match cmd {
+        AudioCmd::Info { input } => run_audio_info(input),
+        AudioCmd::Decode {
+            input,
+            output,
+            raw,
+            sample_rate,
+        } => run_audio_decode(input, output, raw, sample_rate),
+    }
+}
+
+fn run_audio_info(input: PathBuf) -> Result<()> {
+    let bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {:?}", &input))?;
+    let header = ImaHeader::parse(&bytes)
+        .wrap_err_with(|| format!("failed to parse header for {:?}", &input))?;
+
+    println!("file        : {}", input.display());
+    println!("size        : {} bytes", bytes.len());
+    println!("codec ver   : 0x{:02x} (v3)", header.codec_version);
+    println!("bytes 1..3  : {:02x?}", header.raw_bytes_1_3);
+    println!("ratio (f32) : {}", header.ratio);
+    println!("bytes 8..11 : {:02x?}", header.raw_8_11);
+    println!(
+        "stereo flag : 0x{:02x} (channels = {})",
+        header.stereo_flag,
+        header.channels()
+    );
+    println!("byte 13     : 0x{:02x}", header.raw_byte_13);
+    println!(
+        "field 14 BE : 0x{:04x} ({} dec)",
+        header.field_14, header.field_14
+    );
+    println!(
+        "field 16 BE : 0x{:04x} ({} dec)",
+        header.field_16, header.field_16
+    );
+    println!("bytes 18..19: {:02x?}", header.raw_18_19);
+    println!(
+        "field 20 BE : 0x{:04x} ({} dec)",
+        header.field_20, header.field_20
+    );
+    println!("bytes 22..25: {:02x?}", header.raw_22_25);
+    println!(
+        "field 26 BE : 0x{:04x} ({} dec)",
+        header.field_26, header.field_26
+    );
+    println!();
+    println!("derived (best guess):");
+    println!("  samples_per_block : {}", header.samples_per_block());
+    println!("  bits_per_sample   : {}", header.bits_per_sample());
+    println!(
+        "  block_bytes/ch    : {}",
+        header.block_bytes_per_channel()
+    );
+    println!(
+        "  sample_rate guess : {} Hz (override with --sample-rate on decode)",
+        header.sample_rate_guess()
+    );
+    Ok(())
+}
+
+fn run_audio_decode(
+    input: PathBuf,
+    output: Option<PathBuf>,
+    raw: bool,
+    sample_rate: u32,
+) -> Result<()> {
+    let bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {:?}", &input))?;
+    let decoded = audio::decode_single_stream(&bytes)
+        .wrap_err_with(|| format!("failed to decode {:?}", &input))?;
+
+    let out_path = output.unwrap_or_else(|| {
+        let mut p = input.clone();
+        p.set_extension(if raw { "pcm" } else { "wav" });
+        p
+    });
+
+    eprintln!(
+        "decoded {} samples ({} channels) to {:?}",
+        decoded.pcm.len() / decoded.header.channels() as usize,
+        decoded.header.channels(),
+        out_path,
+    );
+
+    if raw {
+        let mut out = std::fs::File::create(&out_path)
+            .wrap_err_with(|| format!("failed to create {:?}", &out_path))?;
+        let mut buf = Vec::with_capacity(decoded.pcm.len() * 2);
+        for s in &decoded.pcm {
+            buf.extend_from_slice(&s.to_le_bytes());
+        }
+        out.write_all(&buf)?;
+    } else {
+        let spec = hound::WavSpec {
+            channels: decoded.header.channels(),
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&out_path, spec)
+            .wrap_err_with(|| format!("failed to create wav {:?}", &out_path))?;
+        for s in &decoded.pcm {
+            writer.write_sample(*s)?;
+        }
+        writer.finalize()?;
+    }
+
+    Ok(())
 }
 
 fn run_extract(mut args: ExtractArgs) -> Result<()> {
