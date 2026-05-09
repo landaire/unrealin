@@ -232,6 +232,126 @@ fn locate_trace_for_pair(traces: &HashMap<String, PathBuf>, session_path: &Path)
     None
 }
 
+/// Threshold below which we don't bother reporting unread tail bytes.
+/// Trace-driven decodes can leave a few bytes of trailing alignment /
+/// padding that the recorded session never read; that isn't a missed
+/// package, just file-format noise. Real misses are kilobytes-to-MBs.
+const UNREAD_TAIL_THRESHOLD: u64 = 4;
+
+/// After a decode finishes, log a warning for any source whose tail
+/// went unread by more than `UNREAD_TAIL_THRESHOLD` bytes. Each `.lin`
+/// is a concatenation of UE2 packages indexed by `common.lin`'s
+/// file_table; a long unread tail means the cascade never reached one
+/// or more of those packages, which is exactly the gap we want to
+/// investigate (extras the engine would have loaded but our cascade
+/// replay didn't trigger).
+fn warn_unread_tails(
+    common_path: &Path,
+    session_path: &Path,
+    common_data: &[u8],
+    session_data: &[u8],
+    consumed: &[u64],
+) {
+    let common_consumed = consumed.first().copied().unwrap_or(0);
+    let session_consumed = consumed.get(1).copied().unwrap_or(0);
+    let common_tail = (common_data.len() as u64).saturating_sub(common_consumed);
+    let session_tail = (session_data.len() as u64).saturating_sub(session_consumed);
+    if common_tail > UNREAD_TAIL_THRESHOLD {
+        let pkgs = scan_tail_packages(common_data, common_consumed as usize);
+        tracing::warn!(
+            "unread tail in {common_path:?}: {common_tail} bytes (consumed {common_consumed}/{}); pkgs in tail: {pkgs:?}; tail bytes: {}",
+            common_data.len(),
+            tail_hex(common_data, common_consumed as usize, 48)
+        );
+    }
+    if session_tail > UNREAD_TAIL_THRESHOLD {
+        let pkgs = scan_tail_packages(session_data, session_consumed as usize);
+        let trailing_pkg_offset = pkgs.last().map(|(o, _)| *o);
+        let pre_pkg_bytes = trailing_pkg_offset
+            .map(|off| {
+                let from = off.saturating_sub(32);
+                tail_hex(session_data, from, 32)
+            })
+            .unwrap_or_default();
+        tracing::warn!(
+            "unread tail in {session_path:?}: {session_tail} bytes (consumed {session_consumed}/{}); pkgs: {pkgs:?}; pre-pkg bytes: {pre_pkg_bytes}; tail head: {}",
+            session_data.len(),
+            tail_hex(session_data, session_consumed as usize, 32)
+        );
+    }
+}
+
+/// Scan the unread region `data[from..]` for UE2 package starts
+/// (PKG_TAG = `0xc1 0x83 0x2a 0x9e` in little-endian) and try to read
+/// each package's first non-`None` name from its names table. Returns
+/// `(absolute_offset, name_or_marker)` pairs. The first non-`None`
+/// name is usually the most diagnostic of the package's identity
+/// (e.g. `"Camera"`, `"S0_0_3Voice"`); falls back to the raw offset
+/// if no package can be parsed.
+///
+/// This is best-effort: a heuristic scan, not a full parser. False
+/// positives are possible if the tail bytes happen to contain the
+/// magic, but in practice PKG_TAG is rare enough in body data that
+/// matches are real package starts.
+fn scan_tail_packages(data: &[u8], from: usize) -> Vec<(usize, String)> {
+    const PKG_TAG_LE: [u8; 4] = [0xc1, 0x83, 0x2a, 0x9e];
+    let mut out = Vec::new();
+    if from >= data.len() {
+        return out;
+    }
+    let mut i = from;
+    while i + 4 <= data.len() {
+        if data[i..i + 4] == PKG_TAG_LE {
+            let name = first_real_name_at_pkg(data, i).unwrap_or_else(|| "?".to_string());
+            out.push((i, name));
+            i += 4; // step past the magic
+            if out.len() >= 32 {
+                out.push((data.len(), "...truncated".to_string()));
+                break;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Try to parse a package starting at `data[pkg_offset]` (PKG_TAG)
+/// and return the first non-`None` entry in its names table, which
+/// is usually the package's own identity name. Returns `None` if
+/// the bytes don't look like a valid header.
+fn first_real_name_at_pkg(data: &[u8], pkg_offset: usize) -> Option<String> {
+    use std::io::Cursor;
+    let mut cur = Cursor::new(&data[pkg_offset..]);
+    let pkg = crate::de::try_parse_package_at::<byteorder::LittleEndian>(data, pkg_offset)?;
+    let _ = &mut cur;
+    pkg.names
+        .iter()
+        .find(|n| !n.name.is_empty() && !n.name.eq_ignore_ascii_case("None"))
+        .map(|n| n.name.clone())
+}
+
+/// Hex-dump up to `max_bytes` from `data[from..]`. The unread tail
+/// often starts with a recognisable UE2 package magic, a known string
+/// (`"None"`, etc.), or trailing zeros, all easy to spot in a hex
+/// dump. Caps at `max_bytes` to keep the log line readable.
+fn tail_hex(data: &[u8], from: usize, max_bytes: usize) -> String {
+    let from = from.min(data.len());
+    let end = (from + max_bytes).min(data.len());
+    let slice = &data[from..end];
+    let mut s = String::with_capacity(slice.len() * 3 + 8);
+    for (i, b) in slice.iter().enumerate() {
+        if i > 0 && i % 16 == 0 {
+            s.push(' ');
+        }
+        s.push_str(&format!("{b:02x} "));
+    }
+    if end < data.len() {
+        s.push_str("...");
+    }
+    s
+}
+
 fn run_pair(
     common_path: &Path,
     session_path: &Path,
@@ -239,6 +359,11 @@ fn run_pair(
 ) -> io::Result<PairOutcome> {
     let common_data = read_and_decompress_lin(common_path)?;
     let session_data = read_and_decompress_lin(session_path)?;
+    // Keep a copy of the decompressed bytes so `warn_unread_tails` can
+    // hex-dump the start of any unread region after the decoder has
+    // consumed the originals.
+    let common_data_for_tail = common_data.clone();
+    let session_data_for_tail = session_data.clone();
 
     // Match bin.rs: scan map.lin for package names referenced as
     // top-level imports, so `verify_imports` knows to attempt
@@ -286,6 +411,14 @@ fn run_pair(
         }))
         .is_err();
 
+        warn_unread_tails(
+            common_path,
+            session_path,
+            &common_data_for_tail,
+            &session_data_for_tail,
+            &decoder.source_consumed_per_source(),
+        );
+
         let linkers = decoder.linkers().clone();
         let filenames = decoder.package_filenames();
         return Ok(PairOutcome {
@@ -310,6 +443,14 @@ fn run_pair(
         }
     }))
     .is_err();
+
+    warn_unread_tails(
+        common_path,
+        session_path,
+        &common_data_for_tail,
+        &session_data_for_tail,
+        &decoder.source_consumed_per_source(),
+    );
 
     let linkers = decoder.linkers().clone();
     let filenames = decoder.package_filenames();

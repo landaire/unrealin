@@ -1204,7 +1204,7 @@ pub fn discover_secondary_package_names(data: &[u8]) -> Vec<String> {
 /// header (wrong version, out-of-bounds offsets, etc.). Used by
 /// `discover_secondary_package_names` to filter false-positive
 /// PKG_TAG byte matches from real package starts.
-fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
+pub(crate) fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
     use crate::reader::LinReader;
     use std::io::Cursor;
 
