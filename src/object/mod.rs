@@ -6,6 +6,7 @@ mod uaudio_subsystem;
 mod uclass;
 mod uclient;
 mod uconst;
+mod ucubemap;
 mod ucylinder;
 mod uenum;
 mod ufield;
@@ -51,6 +52,7 @@ pub mod builtins {
     pub use super::uclass::Class;
     pub use super::uclient::Client;
     pub use super::uconst::Const;
+    pub use super::ucubemap::Cubemap;
     pub use super::ucylinder::Cylinder;
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
@@ -391,6 +393,7 @@ register_builtins!(
     ESBRope,
     ESBChain,
     ESBStripDoor,
+    Cubemap,
     LevelBase,
     Level,
     Model,
@@ -440,6 +443,7 @@ impl_default_serialize!(
     ESBRope,
     ESBChain,
     ESBStripDoor,
+    Cubemap,
     StaticMeshInstance,
     LevelBase,
     Level,
@@ -568,6 +572,7 @@ make_inherited_objects!(
     ESBRope,
     ESBChain,
     ESBStripDoor,
+    Cubemap,
     LevelBase,
     Level,
     Model,
