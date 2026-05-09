@@ -28,6 +28,7 @@ mod umesh;
 mod umesh_animation;
 mod umodel;
 mod uskel_mesh;
+mod usoft_body;
 mod ustatic_mesh;
 mod ustatic_mesh_instance;
 mod ustruct;
@@ -73,6 +74,7 @@ pub mod builtins {
     pub use super::umodel::Model;
     pub use super::urenderdevice::RenderDevice;
     pub use super::uskel_mesh::SkeletalMesh;
+    pub use super::usoft_body::{ESBChain, ESBPatch, ESBRope, ESBStripDoor, SoftBody};
     pub use super::usound::Sound;
     pub use super::ustate::State;
     pub use super::ustatic_mesh::StaticMesh;
@@ -384,6 +386,11 @@ register_builtins!(
     LodMesh,
     MeshAnimation,
     SkeletalMesh,
+    SoftBody,
+    ESBPatch,
+    ESBRope,
+    ESBChain,
+    ESBStripDoor,
     LevelBase,
     Level,
     Model,
@@ -428,6 +435,11 @@ impl_default_serialize!(
     LodMesh,
     MeshAnimation,
     SkeletalMesh,
+    SoftBody,
+    ESBPatch,
+    ESBRope,
+    ESBChain,
+    ESBStripDoor,
     StaticMeshInstance,
     LevelBase,
     Level,
@@ -551,6 +563,11 @@ make_inherited_objects!(
     LodMesh,
     MeshAnimation,
     SkeletalMesh,
+    SoftBody,
+    ESBPatch,
+    ESBRope,
+    ESBChain,
+    ESBStripDoor,
     LevelBase,
     Level,
     Model,
