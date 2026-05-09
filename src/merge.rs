@@ -24,9 +24,20 @@ pub struct MergedLinkers {
     /// Pair label that first inserted each package, so diagnostics can
     /// name both sides of a conflict.
     pub origin_labels: HashMap<String, String>,
+    /// Map-dir name of the pair that first inserted each package. Used
+    /// to suppress the canonical-side group from variant emission so
+    /// we never emit a variant identical to the canonical itself.
+    pub origin_groups: HashMap<String, String>,
     pub bodies_grafted: usize,
     pub body_mismatches: Vec<BodyMismatch>,
     pub table_skews: Vec<TableSkew>,
+    /// Divergent variants of a package, keyed by (package_name,
+    /// group_name). When fold_pair_into sees a body byte mismatch on
+    /// a same-shape package, it records the divergent src linker
+    /// under its map-dir group so write-time can emit it as
+    /// `<pkg>.<group>.<ext>`. Multiple session pairs from the same
+    /// map dir collapse to one variant entry.
+    pub variants: HashMap<String, HashMap<String, Rc<RefCell<Linker>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,10 +143,21 @@ fn run_pair(common_path: &Path, session_path: &Path) -> io::Result<PairOutcome> 
     let common_data = read_and_decompress_lin(common_path)?;
     let session_data = read_and_decompress_lin(session_path)?;
 
+    // Match bin.rs: scan map.lin for package names referenced as
+    // top-level imports, so `verify_imports` knows to attempt
+    // `load_linker` on map-specific packages (Camera, clock, etc.)
+    // not in COMMON_LIN_PACKAGES. Without this, cascade reads
+    // misalign and downstream parsers (script bytecode, StaticMesh
+    // index buffers) hit garbage bytes.
+    let extra_packages = crate::de::discover_secondary_package_names(&session_data);
+
     let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
         Cursor::new(common_data),
         Cursor::new(session_data),
     ]);
+    for name in extra_packages {
+        decoder.runtime_mut().present_packages.insert(name);
+    }
 
     let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
         if let Err(e) = decoder.decode_unchecked() {
@@ -181,6 +203,58 @@ pub fn write_packages(
         );
     }
     Ok(())
+}
+
+/// Serialize each divergent variant under `<rel_dir>/<stem>.<group>.<ext>`,
+/// preserving both the canonical (first-sighting) and any later
+/// authoring-time variants captured from different map dirs. The
+/// canonical file is already written by `write_packages`; this writes
+/// only the conflicting alternates so consumers see two distinct
+/// package files rather than the merge silently dropping one side.
+fn write_variants(pkg_out: &Path, merged: &MergedLinkers) -> io::Result<()> {
+    for (name, by_group) in &merged.variants {
+        let lower = name.to_ascii_lowercase();
+        let Some(rel) = merged.filenames.get(&lower) else {
+            tracing::warn!("variant {name:?} not in file_table; skipping");
+            continue;
+        };
+        let base_path = pkg_out.join(rel);
+        for (group, linker) in by_group {
+            let variant_path = insert_group_in_filename(&base_path, group);
+            if let Some(parent) = variant_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let f = std::fs::File::create(&variant_path)?;
+            let mut bw = BufWriter::new(f);
+            let linker = linker.borrow();
+            if let Err(e) = crate::ser::serialize_linker_le(&linker, &mut bw) {
+                tracing::warn!("failed to serialize variant {name}.{group}: {e}");
+            }
+            bw.flush()?;
+            tracing::info!(
+                "wrote variant {variant_path:?} ({} exports captured)",
+                linker.captured.bodies.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `Foo/ESam.unr` + `"012_PresidentialPalace"` → `Foo/ESam.012_PresidentialPalace.unr`.
+/// If the filename has no extension, just appends `.<group>`.
+fn insert_group_in_filename(path: &Path, group: &str) -> PathBuf {
+    let parent = path.parent();
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let new_name = if let Some(dot) = file_name.rfind('.') {
+        let (stem, ext) = file_name.split_at(dot);
+        format!("{stem}.{group}{ext}")
+    } else {
+        format!("{file_name}.{group}")
+    };
+    match parent {
+        Some(p) => p.join(new_name),
+        None => PathBuf::from(new_name),
+    }
 }
 
 fn write_diagnostics(path: &Path, merged: &MergedLinkers) -> io::Result<()> {
@@ -229,13 +303,25 @@ pub fn run_merge(game_dir: &Path, output_dir: &Path) -> io::Result<MergeReport> 
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
+        // Group label = parent dir name (e.g. "012_PresidentialPalace").
+        // All session pairs from the same map dir share a `common.lin`
+        // and produce the same divergent body content for any
+        // conflicted package, so collapsing variants by parent dir
+        // avoids emitting one file per session pair when two pairs in
+        // the same map carry the same authoring-time variant.
+        let group = session
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
         eprintln!("pair: {common:?} + {session:?}");
         match run_pair(common, session) {
             Ok(out) => {
                 if out.panicked {
                     report.pairs_panicked += 1;
                 }
-                fold_pair_into(&mut merged, &out.linkers, &out.filenames, &label);
+                fold_pair_into(&mut merged, &out.linkers, &out.filenames, &label, &group);
             }
             Err(e) => {
                 tracing::warn!(?session, "run_pair failed: {e}");
@@ -246,6 +332,7 @@ pub fn run_merge(game_dir: &Path, output_dir: &Path) -> io::Result<MergeReport> 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
     write_packages(&pkg_out, &merged.linkers, &merged.filenames)?;
+    write_variants(&pkg_out, &merged)?;
 
     write_diagnostics(&output_dir.join("merge_diagnostics.txt"), &merged)?;
 
@@ -302,6 +389,7 @@ pub fn fold_pair_into(
     pair_linkers: &HashMap<String, Rc<RefCell<Linker>>>,
     pair_filenames: &HashMap<String, String>,
     pair_label: &str,
+    group_label: &str,
 ) {
     for (name, src_rc) in pair_linkers {
         if !merged.linkers.contains_key(name) {
@@ -309,6 +397,9 @@ pub fn fold_pair_into(
             merged
                 .origin_labels
                 .insert(name.clone(), pair_label.to_string());
+            merged
+                .origin_groups
+                .insert(name.clone(), group_label.to_string());
             // runtime.linkers keys are mixed-case (e.g. "Core"); package_filenames
             // keys are lowercased (e.g. "core"). Bridge with a lowercased lookup,
             // and store under the lowercased key so the writer's normalised lookup
@@ -356,7 +447,7 @@ pub fn fold_pair_into(
             // wrong name. The misaligned shape is usually small (e.g.
             // (15,2,8)) while the real package's shape is larger.
             // Promote the larger-shape sighting to canonical and discard
-            // the smaller one's bodies — those bodies belonged to a
+            // the smaller one's bodies; those bodies belonged to a
             // different authoring-time package and would corrupt the
             // output if grafted into the canonical exports.
             if src_counts.exports > dst_counts.exports {
@@ -370,6 +461,7 @@ pub fn fold_pair_into(
             continue;
         }
 
+        let mut had_mismatch = false;
         for (idx, body) in &src.captured.bodies {
             match dst.captured.bodies.get(idx) {
                 None => {
@@ -378,6 +470,7 @@ pub fn fold_pair_into(
                 }
                 Some(existing) if existing == body => {}
                 Some(existing) => {
+                    had_mismatch = true;
                     let first_diff_at = existing
                         .iter()
                         .zip(body.iter())
@@ -408,6 +501,32 @@ pub fn fold_pair_into(
 
         for (idx, obj) in &src.objects {
             dst.objects.entry(*idx).or_insert_with(|| obj.clone());
+        }
+
+        // Record this src as a divergent variant if at least one body
+        // disagreed AND the src is from a different map-dir group than
+        // canonical. Multiple session pairs in the same group collapse
+        // to one variant entry (first sighting wins per group). The
+        // variant linker is the unmodified src clone; its
+        // captured.bodies have the divergent versions of the
+        // conflicting exports plus the same matching versions for
+        // everything else; on write-back we serialize the whole thing
+        // under `<pkg>.<group>.<ext>` so consumers see two distinct
+        // package files preserving both authoring-time variants.
+        if had_mismatch
+            && merged
+                .origin_groups
+                .get(name)
+                .is_none_or(|g| g != group_label)
+        {
+            drop(dst);
+            drop(src);
+            merged
+                .variants
+                .entry(name.clone())
+                .or_default()
+                .entry(group_label.to_string())
+                .or_insert_with(|| src_rc.clone());
         }
     }
 }
@@ -556,7 +675,7 @@ mod tests {
             vec![("hud", synth_linker("HUD", 1, 0, 1, vec![(0, vec![0xAA, 0xBB])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &linkers, &fnames, "pair-A");
+        fold_pair_into(&mut merged, &linkers, &fnames, "pair-A", "group-A");
 
         assert!(merged.linkers.contains_key("hud"));
         assert_eq!(
@@ -580,7 +699,7 @@ mod tests {
             vec![("Core", synth_linker("Core", 1, 0, 1, vec![]))],
             vec![("core", "Core.u")],
         );
-        fold_pair_into(&mut merged, &linkers, &fnames, "pair-A");
+        fold_pair_into(&mut merged, &linkers, &fnames, "pair-A", "group-A");
 
         // write_packages does `filenames.get(&name.to_ascii_lowercase())`
         // so storing the filename under the lowercased key keeps that path
@@ -598,13 +717,13 @@ mod tests {
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         assert_eq!(l.captured.bodies.get(&0), Some(&vec![0xAA, 0xBB]));
@@ -619,13 +738,13 @@ mod tests {
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0x02, 0x03])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0xFF, 0x03])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         assert_eq!(l.captured.bodies.get(&1), Some(&vec![0x01, 0x02, 0x03]));
@@ -648,7 +767,7 @@ mod tests {
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
             vec![(
@@ -657,7 +776,7 @@ mod tests {
             )],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         // Canonical now has 8 exports (B's shape).
@@ -683,13 +802,13 @@ mod tests {
             )],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xFF])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         assert_eq!(l.package.exports.len(), 8);
@@ -708,7 +827,7 @@ mod tests {
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         // Build a second pair with a body at idx=2 and a parallel object entry.
         let mut second = synth_linker("HUD", 4, 0, 4, vec![(2, vec![0xCC])]);
@@ -719,12 +838,77 @@ mod tests {
             vec![("hud", second)],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         assert!(l.captured.bodies.contains_key(&2));
         assert!(l.objects.contains_key(&crate::de::ExportIndex(2)));
         assert_eq!(merged.bodies_grafted, 1);
+    }
+
+    #[test]
+    fn fold_records_variant_on_cross_group_mismatch() {
+        // Cross-group divergence: pair-A from group "menu" wins canonical;
+        // pair-B from group "012_PresidentialPalace" disagrees on a body.
+        // The src linker should be recorded as a variant under its group
+        // label so write_variants emits a `<pkg>.012_PresidentialPalace.utx`.
+        let mut merged = MergedLinkers::new();
+        let (a_lns, a_fns) = pair(
+            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xBB])]))],
+            vec![("esam", "Animations/ESam.ukx")],
+        );
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "menu.lin", "menu");
+
+        let (b_lns, b_fns) = pair(
+            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xCC])]))],
+            vec![("esam", "Animations/ESam.ukx")],
+        );
+        fold_pair_into(
+            &mut merged,
+            &b_lns,
+            &b_fns,
+            "5_1_1_PresidentialPalace.lin",
+            "012_PresidentialPalace",
+        );
+
+        let by_group = merged
+            .variants
+            .get("ESam")
+            .expect("variant entry recorded for ESam");
+        assert!(
+            by_group.contains_key("012_PresidentialPalace"),
+            "src group label keys the variant, not the canonical group"
+        );
+        assert!(
+            !by_group.contains_key("menu"),
+            "canonical group never appears as a variant"
+        );
+    }
+
+    #[test]
+    fn fold_skips_variant_on_same_group_mismatch() {
+        // Two pairs from the same map dir disagree on a body. This
+        // shouldn't happen in practice (same dir shares a common.lin)
+        // but the guard exists so we never emit a variant whose group
+        // matches canonical's group.
+        let mut merged = MergedLinkers::new();
+        let (a_lns, a_fns) = pair(
+            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA])]))],
+            vec![("esam", "Animations/ESam.ukx")],
+        );
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "session-a.lin", "same-group");
+
+        let (b_lns, b_fns) = pair(
+            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xBB])]))],
+            vec![("esam", "Animations/ESam.ukx")],
+        );
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "session-b.lin", "same-group");
+
+        assert!(
+            merged.variants.get("ESam").is_none(),
+            "no variant when src group equals canonical group"
+        );
+        assert_eq!(merged.body_mismatches.len(), 1);
     }
 
     #[test]
@@ -735,13 +919,13 @@ mod tests {
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A");
+        fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
             vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(2, vec![0xCC, 0xDD])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
-        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B");
+        fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
         assert_eq!(l.captured.bodies.get(&0), Some(&vec![0xAA]));

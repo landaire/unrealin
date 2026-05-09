@@ -25,6 +25,7 @@ mod ulevel;
 mod ulevel_base;
 mod ulod_mesh;
 mod umesh;
+mod umesh_animation;
 mod umodel;
 mod uskel_mesh;
 mod ustatic_mesh;
@@ -68,6 +69,7 @@ pub mod builtins {
     pub use super::ulevel_base::LevelBase;
     pub use super::ulod_mesh::LodMesh;
     pub use super::umesh::Mesh;
+    pub use super::umesh_animation::MeshAnimation;
     pub use super::umodel::Model;
     pub use super::urenderdevice::RenderDevice;
     pub use super::uskel_mesh::SkeletalMesh;
@@ -380,6 +382,7 @@ register_builtins!(
     StaticMeshInstance,
     Mesh,
     LodMesh,
+    MeshAnimation,
     SkeletalMesh,
     LevelBase,
     Level,
@@ -423,6 +426,7 @@ impl_default_serialize!(
     Primitive,
     Mesh,
     LodMesh,
+    MeshAnimation,
     SkeletalMesh,
     StaticMeshInstance,
     LevelBase,
@@ -545,6 +549,7 @@ make_inherited_objects!(
     StaticMeshInstance,
     Mesh,
     LodMesh,
+    MeshAnimation,
     SkeletalMesh,
     LevelBase,
     Level,

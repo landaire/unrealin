@@ -250,6 +250,26 @@ where
     }
 }
 
+/// `Seek` for `LinReader` is **virtual / bookkeeping ONLY**.
+///
+/// **INVARIANT:** This implementation MUST NEVER propagate to the
+/// underlying source. It only updates `self.pos`. The underlying
+/// `Cursor`/source advances purely by sequential `read` calls.
+///
+/// **Why:** the `.lin` format is a streaming archive whose physical
+/// layout is engineered to match the engine's cascade-load order. Each
+/// export's body is laid out exactly where the cursor will naturally
+/// land after preceding linker headers and bodies have been read. The
+/// engine's `Ar.Seek(SerialOffset)` calls are bookkeeping events that
+/// confirm the LOGICAL position; they don't physically reposition the
+/// stream. Mirror that exactly. If you make this seek propagate, you'll
+/// silently mask correctness bugs (mis-sized header reads, missing
+/// stubs that under/over-consume bodies) that the sequential invariant
+/// would otherwise surface as a divergence.
+///
+/// **If a preload misaligns**, the bug is upstream: in the deserialize
+/// or header read that advanced the cursor by the wrong number of
+/// bytes, not in this seek.
 impl<R> Seek for LinReader<R> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         let res = match pos {

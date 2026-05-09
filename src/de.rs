@@ -883,11 +883,26 @@ where
         &self.runtime.linkers
     }
 
+    pub fn runtime_mut(&mut self) -> &mut crate::runtime::UnrealRuntime {
+        &mut self.runtime
+    }
+
     pub fn trace_ops_consumed(&self) -> u64 {
         self.sources
             .front()
             .map(|r| r.trace_ops_consumed())
             .unwrap_or(0)
+    }
+
+    /// Bytes consumed per `.lin` source so far. Index 0 is `common.lin`,
+    /// index 1+ are the secondary `.lin`s passed to `new_unchecked`.
+    /// Comparing each against the input file size shows whether the
+    /// cascade left physical packages untouched at the tail of a source.
+    pub fn source_consumed_per_source(&self) -> Vec<u64> {
+        self.sources
+            .front()
+            .map(|r| r.source_consumed_per_source().to_vec())
+            .unwrap_or_default()
     }
 
     pub fn trace_ops_remaining(&self) -> usize {
@@ -1074,6 +1089,142 @@ where
         Ok(())
     }
 
+}
+
+/// Walk a decompressed secondary `.lin` (= `<map>.lin`) and collect
+/// the top-level package names referenced by every package physically
+/// in the source. Used to seed `runtime.present_packages` for the
+/// unchecked decode path: the engine's `verify_imports` cascade
+/// fires `GetPackageLinker(name)` for each top-level import, and we
+/// need to know which of those names actually resolve to a package
+/// in our `.lin` (vs an engine intrinsic that has no on-disk body).
+///
+/// The secondary `.lin` has no manifest beyond its single-name
+/// LIN-format prefix, so we discover packages by:
+///
+///   1. Skipping the LIN-format prefix (`u32 load_address +
+///      packed_int name_len + ANSI name`).
+///   2. Sliding a 4-byte window across the rest of the data looking
+///      for `PKG_TAG` (`0x9E2A83C1` LE).
+///   3. For each candidate offset, attempting to parse a package
+///      header. If the version field is `0x110064` (SC's
+///      `Ver=0x64`, `LicenseeVer=0x11`) and `name_count`,
+///      `name_offset`, `import_count`, `import_offset` all stay
+///      within the source bounds, treat it as a real package and
+///      parse its names + imports.
+///   4. For each import with `package_index == 0` (top-level), look
+///      up `object_name` in the package's names table. That name is
+///      the imported package's name.
+///   5. Return the union of all such names.
+///
+/// Some returned names are already in `COMMON_LIN_PACKAGES` (the
+/// engine's `verify_imports` is called on every linker, common.lin
+/// and map.lin alike). Adding them again is a no-op since
+/// `present_packages` is a `HashSet`.
+pub fn discover_secondary_package_names(data: &[u8]) -> Vec<String> {
+    use std::collections::HashSet;
+    use std::io::Cursor;
+
+    let mut cursor = Cursor::new(data);
+    if skip_secondary_lin_header::<byteorder::LittleEndian, _>(&mut cursor).is_err() {
+        return Vec::new();
+    }
+    let prefix_end = cursor.position() as usize;
+
+    let mut pkg_offsets: Vec<usize> = Vec::new();
+    if data.len() >= prefix_end + 4 {
+        for i in prefix_end..data.len() - 4 {
+            if data[i] == 0xc1
+                && data[i + 1] == 0x83
+                && data[i + 2] == 0x2a
+                && data[i + 3] == 0x9e
+            {
+                pkg_offsets.push(i);
+            }
+        }
+    }
+
+    let mut names: HashSet<String> = HashSet::new();
+    for &off in &pkg_offsets {
+        if let Some(pkg) = try_parse_package_at::<byteorder::LittleEndian>(data, off) {
+            for imp in &pkg.imports {
+                if imp.package_index == 0 {
+                    if let Some(n) = pkg.names.get(imp.object_name as usize) {
+                        if !n.name.is_empty() {
+                            names.insert(n.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+
+/// Try to parse a UE2 package header starting at `data[offset]`.
+/// Returns `None` if the bytes don't look like a valid SC package
+/// header (wrong version, out-of-bounds offsets, etc.). Used by
+/// `discover_secondary_package_names` to filter false-positive
+/// PKG_TAG byte matches from real package starts.
+fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
+    use crate::reader::LinReader;
+    use std::io::Cursor;
+
+    let slice = data.get(offset..)?;
+    let mut reader = LinReader::new(Cursor::new(slice));
+    reader.set_source_start(0);
+
+    let header = match read_package_header::<E, _>(&mut reader) {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+    // SC: Ver=0x64, LicenseeVer=0x11. The combined u32 LE is 0x00110064.
+    if header.version != 0x00110064 {
+        return None;
+    }
+    let max = (data.len() - offset) as u64;
+    if header.name_offset as u64 > max
+        || header.import_offset as u64 > max
+        || header.export_offset as u64 > max
+    {
+        return None;
+    }
+
+    if reader
+        .seek(SeekFrom::Start(header.name_offset as u64))
+        .is_err()
+    {
+        return None;
+    }
+    let mut names = Vec::with_capacity(header.name_count as usize);
+    for _ in 0..header.name_count as usize {
+        match read_name::<E, _>(&mut reader) {
+            Ok(n) => names.push(n),
+            Err(_) => return None,
+        }
+    }
+
+    if reader
+        .seek(SeekFrom::Start(header.import_offset as u64))
+        .is_err()
+    {
+        return None;
+    }
+    let mut imports = Vec::with_capacity(header.import_count as usize);
+    for _ in 0..header.import_count as usize {
+        match read_import::<E, _>(&mut reader) {
+            Ok(i) => imports.push(i),
+            Err(_) => return None,
+        }
+    }
+
+    Some(RawPackage {
+        header,
+        names,
+        imports,
+        exports: Vec::new(),
+    })
 }
 
 /// Read past a secondary `.lin` source's LIN-format prefix:
