@@ -801,13 +801,6 @@ impl UnrealRuntime {
         E: ByteOrder,
     {
         let parts: Vec<&str> = full_name.split('.').collect();
-        assert!(
-            parts.len() >= 2,
-            "object name does not have a module: {full_name:?}"
-        );
-        let module = parts[0];
-        let path_parts = &parts[1..];
-        let object_name = *path_parts.last().expect("path has no leaf");
 
         let span = span!(
             Level::DEBUG,
@@ -818,6 +811,30 @@ impl UnrealRuntime {
         let _enter = span.enter();
 
         debug!("Looking up {full_name}");
+
+        // Top-level package reference (no `.` separator). Mirrors SC's
+        // `VerifyImport` (xbe `0x38f60`) for an import with `package_index == 0`:
+        // it walks up to a top-level import, calls `CreatePackage` and
+        // `GetPackageLinker(name)`, and the resulting `CreateImport`
+        // (xbe `0x395c0`) returns the cached UPackage object without
+        // touching `SourceIndex`. We don't model UPackage objects; the
+        // engine-faithful equivalent is to ensure the package's linker is
+        // loaded (the same side-effect `GetPackageLinker` would have)
+        // and return None.
+        if parts.len() < 2 {
+            let module = parts[0];
+            if !module.is_empty()
+                && !self.linkers.contains_key(module)
+                && self.present_packages.contains(module)
+            {
+                self.load_linker::<E, _>(module.to_owned(), reader)?;
+            }
+            return Ok(None);
+        }
+
+        let module = parts[0];
+        let path_parts = &parts[1..];
+        let object_name = *path_parts.last().expect("path has no leaf");
 
         if module == "Core"
             && path_parts.len() == 1
