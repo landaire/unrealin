@@ -121,14 +121,34 @@ where
     let dword_34 = reader.read_u32::<E>()?;
 
     let object_count = reader.read_packed_int()?;
-    assert!(object_count >= 0, "GEPartitioner object count negative");
+    // Negative TArray counts cannot occur in an engine-written body
+    // (FArray operator<< always writes non-negative ARCount). A negative
+    // value here means the level body is misaligned with the engine's
+    // read order — see the matching FURL/TravelInfo comments in
+    // `ulevel_base.rs` / `ulevel.rs`. Abort cleanly so callers unwind
+    // without panicking.
+    if object_count < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "GEPartitioner object count negative ({object_count}) — body is misaligned"
+            ),
+        ));
+    }
     let mut objects = Vec::with_capacity(object_count as usize);
     for _ in 0..object_count {
         objects.push(read_ge_object::<E, _>(reader)?);
     }
 
     let index_count = reader.read_packed_int()?;
-    assert!(index_count >= 0, "GEPartitioner index count negative");
+    if index_count < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "GEPartitioner index count negative ({index_count}) — body is misaligned"
+            ),
+        ));
+    }
     let mut indices = Vec::with_capacity(index_count as usize);
     for _ in 0..index_count {
         indices.push(reader.read_u32::<E>()?);

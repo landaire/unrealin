@@ -28,6 +28,7 @@ mod umesh;
 mod umodel;
 mod uskel_mesh;
 mod ustatic_mesh;
+mod ustatic_mesh_instance;
 mod ustruct;
 mod usubsystem;
 mod utext_buffer;
@@ -73,6 +74,7 @@ pub mod builtins {
     pub use super::usound::Sound;
     pub use super::ustate::State;
     pub use super::ustatic_mesh::StaticMesh;
+    pub use super::ustatic_mesh_instance::StaticMeshInstance;
     pub use super::ustruct::Struct;
     pub use super::usubsystem::Subsystem;
     pub use super::utext_buffer::TextBuffer;
@@ -375,6 +377,7 @@ register_builtins!(
     Package,
     Primitive,
     StaticMesh,
+    StaticMeshInstance,
     Mesh,
     LodMesh,
     SkeletalMesh,
@@ -421,6 +424,7 @@ impl_default_serialize!(
     Mesh,
     LodMesh,
     SkeletalMesh,
+    StaticMeshInstance,
     LevelBase,
     Level,
     Model,
@@ -538,6 +542,7 @@ make_inherited_objects!(
     Package,
     Primitive,
     StaticMesh,
+    StaticMeshInstance,
     Mesh,
     LodMesh,
     SkeletalMesh,

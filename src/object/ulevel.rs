@@ -31,9 +31,13 @@ use crate::{
 /// 6. `Ar << FirstDeleted` — packed_int.
 /// 7. Loop i=0..15: `Ar << TextBlocks[i]` — packed_int per
 ///    `UTextBuffer*` (NUM_LEVEL_TEXT_BLOCKS = 16).
-/// 8. `if (Ar.Ver > 0x3E) Ar << TravelInfo` — Ver=0x64, fires.
-///    `TravelInfo` is `TMap<FString, FString>`: serialized as
-///    `[count: packed_int][count × (FString key + FString value)]`.
+/// 8. `if (Ar.Ver > 0x3E) Ar << *(this + 0xd0)` — Ver=0x64, fires.
+///    The field at `+0xd0` is a **single FString** in SC, not the
+///    UT2004 `TMap<FString, FString> TravelInfo`. Verified via LLIL
+///    `0x10410d2b` — the indirect call resolves through
+///    `[0x10688db4]` = `operator<<(FArchive&, FString&)`. UT2004's
+///    TMap<FString,FString> would have been a TMap operator<<; SC's
+///    layout collapsed it (or the field changed semantics entirely).
 /// 9. `if (Model && !IsTrans) Ar.Preload(Model)` — `Preload` is
 ///    a no-op stub in SC (vtable[4] tail-calls a function that
 ///    immediately returns); no IO.
@@ -50,7 +54,7 @@ pub struct Level {
     pub approx_time: u32,
     pub first_deleted: Option<RcUnrealObject>,
     pub text_blocks: [Option<RcUnrealObject>; 16],
-    pub travel_info: Vec<(String, String)>,
+    pub travel_info: String,
     pub ge_partitioner: Option<GEPartitioner>,
 }
 
@@ -84,15 +88,9 @@ impl DeserializeUnrealObject for Level {
             *slot = reader.read_object::<E>(runtime, linker)?;
         }
 
-        // Step 8: TravelInfo TMap<FString, FString>.
-        let travel_count = reader.read_packed_int()?;
-        assert!(travel_count >= 0, "TravelInfo count negative");
-        self.travel_info = Vec::with_capacity(travel_count as usize);
-        for _ in 0..travel_count {
-            let k = reader.read_string()?;
-            let v = reader.read_string()?;
-            self.travel_info.push((k, v));
-        }
+        // Step 8: single FString at +0xd0 (SC-specific; UT2004's
+        // TMap<FString,FString> TravelInfo isn't what's here).
+        self.travel_info = reader.read_string()?;
 
         // Step 9: `if (Model && !Ar.IsTrans()) Ar.Preload(Model)`.
         // ULinkerLoad::Preload synchronously seeks to Model's

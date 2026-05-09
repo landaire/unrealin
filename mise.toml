@@ -1,0 +1,59 @@
+[tools]
+
+[env]
+# Paths shared across the dump tasks. Override per-shell if the layout
+# changes. UE2_DUMP_PLUGIN_DIR is the plugin's cargo workspace (we build
+# from there); XEMU is the launcher binary.
+UE2_DUMP_PLUGIN_DIR = "{{config_root}}/../UE2OffsetDump"
+XEMU = "{{env.HOME}}/src/xemu/dist/xemu.app/Contents/MacOS/xemu"
+
+[tasks."dump:build-plugin"]
+description = "Build the UE2OffsetDump QEMU plugin (debug profile)"
+run = "cd $UE2_DUMP_PLUGIN_DIR && cargo build"
+sources = [
+    "{{env.UE2_DUMP_PLUGIN_DIR}}/src/**/*.rs",
+    "{{env.UE2_DUMP_PLUGIN_DIR}}/Cargo.toml",
+]
+outputs = [
+    "{{env.UE2_DUMP_PLUGIN_DIR}}/target/debug/libsplinter_cell_qemu_plugin.dylib",
+]
+
+[tasks.dump]
+description = "Run xemu with the I/O-recording plugin and capture reads.json for a specific map"
+usage = '''
+arg "<map>" help="`<subdir>/<stem>` of the target map (e.g. `002_Tbilisi/1_1_0Tbilisi`, `001_Training/0_0_2_Training`). Slash-separated; the plugin converts to backslash and rewrites the LAUNCH_DATA URL on the next XLaunchNewImageA"
+'''
+depends = ["dump:build-plugin"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN="$UE2_DUMP_PLUGIN_DIR/target/debug/libsplinter_cell_qemu_plugin.dylib"
+DEST="{{config_root}}/reads.json.${usage_map//\//_}.bak"
+
+echo "==> launching xemu with UE2_DUMP_MAP=${usage_map}"
+echo "    plugin: $PLUGIN"
+echo "    output: $DEST"
+echo
+echo "    Workflow once xemu opens:"
+echo "      1. wait for the menu to load"
+echo "      2. load any save and click Start Mission (the load-map override"
+echo "         applies when SC fires XLaunchNewImageA on the menu→mission"
+echo "         transition; it rewrites MAPNAME= to your chosen map)"
+echo "      3. quit xemu when the recording is done"
+echo
+
+# xemu picks DVD/HDD/BIOS up from its xemu.toml, so we only need
+# -machine and -plugin. short-animation=on skips the boot logo.
+UE2_DUMP_MAP="$usage_map" "$XEMU" \
+    -machine xbox,short-animation=on \
+    -plugin "$PLUGIN"
+
+if [[ ! -f /var/tmp/reads.json ]]; then
+    echo "ERROR: /var/tmp/reads.json was not produced; plugin may have failed to load" >&2
+    exit 1
+fi
+
+mv /var/tmp/reads.json "$DEST"
+echo "==> trace saved to $DEST"
+'''

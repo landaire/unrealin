@@ -22,9 +22,10 @@ use crate::{
 ///   tail is **dropped** in SC's body — confirmed by the
 ///   `Engine_demo.dll` decompile.
 ///
-/// `IsTrans` branch reads the actors array via the standard
-/// `Ar << TArray` path; that's only used in transient archives
-/// (Editor undo, etc.), never at package load.
+/// `IsTrans` branch (calls `sub_104159a0` → `sub_10415d00`) reads
+/// the actors array via the standard `Ar << TArray` path; that's
+/// only used in transient archives (Editor undo, etc.), never at
+/// package load.
 #[derive(Default, Debug)]
 pub struct LevelBase {
     pub parent_object: Object,
@@ -55,7 +56,22 @@ where
     let map = reader.read_string()?;
     let portal = reader.read_string()?;
     let op_count = reader.read_packed_int()?;
-    assert!(op_count >= 0, "FURL op count negative");
+    // Negative TArray counts cannot occur in an engine-written body
+    // (the FArray operator<< writes a non-negative ARCount). Reaching
+    // a negative value here means the source bytes for this body are
+    // misaligned with the engine's read order, almost always because
+    // verify_imports cascade-loaded a package whose authoring-time
+    // bytes were laid down at a different point in the engine's read
+    // sequence. The level body itself is unrecoverable; abort the
+    // body load with an io::Error so the surrounding `preload`/
+    // `decode_unchecked` path unwinds cleanly and the pair contributes
+    // its already-captured siblings via the `run_pair` Err path.
+    if op_count < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("FURL op count negative ({op_count}) — body is misaligned"),
+        ));
+    }
     let mut op = Vec::with_capacity(op_count as usize);
     for _ in 0..op_count {
         op.push(reader.read_string()?);
