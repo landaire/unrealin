@@ -1,3 +1,4 @@
+use std::io;
 use std::rc::Rc;
 
 use byteorder::ReadBytesExt;
@@ -268,10 +269,16 @@ impl DeserializeUnrealObject for Struct {
             )?);
         }
 
-        assert_eq!(
-            bytes_read, self.script_size as usize,
-            "Did not read the expected amount of script data"
-        );
+        if bytes_read != self.script_size as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "script body under/over-read: got {} bytes, expected {} \
+                     (cursor likely mis-aligned with engine read order)",
+                    bytes_read, self.script_size
+                ),
+            ));
+        }
 
         self.parsed_script = parsed;
         self.script_capture = reader.capture_slice_from(script_capture_start);

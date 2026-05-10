@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use byteorder::LittleEndian;
 
-use crate::de::{Linker, LinearFileDecoder};
+use crate::de::{LinSource, Linker, LinearFileDecoder};
 
 #[derive(Default)]
 pub struct MergedLinkers {
@@ -147,25 +147,21 @@ fn read_and_decompress_lin(path: &Path) -> io::Result<Vec<u8>> {
     crate::de::decompress_linear_file::<LittleEndian, _>(&mut slice)
 }
 
-/// Effective cap for `LinReader`: every `.lin` ends in a `0xb3`
-/// sentinel byte that the engine never reads. Capping at `len - 1`
-/// (when present) makes the cross-source auto-advance fire on the
-/// engine's logical end-of-data, not after the sentinel.
-fn effective_cap(data: &[u8]) -> Option<u64> {
-    if data.last().copied() == Some(0xb3) {
-        Some((data.len() - 1) as u64)
-    } else {
-        None
-    }
-}
-
-fn read_and_decompress_lin_with_size(path: &Path) -> io::Result<(Vec<u8>, Option<u64>)> {
+/// Effective end-of-data for a decompressed `.lin`: the declared
+/// `uncompressed_data_size` from metadata block 0. Bytes past that
+/// point are zlib block alignment padding (consistently ending in a
+/// `0xb3` sentinel) that the engine never reads. Capping `LinReader`
+/// at this value makes the cross-source auto-advance fire on the
+/// engine's logical end-of-data; using it as the denominator in the
+/// unread-tail check filters out the padding so the warning reflects
+/// real coverage gaps, not file-format noise.
+fn read_and_decompress_lin_with_size(path: &Path) -> io::Result<(Vec<u8>, u64)> {
     let f = std::fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&f)? };
     let mut slice: &[u8] = &mmap[..];
-    let d = crate::de::decompress_linear_file::<LittleEndian, _>(&mut slice)?;
-    let cap = effective_cap(&d);
-    Ok((d, cap))
+    let (data, declared) =
+        crate::de::decompress_linear_file_with_size::<LittleEndian, _>(&mut slice)?;
+    Ok((data, declared as u64))
 }
 
 /// Index every `reads.json.*` (trace) under `trace_dir` by the session
@@ -271,17 +267,18 @@ fn warn_unread_tails(
     session_path: &Path,
     common_data: &[u8],
     session_data: &[u8],
+    common_declared: u64,
+    session_declared: u64,
     consumed: &[u64],
 ) {
     let common_consumed = consumed.first().copied().unwrap_or(0);
     let session_consumed = consumed.get(1).copied().unwrap_or(0);
-    let common_tail = (common_data.len() as u64).saturating_sub(common_consumed);
-    let session_tail = (session_data.len() as u64).saturating_sub(session_consumed);
+    let common_tail = common_declared.saturating_sub(common_consumed);
+    let session_tail = session_declared.saturating_sub(session_consumed);
     if common_tail > UNREAD_TAIL_THRESHOLD {
         let pkgs = scan_tail_packages(common_data, common_consumed as usize);
         tracing::warn!(
-            "unread tail in {common_path:?}: {common_tail} bytes (consumed {common_consumed}/{}); pkgs in tail: {pkgs:?}; tail bytes: {}",
-            common_data.len(),
+            "unread tail in {common_path:?}: {common_tail} bytes (consumed {common_consumed}/{common_declared}); pkgs in tail: {pkgs:?}; tail bytes: {}",
             tail_hex(common_data, common_consumed as usize, 48)
         );
     }
@@ -295,8 +292,7 @@ fn warn_unread_tails(
             })
             .unwrap_or_default();
         tracing::warn!(
-            "unread tail in {session_path:?}: {session_tail} bytes (consumed {session_consumed}/{}); pkgs: {pkgs:?}; pre-pkg bytes: {pre_pkg_bytes}; tail head: {}",
-            session_data.len(),
+            "unread tail in {session_path:?}: {session_tail} bytes (consumed {session_consumed}/{session_declared}); pkgs: {pkgs:?}; pre-pkg bytes: {pre_pkg_bytes}; tail head: {}",
             tail_hex(session_data, session_consumed as usize, 32)
         );
     }
@@ -452,6 +448,8 @@ fn run_pair(
                 session_path,
                 &common_data_for_tail,
                 &session_data_for_tail,
+                common_size,
+                session_size,
                 &decoder.source_consumed_per_source(),
             );
 
@@ -473,10 +471,10 @@ fn run_pair(
     // doesn't invalidate the post-decode unread-tail dump.
     let common_for_decode = common_data_for_tail.clone();
     let session_for_decode = session_data_for_tail.clone();
-    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
-        vec![Cursor::new(common_for_decode), Cursor::new(session_for_decode)],
-        vec![common_size, session_size],
-    );
+    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
+        LinSource::new(Cursor::new(common_for_decode), common_size),
+        LinSource::new(Cursor::new(session_for_decode), session_size),
+    ]);
 
     let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
         if let Err(e) = decoder.decode_unchecked() {
@@ -490,6 +488,8 @@ fn run_pair(
         session_path,
         &common_data_for_tail,
         &session_data_for_tail,
+        common_size,
+        session_size,
         &decoder.source_consumed_per_source(),
     );
 

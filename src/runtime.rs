@@ -30,11 +30,7 @@ type RcLinker = Rc<RefCell<Linker>>;
 /// Verified-complete stubs are NOT on this list: they consume exactly
 /// what the engine consumes (which is often less than `serial_size` —
 /// see `runtime::preload` short-read comment).
-const INCOMPLETE_STUB_CLASSES: &[&str] = &[
-    // ConvexVolume — UPrimitive::Serialize + native fields
-    // (Engine_demo `sub_103e3a40`). 8 bodies in 0_0_2_Training.
-    "ConvexVolume",
-];
+const INCOMPLETE_STUB_CLASSES: &[&str] = &[];
 
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -739,10 +735,14 @@ impl UnrealRuntime {
 
             drop(linker_inner);
 
+            // The import row's `(class_name, class_package)` come from
+            // the on-disk import table, authoritative in both unchecked
+            // and trace mode. Resolution always strict — see
+            // `load_object_by_full_name_with_class` for the engine
+            // VerifyImport reference.
             self.load_object_by_full_name_with_class::<E, _>(
                 import_full_name.as_str(),
                 Some((class_name.as_str(), class_package.as_str())),
-                false,
                 load_kind,
                 reader,
             )
@@ -993,7 +993,6 @@ impl UnrealRuntime {
         self.load_object_by_full_name_with_class::<E, _>(
             full_name,
             Some(("Class", "Core")),
-            false,
             load_kind,
             reader,
         )
@@ -1004,24 +1003,20 @@ impl UnrealRuntime {
     ///
     /// `class_info`:
     /// - `None` — accept the first match by name regardless of class.
-    /// - `Some((class, package))` — prefer this class. With
-    ///   `strict_class=false` we fall back to a name-only match if no
-    ///   strict candidate exists (preserves engine-warmup behavior:
-    ///   the QEMU plugin can't capture `StaticLoadObject`'s `InClass`
-    ///   so our hint defaults to `Core.Class` and we'd otherwise
-    ///   over-filter). With `strict_class=true` the wrong-class match
-    ///   is retained for diagnostics only — we warn with both the
-    ///   expected and observed class, then return `None`. Use strict
-    ///   when you can guarantee the engine's filter (e.g. the level
-    ///   cascade always uses `Engine.Level`), so a same-named export
-    ///   of a different class can't silently shadow the right one
-    ///   (the `MyLevel` package wrapper vs. the `Level` actor in
-    ///   `2_1_0CIA`).
+    /// - `Some((class, package))` — match strictly. The match must
+    ///   have both the leaf name and the static class. Mirrors SC's
+    ///   `VerifyImport` (xbe `0x38f60`) and `StaticLoadObject` (xbe
+    ///   `0x4E740`): both consult `(name, class)` together when
+    ///   resolving the named object, returning null when no export
+    ///   matches both. A name-only fallback would silently load the
+    ///   wrong-typed export (verified on `4_3_0ChineseEmbassy`,
+    ///   where it caused 1.36MB of cursor-misalignment). When the
+    ///   only same-name candidate is a different class, we still
+    ///   compute it for a diagnostic warning before returning None.
     pub fn load_object_by_full_name_with_class<E, R>(
         &mut self,
         full_name: &str,
         class_info: Option<(&str, &str)>,
-        strict_class: bool,
         load_kind: LoadKind,
         reader: &mut R,
     ) -> io::Result<Option<RcUnrealObject>>
@@ -1093,6 +1088,27 @@ impl UnrealRuntime {
         // which mishandles cases like "Engine.Console" (the top-level Class)
         // vs "Engine.Engine.Console" (a ClassProperty nested in the Engine
         // class) where a property shares a leaf name with a top-level Class.
+        // Lookup is always strict on `(name, class)` when `class_info`
+        // is `Some`. Mirrors SC's xbe `StaticLoadObject` (`0x4E740`)
+        // which routes through `ULinkerLoad::Create` (`0x3A070`) +
+        // `sub_468c0` (= `StaticFindObject`); both filter the export
+        // table by `(name, class)` and reject wrong-class same-name
+        // candidates. Verified via LLIL at `sub_468c0+0x82..0x95`:
+        // when `arg5 != 0` (the standard `StaticLoadObject` invocation
+        // pattern) the comparison is `entry.class == InClass` exactly,
+        // not `IsA(InClass)` — so a `MeshAnimation` export named
+        // `LadderAnims` does NOT match a `class<MeshAnimation>` import
+        // (which is itself a `Core.Class` lookup, not a
+        // `MeshAnimation` lookup).
+        //
+        // When `class_info` is `None`, accept any same-name export
+        // that isn't a `*Property` or `Function` — those exist as
+        // top-level exports for script reflection but aren't
+        // loadable via name alone. Used by callers that genuinely
+        // don't have an `InClass` (e.g. `decode_linear_file`'s
+        // explicit-name resolver replaying a recorded trace whose
+        // `StaticLoadObject` `InClass` arg the QEMU plugin couldn't
+        // capture).
         let strict_match = linker_inner
             .find_export_by_path(path_parts)
             .filter(|(_, export)| match class_info {
@@ -1100,61 +1116,54 @@ impl UnrealRuntime {
                     export.class_name(&linker_inner) == cn
                         && export.class_package(&linker_inner) == cp
                 }
-                None => true,
+                None => {
+                    let cn = export.class_name(&linker_inner);
+                    !cn.ends_with("Property") && cn != "Function"
+                }
             })
             .or_else(|| match class_info {
                 Some((cn, cp)) => {
                     linker_inner.find_export_by_name_and_class(object_name, cn, cp)
                 }
-                None => None,
-            });
-        // Any-class candidate: when the engine called StaticLoadObject with
-        // a non-Core.Class static class (e.g. USkelMesh for ESam.SamAMesh),
-        // the QEMU plugin doesn't capture InClass, so our default Some
-        // (("Class", "Core")) over-filters. We compute a name-only match
-        // separately for two reasons: when `strict_class=false`, it serves
-        // as a fallback that preserves engine-warmup behavior; when
-        // `strict_class=true`, it serves as a diagnostic so we can warn
-        // with the actual on-disc class even though we discard the match.
-        // Either way we reject `*Property` and `Function`: those exist as
-        // top-level exports for script reasons but aren't loadable as
-        // standalone objects via StaticLoadObject (preserves
-        // SubActionFade's Class disambiguation AND avoids `Engine.Primitive`
-        // falsely resolving to a stray ObjectProperty named Primitive).
-        let any_class_candidate: Option<(ExportIndex, &ObjectExport)> =
-            if strict_match.is_none() && class_info.is_some() {
-                linker_inner
-                    .find_export_by_path(path_parts)
-                    .or_else(|| linker_inner.find_export_by_name(object_name))
-                    .filter(|(_, export)| {
+                None => linker_inner.find_export_by_name(object_name).filter(
+                    |(_, export)| {
                         let cn = export.class_name(&linker_inner);
                         !cn.ends_with("Property") && cn != "Function"
-                    })
-            } else {
-                None
-            };
-
-        let lookup = if strict_class {
-            strict_match
-        } else {
-            strict_match.or(any_class_candidate)
-        };
-
-        // Warn when strict mode discards a wrong-class candidate. The
-        // candidate is retained only for this diagnostic; the function
-        // returns None below so no body is loaded under the wrong type.
-        if strict_class
-            && lookup.is_none()
-            && let Some((_, candidate)) = any_class_candidate
+                    },
+                ),
+            });
+        // Diagnostic + behavior fallback: when strict matching rejects
+        // every candidate but a same-name export of a different class
+        // exists, log the divergence and use the candidate. This is a
+        // CONCESSION to the engine's own permissive paths that we
+        // don't fully model — `VerifyImport`'s `Mesh`→`LodMesh` rename
+        // (xbe `0x38f60`), native `UClass` lookups via `GObjects` for
+        // engine intrinsics, etc. Without the fallback, the LIN file's
+        // sequential layout misaligns: removing the cursor advance
+        // for these (otherwise legitimate engine reads, just routed
+        // differently) leaves subsequent exports' bytes consumed
+        // partially when their `serial_offset` is reached. The
+        // wrong-class warning makes the divergence visible.
+        let any_name_candidate = linker_inner
+            .find_export_by_path(path_parts)
+            .or_else(|| linker_inner.find_export_by_name(object_name))
+            .filter(|(_, export)| {
+                let cn = export.class_name(&linker_inner);
+                !cn.ends_with("Property") && cn != "Function"
+            });
+        if strict_match.is_none()
+            && class_info.is_some()
+            && let Some((_, candidate)) = &any_name_candidate
             && let Some((expected_cn, expected_cp)) = class_info
         {
             let actual_cn = candidate.class_name(&linker_inner);
             let actual_cp = candidate.class_package(&linker_inner);
             tracing::warn!(
                 "lookup {full_name:?}: found name match with class {actual_cp}.{actual_cn} \
-                 but caller required {expected_cp}.{expected_cn}; returning None"
+                 but caller required {expected_cp}.{expected_cn}"
             );
         }
+        let lookup = strict_match.or(any_name_candidate);
 
         let Some((export_index, _)) = lookup else {
             drop(linker_inner);

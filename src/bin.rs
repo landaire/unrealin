@@ -150,16 +150,6 @@ enum AudioCmd {
         /// testing.
         #[arg(long)]
         sample_rate: Option<u32>,
-        /// Forensic / experimental: reset ADPCM state to
-        /// (0,0,0,0) every N blocks (block = 1440 frames
-        /// stereo / 720 bytes mono per the QEMU plugin trace of
-        /// `sub_198600`). Tested 1/3/5/10 against
-        /// `Music_Birmanie.SS2` — every cadence introduced
-        /// audible clicks at boundaries without removing the
-        /// late-stream blow-out, suggesting the engine does NOT
-        /// periodic-reset. Kept here for future debugging.
-        #[arg(long)]
-        reset_every: Option<usize>,
     },
 
     /// List the banks in a multi-bank `.SS2` container (e.g.
@@ -184,6 +174,21 @@ enum AudioCmd {
         #[arg(long)]
         bank: Option<usize>,
         /// Override sample rate (default 36000 Hz, see DecodeLs2).
+        #[arg(long)]
+        sample_rate: Option<u32>,
+    },
+
+    /// Decode a codec_id=8 (proto/demo DARE-IMA) file. The kernel is
+    /// a first-pass static port of the retail XBE's sub_1942e0;
+    /// expect artifacts until trace validation is available.
+    DecodeCodec8 {
+        /// Input file (proto/demo `.SS2` / `.LS2` starting with
+        /// `08 00 00 00`).
+        input: PathBuf,
+        /// Output `.wav` path.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Override the header's sample rate.
         #[arg(long)]
         sample_rate: Option<u32>,
     },
@@ -274,8 +279,7 @@ fn run_audio(cmd: AudioCmd) -> Result<()> {
             input,
             output,
             sample_rate,
-            reset_every,
-        } => run_decode_ls2(input, output, sample_rate, reset_every),
+        } => run_decode_ls2(input, output, sample_rate),
         AudioCmd::Ss2List { input } => run_ss2_list(input),
         AudioCmd::Ss2Extract {
             input,
@@ -283,7 +287,38 @@ fn run_audio(cmd: AudioCmd) -> Result<()> {
             bank,
             sample_rate,
         } => run_ss2_extract(input, output, bank, sample_rate),
+        AudioCmd::DecodeCodec8 {
+            input,
+            output,
+            sample_rate,
+        } => run_decode_codec8(input, output, sample_rate),
     }
+}
+
+fn run_decode_codec8(
+    input: PathBuf,
+    output: PathBuf,
+    sample_rate_override: Option<u32>,
+) -> Result<()> {
+    let bytes = std::fs::read(&input)
+        .wrap_err_with(|| format!("failed to read {input:?}"))?;
+    if !audio::codec8::is_codec8(&bytes) {
+        return Err(eyre!(
+            "{input:?}: not a codec_id=8 file (first byte != 0x08)"
+        ));
+    }
+    let (header, pcm) = audio::codec8::decode_file(&bytes)
+        .map_err(|e| eyre!("{input:?}: decode failed: {e}"))?;
+    let channels = header.channels.max(1) as u16;
+    let rate = sample_rate_override.unwrap_or(header.sample_rate);
+    write_wav(&output, &pcm, channels, rate)?;
+    eprintln!(
+        "decoded {input:?}: rate={} ch={} samples={} -> {output:?}",
+        rate,
+        channels,
+        pcm.len() / channels as usize
+    );
+    Ok(())
 }
 
 fn write_wav(path: &PathBuf, pcm: &[i16], channels: u16, sample_rate: u32) -> Result<()> {
@@ -306,7 +341,6 @@ fn run_decode_ls2(
     input: PathBuf,
     output: PathBuf,
     sample_rate: Option<u32>,
-    reset_every: Option<usize>,
 ) -> Result<()> {
     let file_bytes = std::fs::read(&input)
         .wrap_err_with(|| format!("failed to read {input:?}"))?;
@@ -317,11 +351,8 @@ fn run_decode_ls2(
     }
     let header = audio::codec3::parse_header(&file_bytes)
         .map_err(|e| eyre!("{input:?}: {e}"))?;
-    let pcm = match reset_every {
-        Some(n) => audio::codec3::decode_file_with_reset(&file_bytes, n),
-        None => audio::codec3::decode_file(&file_bytes),
-    }
-    .map_err(|e| eyre!("{input:?}: decode failed: {e}"))?;
+    let pcm = audio::codec3::decode_file(&file_bytes)
+        .map_err(|e| eyre!("{input:?}: decode failed: {e}"))?;
 
     let rate = sample_rate.unwrap_or_else(|| audio::codec3::header_sample_rate(&header));
     // mode=0: continuous mono (one ADPCM stream end-to-end).
@@ -347,29 +378,20 @@ fn run_ss2_list(input: PathBuf) -> Result<()> {
     }
     let banks = audio::ss2::list(&file_bytes)
         .map_err(|e| eyre!("{input:?}: {e}"))?;
-    println!("{}: {} bank(s)", input.display(), banks.len());
-    println!("idx  offset      size       payload    bp        tracks  mode");
+    println!("{}: {} bank(s); each bank has {} interleaved voices",
+             input.display(), banks.len(), audio::ss2::VOICES_PER_BANK);
+    println!("idx  offset      size       voice0_bp v0_tr v0_mode  voice1_bp v1_tr v1_mode  voice2_bp v2_tr v2_mode");
     for bank in &banks {
-        let header = audio::codec3::parse_header(bank.main_payload).ok();
-        match header {
-            Some(h) => println!(
-                "{:3}  {:#010x}  {:>10}  {:>10}  {:.5}   {:>4}    {}",
-                bank.index,
-                bank.offset,
-                bank.bank_size,
-                bank.main_payload.len(),
-                h.block_period,
-                h.track_count,
-                h.mode,
-            ),
-            None => println!(
-                "{:3}  {:#010x}  {:>10}  {:>10}  (header parse failed)",
-                bank.index,
-                bank.offset,
-                bank.bank_size,
-                bank.main_payload.len(),
-            ),
+        print!("{:3}  {:#010x}  {:>10}", bank.index, bank.offset, bank.bank_size);
+        for voice in 0..audio::ss2::VOICES_PER_BANK {
+            let stream = bank.voice_stream(voice);
+            match audio::codec3::parse_header(&stream) {
+                Ok(h) => print!("  {:.5} {:>5} {:>5}",
+                                h.block_period, h.track_count, h.mode),
+                Err(_) => print!("  (parse failed)"),
+            }
         }
+        println!();
     }
     Ok(())
 }
@@ -408,19 +430,22 @@ fn run_ss2_extract(
     };
 
     for bank in selected {
-        let header = audio::codec3::parse_header(bank.main_payload)
-            .map_err(|e| eyre!("bank {} header: {e}", bank.index))?;
-        let pcm = audio::codec3::decode_file(bank.main_payload)
-            .map_err(|e| eyre!("bank {} decode: {e}", bank.index))?;
-        let rate = sample_rate.unwrap_or_else(|| audio::codec3::header_sample_rate(&header));
-        let channels: u16 = if header.mode == 1 { 2 } else { 1 };
-        let frame_count = pcm.len() / channels as usize;
-        let out_path = out_dir.join(format!("{:03}.wav", bank.index));
-        write_wav(&out_path, &pcm, channels, rate)?;
-        eprintln!(
-            "bank {:3} @ {:#010x} ({} bytes): mode={} tracks={} -> {frame_count} frames @ {rate} Hz ({}ch) -> {out_path:?}",
-            bank.index, bank.offset, bank.main_payload.len(), header.mode, header.track_count, channels,
-        );
+        for voice in 0..audio::ss2::VOICES_PER_BANK {
+            let stream = bank.voice_stream(voice);
+            let header = audio::codec3::parse_header(&stream)
+                .map_err(|e| eyre!("bank {} voice {} header: {e}", bank.index, voice))?;
+            let pcm = audio::codec3::decode_file(&stream)
+                .map_err(|e| eyre!("bank {} voice {} decode: {e}", bank.index, voice))?;
+            let rate = sample_rate.unwrap_or_else(|| audio::codec3::header_sample_rate(&header));
+            let channels: u16 = if header.mode == 1 { 2 } else { 1 };
+            let frame_count = pcm.len() / channels as usize;
+            let out_path = out_dir.join(format!("{:03}_v{}.wav", bank.index, voice));
+            write_wav(&out_path, &pcm, channels, rate)?;
+            eprintln!(
+                "bank {:3} voice {} @ {:#010x} ({} bytes ADPCM): mode={} tracks={} -> {frame_count} frames @ {rate} Hz ({}ch) -> {out_path:?}",
+                bank.index, voice, bank.offset, stream.len(), header.mode, header.track_count, channels,
+            );
+        }
     }
     Ok(())
 }
@@ -494,13 +519,20 @@ fn run_sm2_list_sounds(input: PathBuf, map: String) -> Result<()> {
         .wrap_err("failed to parse sound table")?;
     println!("{} sounds in map {:?}:", entries.len(), map);
     println!(
-        "{:>5}  {:>8}  {:>14}  {:>10}  {:>5}  {:>3}  {}",
-        "idx", "seq_id", "file_offset", "length", "rate", "ch", "source_name"
+        "{:>5}  {:>8}  {:>14}  {:>10}  {:>5}  {:>3}  {:>4}  {}",
+        "idx", "seq_id", "file_offset", "length", "rate", "ch", "ls2", "source_name"
     );
     for (i, e) in entries.iter().enumerate() {
         println!(
-            "{:>5}  {:>#8x}  {:>#14x}  {:>#10x}  {:>5}  {:>3}  {}",
-            i, e.seq_id, e.file_offset, e.length, e.sample_rate, e.channels, e.source_name
+            "{:>5}  {:>#8x}  {:>#14x}  {:>#10x}  {:>5}  {:>3}  {:>4}  {}",
+            i,
+            e.seq_id,
+            e.file_offset,
+            e.length,
+            e.sample_rate,
+            e.channels,
+            if e.is_ls2_redirect { "yes" } else { "" },
+            e.source_name
         );
     }
     Ok(())
@@ -723,48 +755,37 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .wrap_err_with(|| format!("failed to create output dir {:?}", &output_dir))?;
 
-    // Effective per-source cap = `len - 1` when the LIN ends in the
-    // engine's `0xb3` sentinel byte, else no cap. The engine reads
-    // every byte of each `.lin` except the trailing sentinel; capping
-    // there makes the LinReader's auto-advance fire on the engine's
-    // logical end-of-data so cross-source reads (009_ChineseEmbassy
-    // variant common spilling into session) land cleanly on the next
-    // source's first byte.
-    fn effective_cap(data: &[u8]) -> Option<u64> {
-        if data.last().copied() == Some(0xb3) {
-            Some((data.len() - 1) as u64)
+    // For each source, capture both the bytes and the engine's logical
+    // end-of-data: for `.lin` files that's the `uncompressed_data_size`
+    // declared in metadata block 0 (decompressed buffers run a few
+    // bytes past it as zlib alignment padding ending in `0xb3`); for
+    // raw bin paths it's just the file length. Capping `LinReader` at
+    // the declared size makes cross-source auto-advance land on the
+    // next source's first byte without consuming the alignment tail
+    // (009_ChineseEmbassy variant otherwise mis-shifts session.lin's
+    // first PKG_TAG read).
+    fn read_source(
+        path: &std::path::Path,
+        raw: &mut &[u8],
+    ) -> color_eyre::Result<(Vec<u8>, u64)> {
+        let is_lin = path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(|s| s.eq_ignore_ascii_case("lin"))
+            .unwrap_or(false);
+        if is_lin {
+            let (d, declared) =
+                unrealin::de::decompress_linear_file_with_size::<LittleEndian, _>(raw)?;
+            Ok((d, declared as u64))
         } else {
-            None
+            let bytes = raw.to_vec();
+            let len = bytes.len() as u64;
+            Ok((bytes, len))
         }
     }
 
-    let (common_lin_data, common_size) = if args
-        .common_lin
-        .extension()
-        .as_ref()
-        .map(|ext| ext.to_str().unwrap() == "lin")
-        .unwrap_or_default()
-    {
-        let d = unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_common_file)?;
-        let cap = effective_cap(&d);
-        (d, cap)
-    } else {
-        (raw_common_file.to_vec(), None)
-    };
-
-    let (map_lin_data, map_size) = if args
-        .map_lin
-        .extension()
-        .as_ref()
-        .map(|ext| ext.to_str().unwrap() == "lin")
-        .unwrap_or_default()
-    {
-        let d = unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_map_file)?;
-        let cap = effective_cap(&d);
-        (d, cap)
-    } else {
-        (raw_map_file.to_vec(), None)
-    };
+    let (common_lin_data, common_size) = read_source(&args.common_lin, &mut raw_common_file)?;
+    let (map_lin_data, map_size) = read_source(&args.map_lin, &mut raw_map_file)?;
 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
@@ -815,23 +836,19 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         // does (warmup classes, MyLevel cascade, post-MyLevel
         // PreBeginPlay/BeginPlay/PostBeginPlay/SetInitialState
         // bytecode walk). No recorded trace required.
-        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
-            vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
-            vec![common_size, map_size],
-        );
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
+            unrealin::de::LinSource::new(Cursor::new(common_lin_data), common_size),
+            unrealin::de::LinSource::new(Cursor::new(map_lin_data), map_size),
+        ]);
         if let Err(e) = lin_decoder.decode_unchecked() {
             eprintln!("decode_unchecked partial (continuing with captured): {e}");
         }
         let consumed = lin_decoder.source_consumed_per_source();
         let caps = [common_size, map_size];
-        let sizes = [common_lin_data_len, map_lin_data_len];
         for (i, c) in consumed.iter().enumerate() {
-            let cap = caps.get(i).and_then(|v| *v).unwrap_or(sizes[i] as u64);
+            let cap = caps[i];
             let pct = if cap == 0 { 0.0 } else { (*c as f64 / cap as f64) * 100.0 };
-            eprintln!(
-                "source {i} consumed={c:#x}/{:#x} ({pct:.1}%)",
-                cap,
-            );
+            eprintln!("source {i} consumed={c:#x}/{cap:#x} ({pct:.1}%)");
         }
         merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());

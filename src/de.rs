@@ -468,7 +468,12 @@ where
 
     let serial_size = reader.read_packed_int()?;
 
-    assert!(serial_size >= 0, "serial_size cannot be negative");
+    if serial_size < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("serial_size cannot be negative ({serial_size})"),
+        ));
+    }
 
     let serial_offset = if serial_size > 0 {
         reader.read_packed_int()?
@@ -530,13 +535,16 @@ where
     E: ByteOrder,
 {
     let tag = reader.read_u32::<E>()?;
-    assert_eq!(
-        tag,
-        PKG_TAG,
-        "Invalid linker tag (source_consumed={:#X}, trace_ops_consumed={})",
-        reader.source_consumed(),
-        reader.trace_ops_consumed()
-    );
+    if tag != PKG_TAG {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Invalid linker tag {tag:#X} (expected {PKG_TAG:#X}, source_consumed={:#X}, trace_ops_consumed={})",
+                reader.source_consumed(),
+                reader.trace_ops_consumed()
+            ),
+        ));
+    }
 
     let version = reader.read_u32::<E>()?;
     println!("Version: {:#X}", version);
@@ -839,6 +847,26 @@ fn compute_expected_source_per_op(metadata: &ExportedData) -> Option<Vec<u64>> {
     Some(out)
 }
 
+/// One `.lin` input to `LinearFileDecoder::new_unchecked`. Bundles the
+/// reader with the engine's logical end-of-data so the decoder can cap
+/// `LinReader` exactly at the LIN format's `uncompressed_data_size` —
+/// the declared size from metadata block 0, not the decompressed
+/// buffer's `len()`. Decompressed `.lin` buffers run a few bytes past
+/// the engine's EOF (zlib alignment padding consistently ending in a
+/// `0xb3` sentinel); reading those bytes shifts subsequent cross-source
+/// reads by 1..31 bytes and surfaces as `Invalid linker tag` panics on
+/// the 009_ChineseEmbassy variant.
+pub struct LinSource<R> {
+    pub reader: R,
+    pub declared_size: u64,
+}
+
+impl<R> LinSource<R> {
+    pub fn new(reader: R, declared_size: u64) -> Self {
+        Self { reader, declared_size }
+    }
+}
+
 impl<E, R> LinearFileDecoder<E, LinReader<R>>
 where
     E: ByteOrder,
@@ -849,29 +877,24 @@ where
     /// correct deserialization to consume each source linearly. Source 0
     /// is treated as `common.lin` (file_table holder), sources 1+ have
     /// their LIN-format prefix consumed up front and contribute their
-    /// package name to `secondary_package_names`.
-    pub fn new_unchecked(sources: Vec<R>) -> Self {
-        Self::new_unchecked_with_limits(sources, Vec::new())
-    }
-
-    /// Like `new_unchecked` but each source is capped at the
-    /// corresponding `limits[i]` bytes (`None` = no limit). The cap is
-    /// the LIN format's `uncompressed_data_size` declaration; honoring
-    /// it ensures `LinReader`'s cross-source auto-advance lands on the
-    /// secondary's first byte cleanly, rather than after the zlib
-    /// alignment tail (which always ends in `0xb3` and otherwise shifts
-    /// the next u32 read by 1..6 bytes — surfacing as
-    /// `Invalid linker tag` panics on the 009_ChineseEmbassy variant).
-    pub fn new_unchecked_with_limits(mut sources: Vec<R>, limits: Vec<Option<u64>>) -> Self {
-        let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
-        let mut prefix_lengths: Vec<u64> = vec![0; sources.len()];
-        for (i, source) in sources.iter_mut().enumerate().skip(1) {
+    /// package name to `secondary_package_names`. Each `LinSource`'s
+    /// `declared_size` caps the corresponding `LinReader`.
+    pub fn new_unchecked(sources: Vec<LinSource<R>>) -> Self {
+        let mut readers: Vec<R> = Vec::with_capacity(sources.len());
+        let mut declared_sizes: Vec<u64> = Vec::with_capacity(sources.len());
+        for src in sources {
+            readers.push(src.reader);
+            declared_sizes.push(src.declared_size);
+        }
+        let mut secondary_package_names = Vec::with_capacity(readers.len().saturating_sub(1));
+        let mut prefix_lengths: Vec<u64> = vec![0; readers.len()];
+        for (i, source) in readers.iter_mut().enumerate().skip(1) {
             let (name, prefix_len) = skip_secondary_lin_header::<E, _>(source)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
             prefix_lengths[i] = prefix_len;
         }
-        let mut combined = LinReader::new_multi(sources);
+        let mut combined = LinReader::new_multi(readers);
         // Seed each secondary's `source_consumed_per_source` to the
         // post-prefix Cursor position. The prefix bytes were consumed
         // by `skip_secondary_lin_header` directly on the Cursor (not
@@ -882,8 +905,8 @@ where
         for (i, &len) in prefix_lengths.iter().enumerate() {
             combined.seed_source_consumed(i, len);
         }
-        for (i, limit) in limits.iter().enumerate() {
-            combined.set_source_size_limit(i, *limit);
+        for (i, &size) in declared_sizes.iter().enumerate() {
+            combined.set_source_size_limit(i, Some(size));
         }
         Self {
             sources: VecDeque::from(vec![combined]),
@@ -1121,7 +1144,6 @@ where
         self.runtime.load_object_by_full_name_with_class::<E, _>(
             &target,
             Some(("Level", "Engine")),
-            true,
             crate::runtime::LoadKind::Load,
             reader,
         )?;
@@ -1139,6 +1161,61 @@ where
         // payload as a load advances our cursor in lockstep.
         let reader = self.sources.front_mut().expect("no file reader available?");
         crate::object::internal::post_cascade::run_post_cascade::<E, _>(
+            &secondary,
+            &mut self.runtime,
+            reader,
+        )?;
+
+        // Stage 3: replay the post-MyLevel engine class loads. The
+        // engine's `LoadMap` (xbe `0x81860`) triggers these via
+        // GameInfo/PlayerController/Pawn spawn + their script chains
+        // running after the actor BeginPlay loop. We can't simulate
+        // the spawn end-to-end, but the explicit class-umbrella loads
+        // here cover the same byte ranges the engine reads at this
+        // phase (verified per-map against recorded traces:
+        // `EchelonCharacter.ESam (Class)` umbrella + its CDO sound
+        // refs sit at the end of session.lin, and our cascade
+        // otherwise stops at `ENPC.proAnims`).
+        let reader = self.sources.front_mut().expect("no file reader available?");
+        for full_name in crate::engine_warmup::POST_LEVEL_LOAD_LIST {
+            self.runtime.begin_load();
+            let load_res = self.runtime.load_object_by_full_name::<E, _>(
+                full_name,
+                crate::runtime::LoadKind::Load,
+                reader,
+            );
+            let drain_res = self.runtime.end_load::<E, _>(reader);
+            match (load_res, drain_res) {
+                (Ok(_), Ok(())) => {}
+                (Err(e), _) | (_, Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    tracing::warn!(
+                        "Stage 3 post-level load hit EOF at {full_name}: {e}; continuing"
+                    );
+                }
+                (Err(e), _) => {
+                    tracing::warn!(
+                        "Stage 3 post-level load failed for {full_name}: {e}; continuing"
+                    );
+                }
+                (Ok(_), Err(e)) => {
+                    tracing::warn!(
+                        "Stage 3 drain after {full_name} failed: {e}; continuing"
+                    );
+                }
+            }
+        }
+
+        // Stage 4: post-spawn actor-driven sound preloads. SC's xbe
+        // `sub_271e0` runs after `LoadMap`'s actor BeginPlay loop and
+        // iterates the level's actors a second time, calling
+        // `StaticLoadObject(Engine.Sound, "<pkg>.<name><level_suffix>")`
+        // for each actor that matches one of five `IsA` tests
+        // (EPawn / EWeapon / ESensor / EchelonLevelInfo /
+        // StaticMeshActor). This populates the trailing `Engine`
+        // sub-package at session.lin's tail — the last 789 bytes our
+        // post-MyLevel cascade otherwise misses.
+        let reader = self.sources.front_mut().expect("no file reader available?");
+        crate::object::internal::post_cascade::run_post_spawn_actor_loads::<E, _>(
             &secondary,
             &mut self.runtime,
             reader,
@@ -1181,7 +1258,6 @@ where
                 self.runtime.load_object_by_full_name_with_class::<E, _>(
                     target,
                     Some(("Level", "Engine")),
-                    true,
                     crate::runtime::LoadKind::Load,
                     reader,
                 )?;
@@ -1312,11 +1388,30 @@ pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<
         }
     }
 
+    if reader
+        .seek(SeekFrom::Start(header.export_offset as u64))
+        .is_err()
+    {
+        return Some(RawPackage {
+            header,
+            names,
+            imports,
+            exports: Vec::new(),
+        });
+    }
+    let mut exports = Vec::with_capacity(header.export_count as usize);
+    for _ in 0..header.export_count as usize {
+        match read_export::<E, _>(&mut reader) {
+            Ok(e) => exports.push(e),
+            Err(_) => break,
+        }
+    }
+
     Some(RawPackage {
         header,
         names,
         imports,
-        exports: Vec::new(),
+        exports,
     })
 }
 
