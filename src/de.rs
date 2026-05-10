@@ -952,7 +952,7 @@ where
                 present_packages: metadata
                     .file_load_order
                     .iter()
-                    .filter_map(|p| package_name_from_path(p))
+                    .filter_map(|p| package_name_from_path(p).map(|n| n.to_lowercase()))
                     .collect(),
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
@@ -1047,14 +1047,19 @@ where
     /// byte-identical across the SC NTSC build.
     pub fn decode_unchecked(&mut self) -> io::Result<()> {
         self.read_lin_header()?;
-        self.runtime.present_packages.extend(
-            crate::engine_warmup::COMMON_LIN_PACKAGES
-                .iter()
-                .map(|s| s.to_string()),
-        );
-        self.runtime
-            .present_packages
-            .extend(self.secondary_package_names.iter().cloned());
+        // `read_lin_header` already populated `present_packages` from
+        // common.lin's `file_table` — every package that ships in
+        // common.lin and every secondary `.lin` (Maps/, StaticMeshes/,
+        // Animations/, Sounds/, System/) is named there. Mirrors how
+        // SC's `GetPackageLinker` (xbe `0x39da0`) resolves package
+        // names against the underlying file system + LinkerCache —
+        // file_table membership IS the engine's "this package
+        // physically exists" signal.
+        //
+        // (The previous hardcoded `COMMON_LIN_PACKAGES` list and the
+        // `discover_secondary_package_names` PKG_TAG window scan
+        // were both subsets of what the file_table already provides;
+        // removed in favour of trusting the engine-faithful source.)
 
         // Stage 1: replay the pre-MyLevel warmup against source 0. Each
         // call is idempotent — duplicates that the cascade already
@@ -1225,7 +1230,11 @@ where
                 // hardcoded warmup list is treated as an engine intrinsic
                 // and skipped — leaving its header bytes in the source
                 // unread, which then misaligns subsequent reads.
-                self.runtime.present_packages.insert(pkg);
+                //
+                // Stored lowercase to match UE2 FName case-insensitive
+                // equality (file_table has e.g. `Sounds\Water.uax` but
+                // package imports reference it as `water`).
+                self.runtime.present_packages.insert(pkg.to_lowercase());
             }
         }
 
@@ -1244,82 +1253,13 @@ where
 
 }
 
-/// Walk a decompressed secondary `.lin` (= `<map>.lin`) and collect
-/// the top-level package names referenced by every package physically
-/// in the source. Used to seed `runtime.present_packages` for the
-/// unchecked decode path: the engine's `verify_imports` cascade
-/// fires `GetPackageLinker(name)` for each top-level import, and we
-/// need to know which of those names actually resolve to a package
-/// in our `.lin` (vs an engine intrinsic that has no on-disk body).
-///
-/// The secondary `.lin` has no manifest beyond its single-name
-/// LIN-format prefix, so we discover packages by:
-///
-///   1. Skipping the LIN-format prefix (`u32 load_address +
-///      packed_int name_len + ANSI name`).
-///   2. Sliding a 4-byte window across the rest of the data looking
-///      for `PKG_TAG` (`0x9E2A83C1` LE).
-///   3. For each candidate offset, attempting to parse a package
-///      header. If the version field is `0x110064` (SC's
-///      `Ver=0x64`, `LicenseeVer=0x11`) and `name_count`,
-///      `name_offset`, `import_count`, `import_offset` all stay
-///      within the source bounds, treat it as a real package and
-///      parse its names + imports.
-///   4. For each import with `package_index == 0` (top-level), look
-///      up `object_name` in the package's names table. That name is
-///      the imported package's name.
-///   5. Return the union of all such names.
-///
-/// Some returned names are already in `COMMON_LIN_PACKAGES` (the
-/// engine's `verify_imports` is called on every linker, common.lin
-/// and map.lin alike). Adding them again is a no-op since
-/// `present_packages` is a `HashSet`.
-pub fn discover_secondary_package_names(data: &[u8]) -> Vec<String> {
-    use std::collections::HashSet;
-    use std::io::Cursor;
-
-    let mut cursor = Cursor::new(data);
-    if skip_secondary_lin_header::<byteorder::LittleEndian, _>(&mut cursor).is_err() {
-        return Vec::new();
-    }
-    let prefix_end = cursor.position() as usize;
-
-    let mut pkg_offsets: Vec<usize> = Vec::new();
-    if data.len() >= prefix_end + 4 {
-        for i in prefix_end..data.len() - 4 {
-            if data[i] == 0xc1
-                && data[i + 1] == 0x83
-                && data[i + 2] == 0x2a
-                && data[i + 3] == 0x9e
-            {
-                pkg_offsets.push(i);
-            }
-        }
-    }
-
-    let mut names: HashSet<String> = HashSet::new();
-    for &off in &pkg_offsets {
-        if let Some(pkg) = try_parse_package_at::<byteorder::LittleEndian>(data, off) {
-            for imp in &pkg.imports {
-                if imp.package_index == 0 {
-                    if let Some(n) = pkg.names.get(imp.object_name as usize) {
-                        if !n.name.is_empty() {
-                            names.insert(n.name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    names.into_iter().collect()
-}
-
-
 /// Try to parse a UE2 package header starting at `data[offset]`.
 /// Returns `None` if the bytes don't look like a valid SC package
-/// header (wrong version, out-of-bounds offsets, etc.). Used by
-/// `discover_secondary_package_names` to filter false-positive
-/// PKG_TAG byte matches from real package starts.
+/// header (wrong version, out-of-bounds offsets, etc.). Used by the
+/// merge-time `scan_tail_packages` diagnostic to label unread-tail
+/// PKG_TAG byte matches with the package's first non-`None` name —
+/// purely for warning messages, never for cascade-routing decisions
+/// (those go through common.lin's file_table).
 pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
     use crate::reader::LinReader;
     use std::io::Cursor;

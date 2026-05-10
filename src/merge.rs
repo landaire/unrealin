@@ -386,14 +386,6 @@ fn run_pair(
     let common_data_for_tail = common_data.clone();
     let session_data_for_tail = session_data.clone();
 
-    // Match bin.rs: scan map.lin for package names referenced as
-    // top-level imports, so `verify_imports` knows to attempt
-    // `load_linker` on map-specific packages (Camera, clock, etc.)
-    // not in COMMON_LIN_PACKAGES. Without this, cascade reads
-    // misalign and downstream parsers (script bytecode, StaticMesh
-    // index buffers) hit garbage bytes.
-    let extra_packages = crate::de::discover_secondary_package_names(&session_data);
-
     if let Some(trace_path) = trace_path {
         // Trace-driven path: the recorded I/O ops drive `LinReader`'s
         // every read and seek, so the cascade order matches the engine's
@@ -421,9 +413,6 @@ fn run_pair(
             vec![Cursor::new(common_data), Cursor::new(session_data)],
             metadata,
         );
-        for name in extra_packages {
-            decoder.runtime_mut().present_packages.insert(name);
-        }
 
         let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
             if let Err(e) = decoder.decode_linear_file() {
@@ -432,31 +421,62 @@ fn run_pair(
         }))
         .is_err();
 
-        warn_unread_tails(
-            common_path,
-            session_path,
-            &common_data_for_tail,
-            &session_data_for_tail,
-            &decoder.source_consumed_per_source(),
-        );
+        // Trace match validation. The trace is keyed by session
+        // basename ("menu", "1_2_1DefenseMinistry", etc.), which
+        // matches across builds even when the underlying `.lin` bytes
+        // differ. Replaying a retail trace against proto/demo data
+        // panics early (CheckedLinReader's IO-op assertions fire on
+        // size/byte mismatches), leaving common.lin barely touched
+        // and session.lin completely unread. Detect that and fall
+        // back to the unchecked path which doesn't depend on the
+        // recorded ops.
+        let consumed = decoder.source_consumed_per_source();
+        let common_consumed = consumed.first().copied().unwrap_or(0);
+        let session_consumed = consumed.get(1).copied().unwrap_or(0);
+        let trace_mismatch = panicked
+            || session_consumed == 0
+            || common_consumed * 2 < common_data_for_tail.len() as u64;
+        if trace_mismatch {
+            tracing::warn!(
+                ?session_path, ?trace_path,
+                "trace replay incomplete (panicked={panicked} common={common_consumed}/{} session={session_consumed}/{}); falling back to --no-checked",
+                common_data_for_tail.len(),
+                session_data_for_tail.len(),
+            );
+            // Drop the failed decoder and retry in unchecked mode.
+            // Re-decompress the .lin sources since the previous
+            // decoder consumed them.
+        } else {
+            warn_unread_tails(
+                common_path,
+                session_path,
+                &common_data_for_tail,
+                &session_data_for_tail,
+                &decoder.source_consumed_per_source(),
+            );
 
-        let linkers = decoder.linkers().clone();
-        let filenames = decoder.package_filenames();
-        return Ok(PairOutcome {
-            linkers,
-            filenames,
-            panicked,
-            used_trace: true,
-        });
+            let linkers = decoder.linkers().clone();
+            let filenames = decoder.package_filenames();
+            return Ok(PairOutcome {
+                linkers,
+                filenames,
+                panicked,
+                used_trace: true,
+            });
+        }
     }
 
+    // Unchecked path: fresh data sources from the (already-decompressed)
+    // tail clones. The trace path above moved its own copies of the
+    // data into Cursors, so we use the tail clones here. Re-clone for
+    // tail diagnostics so the Cursor's move into `new_unchecked_with_limits`
+    // doesn't invalidate the post-decode unread-tail dump.
+    let common_for_decode = common_data_for_tail.clone();
+    let session_for_decode = session_data_for_tail.clone();
     let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
-        vec![Cursor::new(common_data), Cursor::new(session_data)],
+        vec![Cursor::new(common_for_decode), Cursor::new(session_for_decode)],
         vec![common_size, session_size],
     );
-    for name in extra_packages {
-        decoder.runtime_mut().present_packages.insert(name);
-    }
 
     let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
         if let Err(e) = decoder.decode_unchecked() {
@@ -925,6 +945,7 @@ mod tests {
             },
             reader_offset: 0,
             source_start: 0,
+            source_idx: 0,
             captured: CapturedBytes {
                 bodies: bodies.into_iter().collect(),
             },

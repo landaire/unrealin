@@ -772,19 +772,15 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
 
     if args.no_checked {
         // Discover the map.lin's referenced top-level package names
-        // before the LinReader's Cursor is positioned past the prefix.
-        // These get folded into `runtime.present_packages` so
-        // `verify_imports` knows to attempt `load_linker` on
-        // map-specific packages like `Camera`/`clock` that the engine
-        // pulls in via cascade but aren't in `COMMON_LIN_PACKAGES`.
-        let extra_packages = unrealin::de::discover_secondary_package_names(&map_lin_data);
+        // `read_lin_header` populates `runtime.present_packages` from
+        // common.lin's file_table, which lists every package that
+        // ships in this build (common.lin contents AND every
+        // secondary `.lin`'s contents). No PKG_TAG-window scan
+        // needed.
         let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
             vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
             vec![common_size, map_size],
         );
-        for name in extra_packages {
-            lin_decoder.runtime_mut().present_packages.insert(name);
-        }
         // Tolerate late-cascade EOFs: the cascade may walk into
         // misaligned territory after consuming all of common.lin (e.g.
         // a verify_imports call for a secondary-package import whose

@@ -1,29 +1,23 @@
 //! Engine bootstrap data for `--no-checked` decode.
 //!
+//! [`ENGINE_CLASS_WARMUP`] is the menu trace's
+//! `object_load_order[..None.MyLevel]` (153 entries). Mirrors the
+//! explicit `StaticLoadObject` calls in SC's `game_main`
+//! (xbe `0x1F370`) before it triggers the level load via
+//! `StaticLoadObject(MapName, ULevel, ...)`. Some entries are
+//! loaded explicitly by `game_main`; the rest cascade in via
+//! property-tag and class-ref deserialization as the explicit ones
+//! go through `verify_imports`. We don't distinguish those cases —
+//! `load_object_by_full_name` is idempotent (no-op on the second
+//! call), so iterating the full list reproduces the exact engine
+//! state regardless of which entries were "really" explicit.
+//!
 //! `common.lin` is byte-identical across every map in the SC NTSC
-//! build (verified via md5), so the engine's pre-MyLevel object load
-//! sequence is the same for menu, training, abattoir, etc. The two
-//! tables here are derived from a recorded menu I/O trace and reused
-//! verbatim for any map.
-//!
-//! - [`ENGINE_CLASS_WARMUP`] is the menu trace's
-//!   `object_load_order[..None.MyLevel]` (153 entries). Mirrors the
-//!   explicit `StaticLoadObject` calls in SC's `game_main`
-//!   (xbe `0x1F370`) before it triggers the level load via
-//!   `StaticLoadObject(MapName, ULevel, ...)`. Some entries are
-//!   loaded explicitly by `game_main`; the rest cascade in via
-//!   property-tag and class-ref deserialization as the explicit ones
-//!   go through `verify_imports`. We don't distinguish those cases —
-//!   `load_object_by_full_name` is idempotent (no-op on the second
-//!   call), so iterating the full list reproduces the exact engine
-//!   state regardless of which entries were "really" explicit.
-//!
-//! - [`COMMON_LIN_PACKAGES`] is the menu trace's `file_load_order`
-//!   minus the secondary (`menu`) entry, mapped to package basenames
-//!   (110 entries). It's the set of packages physically present in
-//!   `common.lin`; used to seed `runtime.present_packages` so the
-//!   `verify_imports` cascade only recurses into packages that
-//!   actually live in our sources.
+//! build (verified via md5), so this same warmup applies to every
+//! map. For non-NTSC builds (proto, demo) the entries that aren't
+//! present resolve to `None` and the cascade continues; the
+//! file_table-derived `present_packages` filter handles which
+//! warmup-induced linker loads are physically realisable.
 
 pub(crate) const ENGINE_CLASS_WARMUP: &[&str] = &[
     "Engine.GameEngine",
@@ -179,117 +173,4 @@ pub(crate) const ENGINE_CLASS_WARMUP: &[&str] = &[
     "EchelonHUD.EMenuHUD",
     "EchelonHUD.EMainMenuHUD",
     "ESam.SamAMesh",
-];
-
-pub(crate) const COMMON_LIN_PACKAGES: &[&str] = &[
-    "Engine",
-    "Core",
-    "Echelon",
-    "HUD",
-    "FisherFoley",
-    "CommonMusic",
-    "EchelonEffect",
-    "ETexSFX",
-    "2-1_CIA_tex",
-    "generic_shaders",
-    "LightGenTex",
-    "5_1_PresidentialPalace_tex",
-    "1_2_Def_Ministry_tex",
-    "EGO_Tex",
-    "ETexIngredient",
-    "1-1_TBilisi_tex",
-    "1_3_CaspianOilRefinery_TEX",
-    "EMeshSFX",
-    "EGO_OBJ",
-    "ETexCharacter",
-    "4_3_Chinese_Embassy_tex",
-    "4_3_0_Chinese_Embassy_tex",
-    "4_3_2_Chinese_Embassy_tex",
-    "water",
-    "DestroyableObjet",
-    "FisherVoice",
-    "FisherEquipement",
-    "GunCommon",
-    "Interface",
-    "Electronic",
-    "Dog",
-    "Lambert",
-    "EMeshIngredient",
-    "EMeshCharacter",
-    "2_2_1_Kalinatek_tex",
-    "LightGenOBJ",
-    "ETexRenderer",
-    "Door",
-    "GenericLife",
-    "Special",
-    "ThrowObject",
-    "Generic_Mesh",
-    "generic_obj",
-    "0_0_Training_tex",
-    "3_4_Severo_tex",
-    "EchelonIngredient",
-    "Gun",
-    "EchelonGameObject",
-    "ESkelIngredients",
-    "Metal",
-    "ETrk",
-    "2-1_cia_obj",
-    "EchelonHUD",
-    "ESam",
-    "2_2_Kalinatek_tex",
-    "2_2_Kalinatek_OBJ",
-    "EchelonPattern",
-    "S3_4_2Voice",
-    "S3_4_3Voice",
-    "S2_2_2Voice",
-    "S2_1_2Voice",
-    "S5_1_2Voice",
-    "S3_2_2Voice",
-    "S4_2_2Voice",
-    "S4_1_1Voice",
-    "S1_2_1Voice",
-    "S1_1_2Voice",
-    "S0_0_3Voice",
-    "S3_2_1Voice",
-    "S4_2_1Voice",
-    "S1_3_3Voice",
-    "S0_0_2Voice",
-    "S4_3_2Voice",
-    "S1_1_1Voice",
-    "S2_2_1Voice",
-    "S4_3_1Voice",
-    "S5_1_1Voice",
-    "S4_1_2Voice",
-    "S2_1_1Voice",
-    "S1_1_0Voice",
-    "S2_2_3Voice",
-    "S2_1_0Voice",
-    "S1_2_2Voice",
-    "Vehicules",
-    "S1_1_Voice",
-    "S2_1_Voice",
-    "S4_3_0Voice",
-    "S1_3_2Voice",
-    "Machine",
-    "FireSound",
-    "SoundEvent",
-    "S0_0_Voice",
-    "S4_3_Voice",
-    "S4_2_Voice",
-    "S5_1_Voice",
-    "XboxLive",
-    "EchelonCharacter",
-    "GearCommon",
-    "ENPC",
-    "Exspetsnaz",
-    "GeorgianSoldier",
-    "RussianMafioso",
-    "GeorgianCop",
-    "EliteForce",
-    "CiaSecurity",
-    "CiaAgentMale",
-    "ChineseSoldier",
-    "EFemale",
-    "EDog",
-    "GeorgianPalaceGuard",
 ];

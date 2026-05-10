@@ -41,12 +41,16 @@ pub struct UnrealRuntime {
     /// The game's per-package reader treats this as the position the reader is at
     /// once construction is finished, so we seed `Linker::reader_offset` with it.
     pub package_file_size: HashMap<String, u64>,
-    /// Set of package names that are physically present in our sources
-    /// (`common.lin` + `map.lin`). Derived from the QEMU-captured
-    /// `file_load_order`. Used to gate the `VerifyAllImports`-style cascade
-    /// in `load_linker`: imports may reference engine intrinsics or modules
+    /// Set of package names (LOWERCASED) that are physically present in
+    /// our sources. Derived from common.lin's `file_table` in unchecked
+    /// mode, from the QEMU-captured `file_load_order` in trace mode.
+    /// Used to gate the `VerifyAllImports`-style cascade in
+    /// `load_linker`: imports may reference engine intrinsics or modules
     /// not packed in this `.lin`, and trying to `load_linker` for one of
-    /// those would consume arbitrary bytes from the source as a fake header.
+    /// those would consume arbitrary bytes from the source as a fake
+    /// header. Stored lowercase to match UE2's `FName` case-insensitive
+    /// equality (the file_table ships `Water.uax`, `ENPC.ukx`, etc. but
+    /// imports reference `water`, `enpc`).
     pub present_packages: HashSet<String>,
     /// Mirror of UE2's `GObjLoaded`: every newly constructed object lands here so
     /// `end_load` can drain it in serial-offset order. That's the "random I/O ->
@@ -223,7 +227,7 @@ impl UnrealRuntime {
             // not packed in this `.lin`; calling load_linker for one of
             // those would consume arbitrary bytes from the source as a
             // fake package header.
-            if !self.present_packages.contains(&pkg_name) {
+            if !self.present_packages.contains(&pkg_name.to_lowercase()) {
                 continue;
             }
             // Some level-specific texture packages (e.g.
@@ -1030,7 +1034,7 @@ impl UnrealRuntime {
             let module = parts[0];
             if !module.is_empty()
                 && !self.linkers.contains_key(module)
-                && self.present_packages.contains(module)
+                && self.present_packages.contains(&module.to_lowercase())
             {
                 self.load_linker::<E, _>(module.to_owned(), reader)?;
             }

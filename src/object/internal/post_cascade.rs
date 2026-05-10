@@ -2,27 +2,49 @@
 //!
 //! UE2's `LoadMap` reads MyLevel synchronously, then runs game-init code
 //! that executes UnrealScript bytecode for each actor (`PreBeginPlay`,
-//! `BeginPlay`, `PostBeginPlay`). Those scripts call `StaticLoadObject`
-//! with literal asset names; the engine reads each named object's bytes
-//! at the underlying `.lin` cursor at the moment of the call. Because
-//! the LIN compactor lays bytes in linear engine-call order, the cursor
-//! advances correctly as each load fires.
+//! `BeginPlay`, `PostBeginPlay`, `SetInitialState`). Those scripts call
+//! `StaticLoadObject` / `DynamicLoadObject` with literal asset names;
+//! the engine reads each named object's bytes at the underlying `.lin`
+//! cursor at the moment of the call. Because the LIN compactor lays
+//! bytes in linear engine-call order, the cursor advances correctly as
+//! each load fires.
 //!
-//! Our static decoder doesn't execute scripts. Instead, after the
-//! MyLevel cascade ends and our cursor matches the engine's
-//! end-of-cascade position, we walk the parsed bytecode of each actor
-//! class's PreBeginPlay/BeginPlay/PostBeginPlay function, **iterating
-//! the lossless `Expr` tree in source order** (which is the engine's
-//! execution order for the linear-fall-through bytecode that drives
-//! these init paths). For every `StringConst` payload that shapes up
-//! as a UE2 asset path (`Pkg.Name`), we call `load_object_by_full_name`
-//! through the same path the engine's `StaticLoadObject` would take.
-//! The cursor advances per load; subsequent loads see the next bytes
-//! the engine was about to read.
+//! ## What this walker actually does (and doesn't)
 //!
-//! This is engine-faithful, not heuristic: we resolve the same asset
-//! names from the same bytecode the engine executes, in the same order,
-//! starting from the same cursor position.
+//! This is a **pattern-matching bytecode scanner, not an interpreter**.
+//! It does not execute scripts. It works by:
+//!
+//! 1. Iterating the parsed `Expr` tree in source order.
+//! 2. Recognizing the specific call shape `Token(FinalFunction)
+//!    Object(idx) ...args... EndFunctionParms` where `idx` resolves to
+//!    a function named `DynamicLoadObject` or `StaticLoadObject`.
+//! 3. Extracting the first `StringConst` payload from those calls and
+//!    calling `load_object_by_full_name` with it.
+//! 4. Recognizing one specific guard pattern — `if (instance_var ==
+//!    None)` compiled as `JumpIfNot Word(N) Native(119)
+//!    InstanceVariable Object NoObject EndFunctionParms` — and
+//!    skipping the conditional body when the actor's class CDO has a
+//!    non-null default for that variable.
+//!
+//! ## Known limits vs. engine semantics
+//!
+//! - Flat iteration assumes straight-line code. Branches/loops other
+//!   than the recognized `if (X == None)` pattern are walked as if
+//!   their bytecode unconditionally executes, which can over-trigger
+//!   loads relative to the engine.
+//! - Only `DynamicLoadObject` / `StaticLoadObject` are recognized as
+//!   load callsites. Loads through helper/wrapper functions or
+//!   delegates are missed.
+//! - The `if (X == None)` guard checks only class-CDO defaults; loads
+//!   gated by per-instance property tags (`Mesh = SkeletalMesh'X'`
+//!   set in the level editor on a specific actor) are not gated
+//!   because we don't parse actor instance bodies past the
+//!   variable-length `HAS_STACK` state frame.
+//! - The walker iterates each actor's class chain; the engine instead
+//!   resolves a single function via `FindFunctionChecked` and
+//!   `ProcessEvent`s it once per actor. For shared base classes our
+//!   walker visits the per-class bytecode once across the whole map,
+//!   the engine runs it once per instance.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
