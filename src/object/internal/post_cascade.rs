@@ -553,11 +553,21 @@ where
         return Ok(());
     };
 
-    // Find MyLevel.
+    // Find MyLevel with class=Engine.Level. Some maps (e.g. 2_1_0CIA,
+    // 2_1_2CIA) ship two `MyLevel` exports: the real ULevel (with the
+    // actors array) and a Package wrapper container. Without the class
+    // filter `find_export_by_name` returns the first match — which
+    // is the Package wrapper, leaving the actor walk empty and
+    // skipping ~17% of session.lin's bytes that the engine reads via
+    // the actors' PreBeginPlay/BeginPlay/PostBeginPlay scripts.
     let level_obj = {
         let linker = linker_rc.borrow();
-        let Some((level_idx, _)) = linker.find_export_by_name("MyLevel") else {
-            tracing::debug!("post_cascade: MyLevel export not found");
+        let Some((level_idx, _)) =
+            linker.find_export_by_name_and_class("MyLevel", "Level", "Engine")
+        else {
+            tracing::debug!(
+                "post_cascade: MyLevel export with class=Engine.Level not found"
+            );
             return Ok(());
         };
         linker.objects.get(&level_idx).cloned()
@@ -587,10 +597,23 @@ where
         secondary_package
     );
 
-    // For each actor, walk PreBeginPlay/BeginPlay/PostBeginPlay across
-    // its class chain. Cycle guard de-dupes the per-class walk so a
-    // shared base class only pays its bytecode-walk cost once.
-    let init_fns = ["PreBeginPlay", "BeginPlay", "PostBeginPlay"];
+    // For each actor, walk the engine-init function bytecode across
+    // its class chain. Mirrors SC's `LoadMap` (xbe `0x81860`), which
+    // calls these via `ProcessEvent` on every Level.Actors[] entry
+    // in order:
+    //   1. PreBeginPlay
+    //   2. BeginPlay
+    //   3. (vtable[0xcc] / [0xd0] — native, no script)
+    //   4. PostBeginPlay
+    //   5. (vtable[0xd4] — native)
+    //   6. SetInitialState
+    // Each script can call DynamicLoadObject(class'X', "Pkg.Name") to
+    // trigger an asset load; we walk the bytecode, recognize those
+    // calls, and forward them through `load_object_by_full_name` so
+    // the cursor advances in the same order the engine's. Cycle
+    // guard de-dupes the per-class walk so a shared base class only
+    // pays its bytecode-walk cost once.
+    let init_fns = ["PreBeginPlay", "BeginPlay", "PostBeginPlay", "SetInitialState"];
     let mut visited: HashSet<ClassLeafKey> = HashSet::new();
     for actor in &actors {
         let Some(class_obj) = class_of_actor(actor, runtime) else {
