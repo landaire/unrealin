@@ -716,37 +716,58 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .wrap_err_with(|| format!("failed to create output dir {:?}", &output_dir))?;
 
-    let common_lin_data = if args
+    // Effective per-source cap = `len - 1` when the LIN ends in the
+    // engine's `0xb3` sentinel byte, else no cap. The engine reads
+    // every byte of each `.lin` except the trailing sentinel; capping
+    // there makes the LinReader's auto-advance fire on the engine's
+    // logical end-of-data so cross-source reads (009_ChineseEmbassy
+    // variant common spilling into session) land cleanly on the next
+    // source's first byte.
+    fn effective_cap(data: &[u8]) -> Option<u64> {
+        if data.last().copied() == Some(0xb3) {
+            Some((data.len() - 1) as u64)
+        } else {
+            None
+        }
+    }
+
+    let (common_lin_data, common_size) = if args
         .common_lin
         .extension()
         .as_ref()
         .map(|ext| ext.to_str().unwrap() == "lin")
         .unwrap_or_default()
     {
-        unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_common_file)?
+        let d = unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_common_file)?;
+        let cap = effective_cap(&d);
+        (d, cap)
     } else {
-        raw_common_file.to_vec()
+        (raw_common_file.to_vec(), None)
     };
 
-    let map_lin_data = if args
+    let (map_lin_data, map_size) = if args
         .map_lin
         .extension()
         .as_ref()
         .map(|ext| ext.to_str().unwrap() == "lin")
         .unwrap_or_default()
     {
-        unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_map_file)?
+        let d = unrealin::de::decompress_linear_file::<LittleEndian, _>(&mut raw_map_file)?;
+        let cap = effective_cap(&d);
+        (d, cap)
     } else {
-        raw_map_file.to_vec()
+        (raw_map_file.to_vec(), None)
     };
 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
 
+    let common_lin_data_len = common_lin_data.len();
+    let map_lin_data_len = map_lin_data.len();
     eprintln!(
         "decompressed sizes: common.lin={:#x}, map.lin={:#x}",
-        common_lin_data.len(),
-        map_lin_data.len(),
+        common_lin_data_len,
+        map_lin_data_len,
     );
 
     if args.no_checked {
@@ -757,10 +778,10 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         // map-specific packages like `Camera`/`clock` that the engine
         // pulls in via cascade but aren't in `COMMON_LIN_PACKAGES`.
         let extra_packages = unrealin::de::discover_secondary_package_names(&map_lin_data);
-        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
-            Cursor::new(common_lin_data),
-            Cursor::new(map_lin_data),
-        ]);
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
+            vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
+            vec![common_size, map_size],
+        );
         for name in extra_packages {
             lin_decoder.runtime_mut().present_packages.insert(name);
         }
@@ -774,6 +795,17 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         // `write_packages` emits what we did get.
         if let Err(e) = lin_decoder.decode_unchecked() {
             eprintln!("decode_unchecked partial (continuing with captured): {e}");
+        }
+        let consumed = lin_decoder.source_consumed_per_source();
+        let caps = [common_size, map_size];
+        let sizes = [common_lin_data_len, map_lin_data_len];
+        for (i, c) in consumed.iter().enumerate() {
+            let cap = caps.get(i).and_then(|v| *v).unwrap_or(sizes[i] as u64);
+            let pct = if cap == 0 { 0.0 } else { (*c as f64 / cap as f64) * 100.0 };
+            eprintln!(
+                "source {i} consumed={c:#x}/{:#x} ({pct:.1}%)",
+                cap,
+            );
         }
         merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());

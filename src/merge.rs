@@ -147,6 +147,27 @@ fn read_and_decompress_lin(path: &Path) -> io::Result<Vec<u8>> {
     crate::de::decompress_linear_file::<LittleEndian, _>(&mut slice)
 }
 
+/// Effective cap for `LinReader`: every `.lin` ends in a `0xb3`
+/// sentinel byte that the engine never reads. Capping at `len - 1`
+/// (when present) makes the cross-source auto-advance fire on the
+/// engine's logical end-of-data, not after the sentinel.
+fn effective_cap(data: &[u8]) -> Option<u64> {
+    if data.last().copied() == Some(0xb3) {
+        Some((data.len() - 1) as u64)
+    } else {
+        None
+    }
+}
+
+fn read_and_decompress_lin_with_size(path: &Path) -> io::Result<(Vec<u8>, Option<u64>)> {
+    let f = std::fs::File::open(path)?;
+    let mmap = unsafe { memmap2::Mmap::map(&f)? };
+    let mut slice: &[u8] = &mmap[..];
+    let d = crate::de::decompress_linear_file::<LittleEndian, _>(&mut slice)?;
+    let cap = effective_cap(&d);
+    Ok((d, cap))
+}
+
 /// Index every `reads.json.*` (trace) under `trace_dir` by the session
 /// basename of its target map. The session basename is derived from the
 /// trace's own `file_load_order` last `Maps\\<level>.unr` entry, so the
@@ -357,8 +378,8 @@ fn run_pair(
     session_path: &Path,
     trace_path: Option<&Path>,
 ) -> io::Result<PairOutcome> {
-    let common_data = read_and_decompress_lin(common_path)?;
-    let session_data = read_and_decompress_lin(session_path)?;
+    let (common_data, common_size) = read_and_decompress_lin_with_size(common_path)?;
+    let (session_data, session_size) = read_and_decompress_lin_with_size(session_path)?;
     // Keep a copy of the decompressed bytes so `warn_unread_tails` can
     // hex-dump the start of any unread region after the decoder has
     // consumed the originals.
@@ -429,10 +450,10 @@ fn run_pair(
         });
     }
 
-    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
-        Cursor::new(common_data),
-        Cursor::new(session_data),
-    ]);
+    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
+        vec![Cursor::new(common_data), Cursor::new(session_data)],
+        vec![common_size, session_size],
+    );
     for name in extra_packages {
         decoder.runtime_mut().present_packages.insert(name);
     }

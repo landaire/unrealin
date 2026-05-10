@@ -172,12 +172,29 @@ pub struct LinReader<R> {
     /// `None.MyLevel`, which lives in the secondary `.lin`). The active
     /// source is `sources[current_source_idx]`.
     sources: Vec<R>,
+    /// Per-source effective length limit. `None` means "read until the
+    /// underlying source EOFs"; `Some(N)` caps the source at N bytes
+    /// (equal to the LIN format's `uncompressed_data_size` declaration).
+    /// Unchecked mode populates this so the auto-advance fires on the
+    /// engine's logical end-of-file rather than after the zlib
+    /// alignment tail. Trace mode leaves it `None` (the recorded I/O
+    /// ops drive byte counts directly).
+    source_size_limits: Vec<Option<u64>>,
     current_source_idx: usize,
     pos: u64,
     /// Total bytes consumed across all sources. `source_consumed_per_source`
     /// breaks this down per source for the EOF safety net.
     source_consumed: u64,
     source_consumed_per_source: Vec<u64>,
+    /// Per-source physical Cursor position. Updated on every read AND
+    /// on every seek (since `seek` propagates physically). Used by
+    /// `physical_position()` so `load_linker` can capture the package's
+    /// PKG_TAG offset before reading the header. Distinct from
+    /// `source_consumed_per_source` (a monotonic counter of bytes
+    /// consumed) — physical_pos can move backwards on cross-source
+    /// preloads (e.g. Stage-2 cascade triggering an ESam SkeletalMesh
+    /// preload back into common.lin).
+    source_phys_pos: Vec<u64>,
     /// Stack of capture buffers. Each `read` appends to the top frame.
     /// `push_capture` / `pop_capture` (the LinRead trait) wrap an
     /// export's deserialize so we can extract the exact bytes that
@@ -191,6 +208,10 @@ pub struct LinReader<R> {
     source_start: u64,
     /// Stack of `source_start` values to restore on `pop_linker`.
     source_start_stack: Vec<u64>,
+    /// Stack of `current_source_idx` values to restore on `pop_linker`.
+    /// Mirrors `source_start_stack`; a `push_linker` into a different
+    /// source pushes the previous idx so `pop_linker` can restore it.
+    source_idx_stack: Vec<usize>,
     version: u16,
     linker: Vec<RcLinker>,
 }
@@ -204,16 +225,45 @@ impl<R> LinReader<R> {
         let n = sources.len();
         LinReader {
             sources,
+            source_size_limits: vec![None; n],
             current_source_idx: 0,
             pos: 0,
             source_consumed: 0,
             source_consumed_per_source: vec![0; n],
+            source_phys_pos: vec![0; n],
             capture_stack: Vec::new(),
             source_start: 0,
             source_start_stack: Vec::new(),
+            source_idx_stack: Vec::new(),
             version: 0,
             linker: Default::default(),
         }
+    }
+
+    /// Cap source `idx` at `size` bytes. Once that many bytes have been
+    /// consumed from this source, the next `read` simulates EOF and
+    /// auto-advances. Pass `None` to clear a previously-set limit.
+    pub fn set_source_size_limit(&mut self, idx: usize, size: Option<u64>) {
+        if let Some(slot) = self.source_size_limits.get_mut(idx) {
+            *slot = size;
+        }
+    }
+
+    /// Initialize source `idx`'s "consumed" counter to a non-zero
+    /// starting value. Used after `skip_secondary_lin_header` has
+    /// advanced the underlying Cursor past a `.lin`'s LIN-format prefix
+    /// directly (bypassing LinReader): we need
+    /// `source_consumed_per_source[idx]` to match the Cursor's actual
+    /// physical position so `physical_position()` returns the right
+    /// PKG_TAG offset for `load_linker`.
+    pub fn seed_source_consumed(&mut self, idx: usize, value: u64) {
+        if let Some(slot) = self.source_consumed_per_source.get_mut(idx) {
+            *slot = value;
+        }
+        if let Some(slot) = self.source_phys_pos.get_mut(idx) {
+            *slot = value;
+        }
+        self.source_consumed += value;
     }
 
     pub fn source_consumed(&self) -> u64 {
@@ -233,12 +283,44 @@ impl<R> Read for LinReader<R>
 where
     R: Read,
 {
+    /// Read from the current source ONLY. Source switching is the
+    /// runtime's job (`switch_to_source` at known boundaries — typically
+    /// the Stage 2 MyLevel load). We do NOT auto-advance on EOF: each
+    /// `.lin` has its own engine reader, and silently spilling reads
+    /// from one file into another corrupts package boundaries. For the
+    /// 009_ChineseEmbassy variant whose `common.lin` is a 3.1 MB
+    /// prefix of the dominant 6.6 MB file, the engine simply stops
+    /// loading common.lin packages at the truncation point — the
+    /// trailing packages are loaded from session.lin via their own
+    /// cascade, which we trigger explicitly in `decode_unchecked`'s
+    /// Stage 2 with `switch_to_source(1)`.
+    ///
+    /// On per-source cap reached we return 0 bytes (EOF). Callers in
+    /// `verify_imports` and the warmup loop catch this as a graceful
+    /// "package not present in this source" signal.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let cur = self.current_source_idx;
-        let bytes_read = self.sources[cur].read(buf)?;
+        let consumed = self.source_consumed_per_source[cur];
+        let limit = self
+            .source_size_limits
+            .get(cur)
+            .copied()
+            .flatten()
+            .unwrap_or(u64::MAX);
+        let remaining = limit.saturating_sub(consumed);
+
+        if remaining == 0 {
+            return Ok(0);
+        }
+
+        // Cap the requested read to whatever's left under the per-source
+        // limit so we don't read past the LIN's declared end-of-data.
+        let cap = std::cmp::min(buf.len() as u64, remaining) as usize;
+        let bytes_read = self.sources[cur].read(&mut buf[..cap])?;
         self.pos += bytes_read as u64;
         self.source_consumed += bytes_read as u64;
         self.source_consumed_per_source[cur] += bytes_read as u64;
+        self.source_phys_pos[cur] += bytes_read as u64;
         if let Some(top) = self.capture_stack.last_mut() {
             top.extend_from_slice(&buf[..bytes_read]);
         }
@@ -652,6 +734,22 @@ pub trait LinRead: io::Read + io::Seek {
     /// for the typical SC layout where the level lives in the second
     /// `.lin`).
     fn switch_to_source(&mut self, _idx: usize) {}
+    /// Active source index. Used at `load_linker` time to record which
+    /// source the new linker's bytes live in, so subsequent
+    /// `push_linker` calls (during preloads triggered cross-source by
+    /// the Stage-2 cascade) can switch back to that source before
+    /// consuming the export body.
+    fn current_source_idx(&self) -> usize {
+        0
+    }
+    /// Active source's physical Cursor position. Equals the absolute
+    /// byte offset in the underlying decompressed `.lin` where the
+    /// next read will pull from. Used by `load_linker` to capture the
+    /// package's PKG_TAG offset before reading the header, so all
+    /// subsequent seeks (to `name_offset`, `import_offset`,
+    /// `export_offset`) can translate `source_start + virtual` to a
+    /// correct absolute physical position.
+    fn physical_position(&self) -> u64;
 }
 
 impl<R> LinRead for LinReader<R>
@@ -680,6 +778,14 @@ where
         if idx < self.sources.len() {
             self.current_source_idx = idx;
         }
+    }
+
+    fn current_source_idx(&self) -> usize {
+        self.current_source_idx
+    }
+
+    fn physical_position(&self) -> u64 {
+        self.source_phys_pos[self.current_source_idx]
     }
 
     fn push_linker(&mut self, linker: RcLinker) {
@@ -1001,5 +1107,13 @@ where
         if idx < self.sources.len() {
             self.current_source_idx = idx;
         }
+    }
+
+    fn current_source_idx(&self) -> usize {
+        self.current_source_idx
+    }
+
+    fn physical_position(&self) -> u64 {
+        self.source_consumed_per_source[self.current_source_idx]
     }
 }

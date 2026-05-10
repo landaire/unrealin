@@ -26,7 +26,7 @@ use crate::{
 };
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
-pub(crate) struct ImportIndex(usize);
+pub struct ImportIndex(usize);
 impl ImportIndex {
     pub fn from_raw(idx: i32) -> Self {
         assert!(idx < 0, "Invalid import index");
@@ -73,6 +73,15 @@ pub struct Linker {
     /// export's serial_offset) are translated by adding this when
     /// seeking the source.
     pub source_start: u64,
+    /// Index of the `.lin` source this package's bytes live in
+    /// (`0` = `common.lin`, `1` = `<map>.lin`). Captured at
+    /// `load_linker` time from the active `current_source_idx`. Used
+    /// by `push_linker` in unchecked mode to switch the active source
+    /// before reading this linker's export bodies — necessary when a
+    /// Stage-2 cascade running on src1 triggers a preload for an
+    /// export whose body is in src0 (e.g. `ESam.samBMesh` referenced
+    /// from `5_1_1_PresidentialPalace.MyLevel`'s actors).
+    pub source_idx: usize,
     pub captured: CapturedBytes,
 }
 
@@ -84,6 +93,7 @@ impl Linker {
             package,
             reader_offset: 0,
             source_start: 0,
+            source_idx: 0,
             captured: CapturedBytes::default(),
         }
     }
@@ -275,7 +285,7 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) struct Import {
+pub struct Import {
     pub class_package: i32,
     pub class_name: i32,
     pub package_index: i32,
@@ -632,6 +642,14 @@ where
     })
 }
 
+/// Decompress a `.lin` file and return its decompressed body
+/// truncated to `uncompressed_data_size` — the LIN format's declared
+/// content length stored in the first metadata zlib block. Bytes past
+/// that point are zlib block alignment padding (consistently ending in
+/// a `0xb3` sentinel) that the engine never consumes, and that, if
+/// included, corrupt cross-source continuation reads. (009_ChineseEmbassy's
+/// variant common.lin is the canary: its trailing 6-byte alignment chunk
+/// would shift session.lin's first PKG_TAG by one byte if read.)
 pub fn decompress_linear_file<E, R>(reader: &mut R) -> io::Result<Vec<u8>>
 where
     R: Read,
@@ -706,19 +724,52 @@ where
 
     // Don't truncate or pad: the LIN file's decompressed data blocks
     // (chunks 4..N) sum to slightly more than `uncompressed_data_size`
-    // due to zlib block alignment, but those trailing bytes ARE part
-    // of the engine's reader's data buffer. Verified against
-    // `splintercell.xbe.bndb`: the engine's compressed-file reader
-    // (`initialize_linear_loader` @ `0x1A2D0`) reads chunks 0..3 as
-    // metadata u32s and the rest as data. The texture_cache / VB / IB
-    // regions are allocated SEPARATELY via three independent
-    // `MmAllocateContiguousMemoryEx` calls (xbe `D3D_AllocContiguousMemory`
-    // @ `0x1F29A0`); they're NOT in the same buffer as the file
-    // data. So the engine has two truly independent readers; reads
-    // past `uncompressed_data_size` for one `.lin` shouldn't happen
-    // in a correct trace replay.
+    // due to zlib block alignment. Trace-driven mode replays exact
+    // recorded reads against the full buffer; unchecked mode applies
+    // its own per-source effective-size limit via `LinReader` so the
+    // cross-source auto-advance lands on the right byte boundary.
+    let _ = uncompressed_data_size;
     Ok(out_data)
 }
+
+/// Decompress a `.lin` and return both the bytes and the
+/// `uncompressed_data_size` declared in metadata block 0. Unchecked
+/// mode uses the declared size as each source's effective end so the
+/// LinReader's auto-advance lands on session.lin's first byte cleanly,
+/// without consuming the 0..6 byte zlib alignment tail (which always
+/// ends in a `0xb3` sentinel).
+pub fn decompress_linear_file_with_size<E, R>(reader: &mut R) -> io::Result<(Vec<u8>, u32)>
+where
+    R: Read,
+    E: ByteOrder,
+{
+    let mut out_data = Vec::new();
+    let uncompressed_data_size = {
+        let block = read_block::<E, _>(reader)?;
+        let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
+        let mut bytes = [0u8; 4];
+        std::io::copy(&mut zr, &mut Cursor::new(bytes.as_mut_slice()))?;
+        u32::from_le_bytes(bytes)
+    };
+    // Skip the remaining 3 metadata blocks.
+    for _ in 0..3 {
+        let block = read_block::<E, _>(reader)?;
+        let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
+        let mut bytes = [0u8; 4];
+        let _ = std::io::copy(&mut zr, &mut Cursor::new(bytes.as_mut_slice()));
+    }
+    loop {
+        let block = match read_block::<E, _>(reader) {
+            Ok(b) => b,
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        };
+        let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
+        std::io::copy(&mut zr, &mut out_data)?;
+    }
+    Ok((out_data, uncompressed_data_size))
+}
+
 
 pub struct LinearFileDecoder<E, R> {
     sources: VecDeque<R>,
@@ -799,14 +850,41 @@ where
     /// is treated as `common.lin` (file_table holder), sources 1+ have
     /// their LIN-format prefix consumed up front and contribute their
     /// package name to `secondary_package_names`.
-    pub fn new_unchecked(mut sources: Vec<R>) -> Self {
+    pub fn new_unchecked(sources: Vec<R>) -> Self {
+        Self::new_unchecked_with_limits(sources, Vec::new())
+    }
+
+    /// Like `new_unchecked` but each source is capped at the
+    /// corresponding `limits[i]` bytes (`None` = no limit). The cap is
+    /// the LIN format's `uncompressed_data_size` declaration; honoring
+    /// it ensures `LinReader`'s cross-source auto-advance lands on the
+    /// secondary's first byte cleanly, rather than after the zlib
+    /// alignment tail (which always ends in `0xb3` and otherwise shifts
+    /// the next u32 read by 1..6 bytes — surfacing as
+    /// `Invalid linker tag` panics on the 009_ChineseEmbassy variant).
+    pub fn new_unchecked_with_limits(mut sources: Vec<R>, limits: Vec<Option<u64>>) -> Self {
         let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
-        for source in sources.iter_mut().skip(1) {
-            let name = skip_secondary_lin_header::<E, _>(source)
+        let mut prefix_lengths: Vec<u64> = vec![0; sources.len()];
+        for (i, source) in sources.iter_mut().enumerate().skip(1) {
+            let (name, prefix_len) = skip_secondary_lin_header::<E, _>(source)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
+            prefix_lengths[i] = prefix_len;
         }
-        let combined = LinReader::new_multi(sources);
+        let mut combined = LinReader::new_multi(sources);
+        // Seed each secondary's `source_consumed_per_source` to the
+        // post-prefix Cursor position. The prefix bytes were consumed
+        // by `skip_secondary_lin_header` directly on the Cursor (not
+        // through the LinReader), so without this seeding the read /
+        // physical-position bookkeeping would be off by `prefix_len`
+        // bytes — surfacing as a wrong `pkg_source_start` when a
+        // package on this source is loaded.
+        for (i, &len) in prefix_lengths.iter().enumerate() {
+            combined.seed_source_consumed(i, len);
+        }
+        for (i, limit) in limits.iter().enumerate() {
+            combined.set_source_size_limit(i, *limit);
+        }
         Self {
             sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
@@ -851,7 +929,7 @@ where
         // etc.).
         let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
         for source in sources.iter_mut().skip(1) {
-            let name = skip_secondary_lin_header::<E, _>(source)
+            let (name, _prefix_len) = skip_secondary_lin_header::<E, _>(source)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
         }
@@ -981,15 +1059,36 @@ where
         // Stage 1: replay the pre-MyLevel warmup against source 0. Each
         // call is idempotent — duplicates that the cascade already
         // pulled in just no-op via `runtime.loaded_objects`.
+        //
+        // Tolerate `UnexpectedEof`: the 009_ChineseEmbassy variant's
+        // common.lin is a 3.1 MB prefix of the dominant 6.6 MB file
+        // (verified byte-identical for that prefix), so the cascade
+        // hits source EOF on packages whose bodies are only present
+        // in the dominant build. `verify_imports` already swallows EOF
+        // mid-cascade (returns Ok), but a top-level warmup call can
+        // still surface EOF when a body Preload reads past cap. In
+        // that case we log and continue to the next warmup item; the
+        // already-loaded linkers stay populated and Stage 2 picks up
+        // the remainder from session.lin.
         for object in crate::engine_warmup::ENGINE_CLASS_WARMUP {
             let reader = self.sources.front_mut().expect("no file reader available?");
             self.runtime.begin_load();
-            self.runtime.load_object_by_full_name::<E, _>(
+            let load_res = self.runtime.load_object_by_full_name::<E, _>(
                 object,
                 crate::runtime::LoadKind::Load,
                 reader,
-            )?;
-            self.runtime.end_load::<E, _>(reader)?;
+            );
+            let drain_res = self.runtime.end_load::<E, _>(reader);
+            match (load_res, drain_res) {
+                (Ok(_), Ok(())) => {}
+                (Err(e), _) | (_, Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    tracing::warn!(
+                        "Stage 1 warmup hit EOF at {object}: {e}; continuing"
+                    );
+                }
+                (Err(e), _) => return Err(e),
+                (Ok(_), Err(e)) => return Err(e),
+            }
         }
 
         // Stage 2: load `<secondary>.MyLevel` from source 1. The
@@ -1022,6 +1121,23 @@ where
             reader,
         )?;
         self.runtime.end_load::<E, _>(reader)?;
+
+        // Post-MyLevel script-driven asset loads. The cascade above
+        // covers everything reachable via property-tag refs from MyLevel,
+        // but the engine's runtime continues after `LoadMap` by executing
+        // each actor's PreBeginPlay/BeginPlay/PostBeginPlay UnrealScript
+        // bytecode. Those scripts call `StaticLoadObject(class'X', "Y")`
+        // with literal asset names — which the LIN compactor laid out
+        // immediately after the cascade's last byte, in the engine's
+        // exact call order. Walking the parsed bytecode of every actor
+        // class's init functions and triggering each `StringConst`
+        // payload as a load advances our cursor in lockstep.
+        let reader = self.sources.front_mut().expect("no file reader available?");
+        crate::object::internal::post_cascade::run_post_cascade::<E, _>(
+            &secondary,
+            &mut self.runtime,
+            reader,
+        )?;
 
         Ok(())
     }
@@ -1204,7 +1320,7 @@ pub fn discover_secondary_package_names(data: &[u8]) -> Vec<String> {
 /// header (wrong version, out-of-bounds offsets, etc.). Used by
 /// `discover_secondary_package_names` to filter false-positive
 /// PKG_TAG byte matches from real package starts.
-pub(crate) fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
+pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
     use crate::reader::LinReader;
     use std::io::Cursor;
 
@@ -1272,28 +1388,35 @@ pub(crate) fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> 
 /// `"menu"` for `menu.lin`, `"0_0_2_Training"` for the training
 /// map's `.lin`) so the bootstrap can route `None.MyLevel` to the
 /// right secondary package.
-fn skip_secondary_lin_header<E, R>(source: &mut R) -> io::Result<String>
+fn skip_secondary_lin_header<E, R>(source: &mut R) -> io::Result<(String, u64)>
 where
     E: ByteOrder,
     R: Read,
 {
+    let mut bytes_read: u64 = 0;
     let mut tmp = [0u8; 4];
     source.read_exact(&mut tmp)?; // load_address
+    bytes_read += 4;
     let mut byte = [0u8; 1];
     source.read_exact(&mut byte)?;
+    bytes_read += 1;
     let b0 = byte[0];
     let mut value: u32 = 0;
     if (b0 & 0x40) != 0 {
         source.read_exact(&mut byte)?;
+        bytes_read += 1;
         let b1 = byte[0];
         if (b1 & 0x80) != 0 {
             source.read_exact(&mut byte)?;
+            bytes_read += 1;
             let b2 = byte[0];
             if (b2 & 0x80) != 0 {
                 source.read_exact(&mut byte)?;
+                bytes_read += 1;
                 let b3 = byte[0];
                 if (b3 & 0x80) != 0 {
                     source.read_exact(&mut byte)?;
+                    bytes_read += 1;
                     value = byte[0] as u32;
                 }
                 value = (value << 7) + ((b3 & 0x7f) as u32);
@@ -1305,11 +1428,12 @@ where
     value = (value << 6) + ((b0 & 0x3f) as u32);
     let mut name_buf = vec![0u8; value as usize];
     source.read_exact(&mut name_buf)?;
+    bytes_read += value as u64;
     // Trim trailing NUL terminator from the ANSI name.
     if name_buf.last() == Some(&0) {
         name_buf.pop();
     }
-    Ok(String::from_utf8_lossy(&name_buf).into_owned())
+    Ok((String::from_utf8_lossy(&name_buf).into_owned(), bytes_read))
 }
 
 fn package_name_from_path(path: &str) -> Option<String> {

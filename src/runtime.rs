@@ -139,6 +139,7 @@ impl UnrealRuntime {
 
         let mut linker = Linker::new(expected_name.clone(), package);
         linker.source_start = pkg_source_start;
+        linker.source_idx = reader.current_source_idx();
         if let Some(size) = self.package_file_size.get(&expected_name) {
             linker.set_position(*size);
             debug!(
@@ -247,6 +248,18 @@ impl UnrealRuntime {
                     );
                     return Err(e);
                 }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    // Source exhausted (typical: 009_ChineseEmbassy's
+                    // truncated common.lin runs out of bytes mid-cascade).
+                    // The engine handles this by stopping the cascade for
+                    // this source — the missing packages are physically in
+                    // the secondary `.lin` and get loaded later via its own
+                    // cascade, triggered by the Stage 2 `MyLevel` load.
+                    tracing::warn!(
+                        "stopping verify_imports cascade at {pkg_name}: source exhausted (truncated common.lin)"
+                    );
+                    return Ok(());
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -274,6 +287,48 @@ impl UnrealRuntime {
 
     fn linker(&self, name: &str) -> Option<RcLinker> {
         self.linkers.get(name).map(Rc::clone)
+    }
+
+    /// Resolve a packed `raw_index` to an already-loaded object without
+    /// triggering any IO. Mirrors the lookup half of
+    /// `load_object_by_raw_index` but skips construction/queue/preload —
+    /// useful for post-cascade introspection where reading new bytes
+    /// would misalign the linear cursor.
+    pub fn find_loaded_object_by_raw_index(
+        &self,
+        raw_index: i32,
+        owning_linker: &RcLinker,
+    ) -> Option<RcUnrealObject> {
+        if raw_index > 0 {
+            // Export in the owning linker.
+            let l = owning_linker.borrow();
+            let idx = crate::de::ExportIndex::from_raw(raw_index);
+            l.objects.get(&idx).cloned()
+        } else if raw_index < 0 {
+            // Import — resolve via the import's owning package and name.
+            let l = owning_linker.borrow();
+            let imp_idx = crate::de::ImportIndex::from_raw(raw_index);
+            let imp = l.find_import_by_index(imp_idx)?;
+            let imp_full = imp.full_name(&l, imp_idx);
+            // Walk the dot path through linkers.
+            let parts: Vec<&str> = imp_full.split('.').collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            let module = parts[0];
+            let leaf = parts.last().copied()?;
+            drop(l);
+            let target_linker = self
+                .linkers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(module))
+                .map(|(_, v)| v.clone())?;
+            let tl = target_linker.borrow();
+            let (export_idx, _) = tl.find_export_by_name(leaf)?;
+            tl.objects.get(&export_idx).cloned()
+        } else {
+            None
+        }
     }
 
     fn find_object(&self, name: &str) -> Option<RcUnrealObject> {
@@ -447,6 +502,46 @@ impl UnrealRuntime {
             if std::env::var("UNREALIN_PRELOAD_RANGES").is_ok() {
                 eprintln!("PRELOAD_FAIL {preload_full_name}: {e}");
             }
+            // Cross-source cleanup: in unchecked mode our LinReader
+            // models the (common.lin, session.lin) pair as a single
+            // sequential stream while the engine has independent
+            // FArchives per .lin. A Stage-2 actor body deserialize
+            // (running on src1) that triggers a Preload of a
+            // common.lin export reads bytes from the wrong source —
+            // surfacing as `ULodMesh TArray count negative`,
+            // `ExprToken: 79`, etc. Discard the partial capture, mark
+            // the object loaded so the cascade doesn't retry, restore
+            // reader state, and return Ok so the rest of the cascade
+            // proceeds. The body is lost (won't re-emit), but most of
+            // the level cascade still completes — the alternative
+            // (propagating the error) aborts everything.
+            tracing::warn!(
+                "skipping preload of {preload_full_name}: {e}; continuing cascade"
+            );
+            let _ = reader.pop_capture();
+            self.objects_full_loading.remove(&pointer_value);
+            self.loaded_objects.insert(pointer_value);
+            obj.borrow_mut().base_object_mut().loaded();
+            // Best-effort: try to advance the source cursor to
+            // serial_offset + serial_size so subsequent sequential
+            // reads land at the next export's natural start. If the
+            // body was on the active source and partially read, we
+            // need to skip the remainder; if cross-source, the active
+            // source's cursor wasn't where the engine had it anyway,
+            // but advancing by the missing bytes keeps total
+            // consumed-bytes in line with what the engine consumed
+            // (across both sources combined).
+            let cur_pos = reader.stream_position().unwrap_or(saved_pos);
+            let target_end = export.serial_offset() + export.serial_size() as u64;
+            if cur_pos < target_end {
+                let missing = (target_end - cur_pos) as usize;
+                let mut buf = vec![0u8; missing];
+                let _ = reader.cheat(&mut buf);
+            }
+            reader.seek(SeekFrom::Start(saved_pos))?;
+            reader.pop_linker();
+            self.preload_stack.pop();
+            return Ok(());
         }
         result?;
         // Diagnostic: when set, log per-source byte ranges consumed by
