@@ -227,12 +227,18 @@ impl DeserializeUnrealObject for Object {
         }
 
         if self.concrete_object_kind() != UObjectKind::Class {
-            // Resolve this instance's class so the tag loop can dispatch
-            // SerializeItem on `tag.name`-matched property children. Falls
-            // back to an empty chain (which collapses to the legacy cheat
-            // path) when the class isn't an export of this linker; cross-
-            // package class lookup can be added once the local-class case
-            // is solid.
+            // Resolve this instance's class so the tag loop can
+            // dispatch SerializeItem on `tag.name`-matched property
+            // children. `load_object_by_raw_index` handles both
+            // cases: export class (positive class_index, this linker)
+            // and import class (negative, walks to the linker that
+            // owns the class). Returns None only when the class is a
+            // native UClass we don't model (resolved via the engine's
+            // `StaticFindObject` C++ table) — those collapse to an
+            // empty chain and the tag loop falls through to the
+            // engine's `SerializeTaggedProperties` skip-on-mismatch
+            // (cheat tag.size bytes). Same behavior as the engine
+            // when the property dispatch can't resolve.
             let class_obj = resolve_instance_class::<E, _>(self, runtime, linker, reader)?;
             let properties = match class_obj.as_ref() {
                 Some(c) => serialize_item::collect_struct_properties(c),

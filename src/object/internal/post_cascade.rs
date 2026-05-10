@@ -47,15 +47,8 @@
 //!   the engine runs it once per instance.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::io;
 use std::rc::Rc;
-
-/// Pointer-pair used as a cycle key for `walk_class_chain`. Hashing via
-/// the raw vtable thin pointer alone would dedupe shared-base classes
-/// across leaves; we want each (class, leaf) combination to be visited
-/// once because conditional CDO checks evaluate against the leaf class.
-type ClassLeafKey = (*const (), *const ());
 
 use byteorder::ByteOrder;
 
@@ -441,12 +434,12 @@ fn find_function_by_name(struct_obj: &RcUnrealObject, name: &str) -> Option<RcUn
 /// produces when the override calls `Super.<fn_name>()` — but we walk
 /// super manually too in case the override doesn't call super, since the
 /// flat-iteration walker doesn't recurse into `FinalFunction` calls.
-/// Cache hits make duplicates harmless.
+/// Loads are idempotent via `runtime.loaded_objects` so duplicate walks
+/// from different actors of the same class are no-ops.
 fn walk_class_chain<E, R>(
     class_obj: &RcUnrealObject,
     leaf_class: &RcUnrealObject,
     fn_names: &[&str],
-    visited: &mut HashSet<ClassLeafKey>,
     runtime: &mut UnrealRuntime,
     reader: &mut R,
 ) -> io::Result<WalkOutcome>
@@ -454,18 +447,6 @@ where
     E: ByteOrder,
     R: LinRead,
 {
-    // Cycle guard keyed by `(class, leaf)`: each combination is walked
-    // once because conditional CDO checks evaluate against the leaf
-    // class chain, and the same shared base class can produce different
-    // outcomes for two different leaves.
-    let key: ClassLeafKey = (
-        Rc::as_ptr(class_obj) as *const (),
-        Rc::as_ptr(leaf_class) as *const (),
-    );
-    if !visited.insert(key) {
-        return Ok(WalkOutcome::Continue);
-    }
-
     // Resolve super-class via Field.super_field on this class. We need
     // to release the borrow before recursing.
     let super_obj = {
@@ -482,7 +463,6 @@ where
             &super_obj,
             leaf_class,
             fn_names,
-            visited,
             runtime,
             reader,
         )? == WalkOutcome::Aborted
@@ -632,11 +612,13 @@ where
     // Each script can call DynamicLoadObject(class'X', "Pkg.Name") to
     // trigger an asset load; we walk the bytecode, recognize those
     // calls, and forward them through `load_object_by_full_name` so
-    // the cursor advances in the same order the engine's. Cycle
-    // guard de-dupes the per-class walk so a shared base class only
-    // pays its bytecode-walk cost once.
+    // the cursor advances in the same order the engine's.
+    //
+    // No per-class dedupe: the engine ProcessEvents each actor
+    // individually, so we walk per-actor too. Loads are idempotent
+    // via `runtime.loaded_objects`, so duplicate walks of the same
+    // class chain are no-ops on the second pass through.
     let init_fns = ["PreBeginPlay", "BeginPlay", "PostBeginPlay", "SetInitialState"];
-    let mut visited: HashSet<ClassLeafKey> = HashSet::new();
     for actor in &actors {
         let Some(class_obj) = class_of_actor(actor, runtime) else {
             continue;
@@ -645,7 +627,6 @@ where
             &class_obj,
             &class_obj,
             &init_fns,
-            &mut visited,
             runtime,
             reader,
         )? == WalkOutcome::Aborted
