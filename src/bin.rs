@@ -196,12 +196,15 @@ struct ExtractArgs {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Skip trace verification. Use this for `.lin` pairs we don't have
-    /// a recorded I/O trace for (typical case: any map other than the
-    /// menu replay we recorded `reads.json` against). Bootstrap loads
-    /// only `MyLevel` and lets the dependency cascade pick up the rest.
+    /// Replay a recorded I/O trace (a QEMU-plugin `reads.json`) instead
+    /// of running the engine-faithful unchecked decoder. Trace mode
+    /// exists as a development oracle — it asserts our reader's bytes
+    /// match the engine's exact recorded ops, so it's useful for
+    /// validating new stubs against ground truth. NOT for production
+    /// extraction: traces are bound to the specific build they were
+    /// recorded against (data-mismatched traces fail loudly).
     #[arg(long)]
-    no_checked: bool,
+    checked: Option<PathBuf>,
 
     /// Common `.lin` (file_table holder).
     common_lin: PathBuf,
@@ -219,10 +222,14 @@ struct MergeArgs {
     /// Game root containing the `LMaps/` directory.
     game_dir: PathBuf,
 
-    /// Directory containing recorded I/O traces (`reads.json.<...>.bak`
-    /// or `reads.json` itself). Each pair is matched by session
-    /// basename or `<map_dir>_<basename>`. Pairs without a trace fall
-    /// back to `decode_unchecked`. Defaults to the current working dir.
+    /// Directory containing recorded I/O traces (`reads.json.<...>.bak`).
+    /// Pairs are matched by session basename. Trace mode is a
+    /// development oracle: it asserts our reader matches recorded
+    /// engine I/O ops, useful for validating new stubs. Each trace is
+    /// bound to the specific build it was recorded against; if the
+    /// trace doesn't match the data (panics, panicked or under-
+    /// consumes), the pair falls back to the unchecked decode.
+    /// Default: no trace dir — every pair runs unchecked.
     #[arg(long)]
     trace_dir: Option<PathBuf>,
 }
@@ -770,25 +777,48 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         map_lin_data_len,
     );
 
-    if args.no_checked {
-        // Discover the map.lin's referenced top-level package names
-        // `read_lin_header` populates `runtime.present_packages` from
-        // common.lin's file_table, which lists every package that
-        // ships in this build (common.lin contents AND every
-        // secondary `.lin`'s contents). No PKG_TAG-window scan
-        // needed.
+    if let Some(trace_path) = args.checked.as_ref() {
+        let reader = BufReader::new(
+            std::fs::File::open(trace_path).wrap_err_with(|| format!("failed to open {trace_path:?}"))?,
+        );
+        let mut metadata: ExportedData = serde_json::from_reader(reader)
+            .wrap_err_with(|| format!("failed to parse {trace_path:?}"))?;
+        metadata
+            .file_reads
+            .iter_mut()
+            .for_each(|(_k, v)| v.reverse());
+
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+            vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
+            metadata,
+        );
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = lin_decoder.decode_linear_file() {
+                eprintln!("decode_linear_file err: {e}");
+            }
+        }));
+        eprintln!(
+            "trace ops consumed={} remaining={} ({:.1}%)",
+            lin_decoder.trace_ops_consumed(),
+            lin_decoder.trace_ops_remaining(),
+            (lin_decoder.trace_ops_consumed() as f64
+                / (lin_decoder.trace_ops_consumed() as f64
+                    + lin_decoder.trace_ops_remaining() as f64).max(1.0))
+                * 100.0,
+        );
+        merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+        let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
+        stats.print_summary(20);
+    } else {
+        // Default: engine-faithful unchecked decode. Drives the
+        // cascade through the same logic the engine's `LoadMap`
+        // does (warmup classes, MyLevel cascade, post-MyLevel
+        // PreBeginPlay/BeginPlay/PostBeginPlay/SetInitialState
+        // bytecode walk). No recorded trace required.
         let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_with_limits(
             vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
             vec![common_size, map_size],
         );
-        // Tolerate late-cascade EOFs: the cascade may walk into
-        // misaligned territory after consuming all of common.lin (e.g.
-        // a verify_imports call for a secondary-package import whose
-        // header position drifts from the engine's cumulative reads).
-        // Anything captured up to that point is still useful — every
-        // texture body that was preloaded before the failure makes it
-        // into the linkers' `captured.bodies`. Log and continue so
-        // `write_packages` emits what we did get.
         if let Err(e) = lin_decoder.decode_unchecked() {
             eprintln!("decode_unchecked partial (continuing with captured): {e}");
         }
@@ -816,38 +846,6 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
                 );
             }
         }
-    } else {
-        let reader = BufReader::new(
-            std::fs::File::open("reads.json").wrap_err("failed to open reads.json")?,
-        );
-        let mut metadata: ExportedData = serde_json::from_reader(reader)
-            .wrap_err("failed to parse reads.json")?;
-        metadata
-            .file_reads
-            .iter_mut()
-            .for_each(|(_k, v)| v.reverse());
-
-        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
-            vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
-            metadata,
-        );
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Err(e) = lin_decoder.decode_linear_file() {
-                eprintln!("decode_linear_file err: {e}");
-            }
-        }));
-        eprintln!(
-            "trace ops consumed={} remaining={} ({:.1}%)",
-            lin_decoder.trace_ops_consumed(),
-            lin_decoder.trace_ops_remaining(),
-            (lin_decoder.trace_ops_consumed() as f64
-                / (lin_decoder.trace_ops_consumed() as f64
-                    + lin_decoder.trace_ops_remaining() as f64).max(1.0))
-                * 100.0,
-        );
-        merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
-        let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
-        stats.print_summary(20);
     }
 
     Ok(())
@@ -861,11 +859,11 @@ fn run_merge_cmd(args: MergeArgs) -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .wrap_err_with(|| format!("failed to create output dir {output_dir:?}"))?;
 
-    let trace_dir = args
-        .trace_dir
-        .clone()
-        .or_else(|| std::env::current_dir().ok());
-    let report = merge::run_merge(&args.game_dir, &output_dir, trace_dir.as_deref())?;
+    // No auto trace_dir: traces are an opt-in development oracle
+    // (see ExtractArgs::checked). Pass `--trace-dir <dir>` explicitly
+    // to use one; default merges every pair via the engine-faithful
+    // unchecked decoder.
+    let report = merge::run_merge(&args.game_dir, &output_dir, args.trace_dir.as_deref())?;
     report.print_summary();
     Ok(())
 }
