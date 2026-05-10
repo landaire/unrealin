@@ -18,6 +18,24 @@ use crate::{
 
 type RcLinker = Rc<RefCell<Linker>>;
 
+/// Class names whose Rust stub is known to NOT match the engine's
+/// native `Serialize` byte count — typically because we have no stub
+/// at all and fall through to `UObject::Serialize` (tag loop), which
+/// terminates at the first `None` tag well before the body's actual
+/// end. For these classes we cheat the `serial_size - read_size`
+/// remainder after deserialize completes so the cursor lands on the
+/// next export's body. Each entry is a TODO to replace with a real
+/// per-class `Serialize` stub mirroring the engine.
+///
+/// Verified-complete stubs are NOT on this list: they consume exactly
+/// what the engine consumes (which is often less than `serial_size` —
+/// see `runtime::preload` short-read comment).
+const INCOMPLETE_STUB_CLASSES: &[&str] = &[
+    // ConvexVolume — UPrimitive::Serialize + native fields
+    // (Engine_demo `sub_103e3a40`). 8 bodies in 0_0_2_Training.
+    "ConvexVolume",
+];
+
 #[derive(Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct RcUnrealObjPointer(usize);
@@ -580,52 +598,54 @@ impl UnrealRuntime {
         match read_size.cmp(&export.serial_size()) {
             std::cmp::Ordering::Equal => {}
             std::cmp::Ordering::Less => {
-                // HEURISTIC (remove long-term): when a native class lacks a
-                // Rust stub the Object tag loop terminates at None well
-                // before serial_size; cheating the remainder keeps the
-                // source cursor aligned with the engine. The principled
-                // replacement is a real per-class stub that reads exactly
-                // the bytes the engine consumes (which is NOT necessarily
-                // `serial_size`: SC's `Preload` doesn't `SetStopper`, so
-                // `serial_size` is a stale authoring-time hint, not a
-                // bound).
+                // SC's `Preload` (xbe `0x38390`) does NOT bound reads
+                // by `serial_size` — it calls `Precache(serial_size)`
+                // which resolves to a no-op (`vtable[0x4c]` =
+                // `FArchive::Precache` tail-calls `sub_101071a0`, an
+                // immediate-return). So `serial_size` is a stale
+                // authoring-time hint, not a bound: short-reads are
+                // engine-faithful behavior when our stub matches what
+                // the engine's native `Serialize` actually reads
+                // (e.g. `samAMesh` in `012_PresidentialPalace`'s
+                // common.lin reads 0x1B802 / 0x1CA66 — engine also
+                // reads only 0x1B802).
                 //
-                // Skip the cheat for classes whose stubs are known
-                // complete: the under-read there means `serial_size` is
-                // stale (`samAMesh` in `012_PresidentialPalace`'s
-                // `common.lin` reads 0x1B802 but `serial_size` says
-                // 0x1CA66), and cheating the 0x1264 "missing" bytes
-                // would consume the start of the NEXT export's body and
-                // misalign every subsequent preload.
+                // Default behavior: trust the stub. Don't pad the
+                // cursor. The engine doesn't, either.
+                //
+                // The exception list below is for classes whose stub
+                // is known INCOMPLETE — pure UObject tag-loop fall-
+                // through with no native body parsing. For those, the
+                // engine reads N bytes after the tags but our
+                // deserialize doesn't, so the cursor needs to advance
+                // by `serial_size - read_size` to land on the next
+                // export's body. This is acknowledged technical debt:
+                // each entry here is a TODO to write a real stub.
                 let (full_name, class_name) = {
                     let l = linker.borrow();
                     (export.full_name(&l), export.class_name(&l).to_owned())
                 };
-                let stub_complete = matches!(
-                    class_name.as_str(),
-                    "SkeletalMesh"
-                );
                 let missing = export.serial_size() - read_size;
-                if stub_complete {
-                    debug!(
-                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, NOT cheating ({} stub trusts its own reads)",
-                        full_name,
-                        class_name,
-                        read_size,
-                        export.serial_size(),
-                        class_name,
-                    );
-                } else {
+                if INCOMPLETE_STUB_CLASSES.contains(&class_name.as_str()) {
                     tracing::warn!(
-                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, cheating {:#X} remainder",
+                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, cheating {:#X} remainder (TODO: write real {} stub)",
                         full_name,
                         class_name,
                         read_size,
                         export.serial_size(),
                         missing,
+                        class_name,
                     );
                     let mut buf = vec![0u8; missing];
                     reader.cheat(&mut buf)?;
+                } else {
+                    debug!(
+                        "preload short-read for {} (class {}): consumed {:#X}/{:#X}, trusting stub (engine also under-reads serial_size)",
+                        full_name,
+                        class_name,
+                        read_size,
+                        export.serial_size(),
+                    );
                 }
             }
             std::cmp::Ordering::Greater => {
