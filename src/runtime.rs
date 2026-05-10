@@ -1169,3 +1169,69 @@ impl UnrealRuntime {
         self.load_object_by_export_index::<E, _>(export_index, &linker, load_kind, reader)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sanity check: every entry in `INCOMPLETE_STUB_CLASSES` must be
+    /// a class name we don't have a working `Serialize` stub for.
+    /// This list is supposed to shrink to empty as stubs are
+    /// completed; new entries should land here only with a
+    /// documented engine-pseudo-c reference and a plan to remove
+    /// them.
+    #[test]
+    fn incomplete_stub_classes_is_documented() {
+        // Each entry is on the list because its stub falls through
+        // to UObject::Serialize (tag-loop only) and the engine reads
+        // additional native bytes after the tags. The doc comment on
+        // INCOMPLETE_STUB_CLASSES enumerates them with engine refs.
+        for entry in INCOMPLETE_STUB_CLASSES {
+            assert!(
+                !entry.is_empty(),
+                "INCOMPLETE_STUB_CLASSES contains an empty string"
+            );
+            // Names should be valid class identifiers — no dots, no
+            // whitespace, ASCII alphanumeric / underscore only.
+            for ch in entry.chars() {
+                assert!(
+                    ch.is_ascii_alphanumeric() || ch == '_',
+                    "invalid char {ch:?} in INCOMPLETE_STUB_CLASSES entry {entry:?}"
+                );
+            }
+        }
+    }
+
+    /// Regression test for the audit's recommendation 1: the default
+    /// behavior on short-read is to TRUST the stub (no cheat), not
+    /// to pad the cursor by `serial_size - read_size`. The list of
+    /// exceptions where we still cheat is `INCOMPLETE_STUB_CLASSES`.
+    /// Classes NOT on that list must use the trust path.
+    #[test]
+    fn complete_stubs_are_trusted_not_cheated() {
+        // Spot-check a handful of classes whose stubs we know to be
+        // engine-faithful. None of these should be on the cheat list.
+        for class_name in [
+            "SkeletalMesh",
+            "MeshAnimation",
+            "StaticMesh",
+            "StaticMeshInstance",
+            "Texture",
+            "Sound",
+            "Model",
+            "Polys",
+            "Cubemap",
+            "Palette",
+            "ESoftBody",
+            "LodMesh",
+            "Mesh",
+        ] {
+            assert!(
+                !INCOMPLETE_STUB_CLASSES.contains(&class_name),
+                "{class_name:?} is a verified-complete stub but appears on INCOMPLETE_STUB_CLASSES; \
+                 either remove it from the list (and let preload trust the stub) or document why \
+                 the stub is incomplete"
+            );
+        }
+    }
+}

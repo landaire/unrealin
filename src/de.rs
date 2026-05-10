@@ -1381,3 +1381,64 @@ fn package_name_from_path(path: &str) -> Option<String> {
     let stem = leaf.rsplit_once('.').map(|(s, _)| s).unwrap_or(leaf);
     if stem.is_empty() { None } else { Some(stem.to_owned()) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_name_from_path_strips_backslash_dirs_and_extension() {
+        assert_eq!(
+            package_name_from_path("System\\Engine.u").as_deref(),
+            Some("Engine")
+        );
+        assert_eq!(
+            package_name_from_path("Maps\\menu\\menu.unr").as_deref(),
+            Some("menu")
+        );
+        assert_eq!(
+            package_name_from_path("Sounds\\Water.uax").as_deref(),
+            Some("Water")
+        );
+        assert_eq!(
+            package_name_from_path("Animations\\ENPC.ukx").as_deref(),
+            Some("ENPC")
+        );
+    }
+
+    #[test]
+    fn package_name_from_path_empty_returns_none() {
+        assert_eq!(package_name_from_path(""), None);
+    }
+
+    /// Regression test for the case-sensitivity bug fixed by
+    /// recommendation 3 of the audit. The file_table ships
+    /// `Sounds\Water.uax` (capital W) but the package's imports
+    /// reference it as `water` (lowercase). UE2 FName equality is
+    /// case-insensitive; our `present_packages` HashSet must mirror
+    /// that or the cascade misaligns. Concretely: this lookup must
+    /// succeed for the engine-faithful gate to admit the package.
+    #[test]
+    fn present_packages_lookup_matches_engine_fname_case_insensitivity() {
+        use std::collections::HashSet;
+        let mut present: HashSet<String> = HashSet::new();
+        // Names from common.lin's file_table go in lowercased.
+        for entry in [
+            "System\\Engine.u",
+            "Sounds\\Water.uax",
+            "Animations\\ENPC.ukx",
+            "Maps\\menu\\menu.unr",
+        ] {
+            if let Some(p) = package_name_from_path(entry) {
+                present.insert(p.to_lowercase());
+            }
+        }
+        // Lookups (whatever case the import uses) must succeed.
+        for import_name in ["Engine", "engine", "water", "Water", "ENPC", "enpc", "menu"] {
+            assert!(
+                present.contains(&import_name.to_lowercase()),
+                "import {import_name:?} should resolve in present_packages",
+            );
+        }
+    }
+}

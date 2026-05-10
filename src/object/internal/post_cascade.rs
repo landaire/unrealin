@@ -638,3 +638,83 @@ where
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirrors UE2's `ProcessEvent` recognising `DynamicLoadObject`
+    /// and `StaticLoadObject` as the script-driven asset-load
+    /// callsites. These names come from the engine's compiled-in
+    /// FName table; case-insensitive match per FName equality.
+    #[test]
+    fn is_asset_load_function_recognises_engine_names() {
+        assert!(is_asset_load_function("DynamicLoadObject"));
+        assert!(is_asset_load_function("dynamicloadobject"));
+        assert!(is_asset_load_function("DYNAMICLOADOBJECT"));
+        assert!(is_asset_load_function("StaticLoadObject"));
+        assert!(is_asset_load_function("staticloadobject"));
+        // Not in the recognised set — even close names should reject.
+        assert!(!is_asset_load_function("LoadObject"));
+        assert!(!is_asset_load_function("DynamicLoad"));
+        assert!(!is_asset_load_function("FindObject"));
+        assert!(!is_asset_load_function(""));
+    }
+
+    /// Asset-path validation: a plausible UE2 full name is at least
+    /// two `.`-separated segments of `[A-Za-z0-9_-]`. Hyphens are
+    /// intentional (SC has packages like `2-1_CIA_tex`). Single-
+    /// segment names (engine intrinsics like `Engine`) and arbitrary
+    /// strings should reject.
+    #[test]
+    fn asset_path_recognises_pkg_dot_name_only() {
+        assert_eq!(
+            asset_path_from_string_const(b"ENPC.SamAMesh\0").as_deref(),
+            Some("ENPC.SamAMesh")
+        );
+        assert_eq!(
+            asset_path_from_string_const(b"2-1_CIA_tex.lobby_PAL\0").as_deref(),
+            Some("2-1_CIA_tex.lobby_PAL")
+        );
+        assert_eq!(
+            asset_path_from_string_const(b"ETexCharacter.Sam.SamCBody\0").as_deref(),
+            Some("ETexCharacter.Sam.SamCBody")
+        );
+
+        // No `.` at all — not a full name.
+        assert_eq!(asset_path_from_string_const(b"Engine\0"), None);
+        // Empty segment.
+        assert_eq!(asset_path_from_string_const(b".Sound\0"), None);
+        assert_eq!(asset_path_from_string_const(b"Engine.\0"), None);
+        assert_eq!(asset_path_from_string_const(b"\0"), None);
+        // Invalid char (whitespace).
+        assert_eq!(asset_path_from_string_const(b"My Pkg.Name\0"), None);
+        // Invalid char (slash).
+        assert_eq!(asset_path_from_string_const(b"Pkg/Sub.Name\0"), None);
+        // Empty input.
+        assert_eq!(asset_path_from_string_const(b""), None);
+    }
+
+    /// Regression: the audit's recommendation 2 — drop per-class
+    /// dedupe so each actor's class chain is walked individually,
+    /// matching the engine's per-actor `ProcessEvent`. The
+    /// `walk_class_chain` signature must NOT take a `visited` set.
+    /// (This test is structural — it'll fail to compile if someone
+    /// re-introduces a HashSet param.)
+    #[test]
+    fn walk_class_chain_signature_has_no_dedupe_state() {
+        // We can't actually call walk_class_chain without a runtime
+        // and reader, but we can prove the function exists with the
+        // expected arity via a function-pointer cast. If the
+        // signature changes back to include a `visited: &mut
+        // HashSet<...>` parameter, the cast will fail to type-check.
+        type Sig = for<'a> fn(
+            &'a RcUnrealObject,
+            &'a RcUnrealObject,
+            &'a [&'a str],
+            &'a mut UnrealRuntime,
+            &'a mut crate::reader::LinReader<std::io::Cursor<Vec<u8>>>,
+        ) -> io::Result<WalkOutcome>;
+        let _f: Sig = walk_class_chain::<byteorder::LittleEndian, _>;
+    }
+}
+
