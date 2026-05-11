@@ -241,7 +241,7 @@ impl DeserializeUnrealObject for Object {
             // and import class (negative, walks to the linker that
             // owns the class). Returns None only when the class is a
             // native UClass we don't model (resolved via the engine's
-            // `StaticFindObject` C++ table) — those collapse to an
+            // `StaticFindObject` C++ table) -- those collapse to an
             // empty chain and the tag loop falls through to the
             // engine's `SerializeTaggedProperties` skip-on-mismatch
             // (cheat tag.size bytes). Same behavior as the engine
@@ -307,7 +307,7 @@ where
 /// and ArrayProperty (9) dispatch to `serialize_item` via a name lookup
 /// in `properties`. When the tag's name doesn't resolve in `properties`
 /// (or `properties` is empty), Struct/Array fall back to consuming
-/// `tag.size` raw bytes — matches the engine's forward-compat skip and
+/// `tag.size` raw bytes -- matches the engine's forward-compat skip and
 /// keeps trace replay aligned at the cost of dropping inner refs.
 pub(crate) fn read_tag_value<E, R>(
     tag: &PropertyTag,

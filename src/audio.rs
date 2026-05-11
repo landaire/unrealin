@@ -7,18 +7,18 @@
 //! audio bytes to the MCPX hardware decoder via `sub_18cb60`
 //! (`IDirectSoundBuffer::SetBufferData`). A QEMU plugin trace
 //! capture confirmed the `SetBufferData` payload is identical to the
-//! corresponding bytes in the source `.SM2` file — no software
+//! corresponding bytes in the source `.SM2` file -- no software
 //! re-encoding step.
 //!
 //! The earlier "DARE-IMA-ADPCM v3" port in this file targeted the
-//! PC-build's CPU decoder (`sub_1942e0` / `sub_1946d0`) — code that
+//! PC-build's CPU decoder (`sub_1942e0` / `sub_1946d0`) -- code that
 //! is present in `splintercell.xbe` but not executed at runtime on
 //! Xbox. That code is gone; the math here uses the standard MS
 //! IMA-ADPCM step-size table, which is what XbA shares with all
 //! other IMA-ADPCM variants.
 //!
 //! Block layout per channel:
-//!   - 2 bytes: predictor (i16 LE) — initial sample for the block
+//!   - 2 bytes: predictor (i16 LE) -- initial sample for the block
 //!   - 1 byte:  step_index (0..88)
 //!   - 1 byte:  reserved (always 0)
 //!   - 32 bytes: 64 nibbles, packed low-nibble-first
@@ -34,7 +34,7 @@ pub const BLOCK_BYTES_PER_CHANNEL: usize = 36;
 pub const SAMPLES_PER_BLOCK: usize = 64;
 
 /// Standard MS IMA-ADPCM step-size table (89 entries). Used by every
-/// IMA-ADPCM variant including XbA — the table has been frozen since
+/// IMA-ADPCM variant including XbA -- the table has been frozen since
 /// the original IMA spec.
 const STEP_TABLE: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
@@ -72,7 +72,7 @@ impl ChannelState {
     /// accumulation (`(step>>3) + (step>>2)*bit0 + (step>>1)*bit1 +
     /// step*bit2`) is mathematically equivalent in real arithmetic
     /// but loses precision per term under integer truncation when
-    /// `step` is small — for `step=7`, bit-form gives `1` and the
+    /// `step` is small -- for `step=7`, bit-form gives `1` and the
     /// canonical form gives `2`. ffmpeg's `adpcm_ima_expand_nibble`
     /// uses the canonical form; matching it makes the output bit-for-
     /// bit identical to ffmpeg's reference XbA decoder.
@@ -92,7 +92,7 @@ impl ChannelState {
 }
 
 /// Decode a single mono XbA block. `block` must be exactly 36 bytes.
-/// Output is 64 samples — the predictor is the seed for decoding the
+/// Output is 64 samples -- the predictor is the seed for decoding the
 /// 64 nibbles, not emitted as a sample. (`nSamplesPerBlock` from the
 /// engine's WAVEFORMATEX is 64, confirming the predictor is not part
 /// of the output count.)
@@ -276,7 +276,7 @@ pub mod units {
     }
 }
 
-/// Codec id 3 — the streamed-audio variant used by `.SS2`/`.LS2`
+/// Codec id 3 -- the streamed-audio variant used by `.SS2`/`.LS2`
 /// files. Distinct from the SM2/LM2 hardware-decoded XbA above:
 /// codec 3 streams are CPU-decoded by the engine, going through the
 /// `sub_193950` Decode entry which calls `sub_193780` (InitHeader)
@@ -284,9 +284,9 @@ pub mod units {
 /// `sub_198600`, a thin dispatcher that routes by the mode flag in
 /// the header (file byte 12, latched into codec state at `+0x54`):
 ///
-///   - `mode == 0`  → `sub_1983a0`  one-channel-at-a-time decode
+///   - `mode == 0`  -> `sub_1983a0`  one-channel-at-a-time decode
 ///                   (used for mono streams and planar stereo).
-///   - `mode == 1`  → `sub_1984a0`  L/R nibbles interleaved within
+///   - `mode == 1`  -> `sub_1984a0`  L/R nibbles interleaved within
 ///                   each byte (the byte's low nibble is L, high
 ///                   nibble is R), output written interleaved.
 ///
@@ -298,7 +298,7 @@ pub mod units {
 ///   `step_index.clamp(0, 88)`
 ///
 /// confirmed by reading the `data_2d05c0` (16-entry index table) and
-/// `data_2d0600` (89-entry step table) data sections — they're
+/// `data_2d0600` (89-entry step table) data sections -- they're
 /// byte-for-byte identical to `INDEX_TABLE` and `STEP_TABLE` above.
 /// The codec ships the tables inline rather than reusing a single
 /// copy, but the values match.
@@ -330,7 +330,7 @@ pub mod codec3 {
     }
 
     /// Decode one nibble. Mirrors the inner of `sub_1983a0` /
-    /// `sub_1984a0` exactly — same pre-step lookup, same clamp
+    /// `sub_1984a0` exactly -- same pre-step lookup, same clamp
     /// constants. Updates the channel state in place and returns
     /// the produced i16 sample.
     #[inline]
@@ -350,7 +350,7 @@ pub mod codec3 {
     }
 
     /// Decode `count` samples for one channel from `data`. Each input
-    /// byte yields two samples — DARE's IMA-ADPCM variant emits the
+    /// byte yields two samples -- DARE's IMA-ADPCM variant emits the
     /// HIGH nibble first, then the LOW nibble (the engine's
     /// `sub_1983a0` body does `eax = byte >> 4` on the byte-load
     /// branch and `eax = stored_byte & 0xf` on the no-load branch).
@@ -386,7 +386,7 @@ pub mod codec3 {
 
     /// Decode `frame_count` interleaved L/R stereo frames from
     /// `data`. Each input byte holds one L sample (HIGH nibble)
-    /// and one R sample (LOW nibble) — DARE's `sub_1984a0`
+    /// and one R sample (LOW nibble) -- DARE's `sub_1984a0`
     /// processes byte's high nibble first (toggle `ebp_1`
     /// initialized to 1, the byte-load branch is taken first and
     /// shifts right by 4), then the low nibble on the next
@@ -416,21 +416,21 @@ pub mod codec3 {
     /// first 28 bytes of the file via the stream's vtable[0x34]
     /// reader, then unpacked into the codec object's state struct
     /// at `+0x58..+0x73`. The byte-swap dance in the engine treats
-    /// some fields as big-endian u16 — we interpret them here as
+    /// some fields as big-endian u16 -- we interpret them here as
     /// they reach the decoder, not as raw file bytes.
     ///
     /// Layout (file offsets):
-    ///   `+0x00`  u8   version          — must be 3.
-    ///   `+0x01..+0x03`  3 bytes        — sample-count high bits.
-    ///   `+0x04..+0x07`  f32 LE         — frame-period or scaling
+    ///   `+0x00`  u8   version          -- must be 3.
+    ///   `+0x01..+0x03`  3 bytes        -- sample-count high bits.
+    ///   `+0x04..+0x07`  f32 LE         -- frame-period or scaling
     ///                                    factor (≈ 0.06 in observed
     ///                                    files).
-    ///   `+0x08..+0x0B`  u32 LE         — `track_count`: number of
+    ///   `+0x08..+0x0B`  u32 LE         -- `track_count`: number of
     ///                                    SEQUENTIAL ADPCM clips
     ///                                    packed into the file.
     ///                                    The engine plays them in
     ///                                    order as the mission
-    ///                                    progresses — they are not
+    ///                                    progresses -- they are not
     ///                                    stereo channels nor
     ///                                    independent variants but
     ///                                    consecutive dialogue
@@ -450,16 +450,16 @@ pub mod codec3 {
     ///                                       `Music_Common.LS2` = 3
     ///                                    Each track's ADPCM stream
     ///                                    walks from (predictor=0,
-    ///                                    step_index=0) — they are
+    ///                                    step_index=0) -- they are
     ///                                    independent, just played
     ///                                    back-to-back.
-    ///   `+0x0C`  u8                    — mode flag latched into
+    ///   `+0x0C`  u8                    -- mode flag latched into
     ///                                    `+0x54`. 0 = planar /
     ///                                    `sub_1983a0` per stream,
     ///                                    1 = interleaved-stereo /
     ///                                    `sub_1984a0` (true stereo,
     ///                                    used for music tracks).
-    ///   `+0x0E..+0x0F`  big-endian u16 — `+0x40` field, used by
+    ///   `+0x0E..+0x0F`  big-endian u16 -- `+0x40` field, used by
     ///                                    `sub_193510` as a
     ///                                    block-availability counter
     ///                                    (decremented on each
@@ -516,14 +516,14 @@ pub mod codec3 {
         /// Per-channel initial ADPCM state. The engine's
         /// `sub_193780` byte-swaps the u16 fields at file
         /// offsets `+0x10` (L predictor) and `+0x14` (R predictor)
-        /// from BE → LE on load, then `sub_193510` copies them
+        /// from BE -> LE on load, then `sub_193510` copies them
         /// into the live state at every block-refill. The kernel
         /// expects each block to begin with these seeds, not
         /// `(0, 0)`. Field layout in the file:
-        ///   `+0x10..+0x11` BE u16 → L predictor (signed)
-        ///   `+0x12` u8           → L step_index
-        ///   `+0x14..+0x15` BE u16 → R predictor (signed)
-        ///   `+0x16` u8           → R step_index
+        ///   `+0x10..+0x11` BE u16 -> L predictor (signed)
+        ///   `+0x12` u8           -> L step_index
+        ///   `+0x14..+0x15` BE u16 -> R predictor (signed)
+        ///   `+0x16` u8           -> R step_index
         pub init_l: ChannelState,
         pub init_r: ChannelState,
     }
@@ -535,7 +535,7 @@ pub mod codec3 {
     /// File offset where ADPCM data begins. The engine reads
     /// exactly 28 bytes (`HEADER_BYTES`) for the header in
     /// `sub_193780`, then `sub_193510` reads the rest of the
-    /// file sequentially and feeds it to `sub_198600` — i.e.
+    /// file sequentially and feeds it to `sub_198600` -- i.e.
     /// the ADPCM stream begins immediately at `+0x1C`.
     ///
     /// In `0_0_2.LS2` (dialogue, mode=0) bytes `+0x1C..+0x47`
@@ -563,7 +563,7 @@ pub mod codec3 {
         // and the Music_*.SS2 stereo set). The handful with
         // non-zero values (`0_0=1, 0_0_2=2, 1_1_0=3,
         // Music_Common.LS2=3, 4_2=5_1=7`) all use it as
-        // game-script metadata — not byte structure.
+        // game-script metadata -- not byte structure.
         // Sanity bound; observed range is 0..=17 across retail
         // standalone files and STREAM.SS2 sub-streams. 256 is a
         // soft upper limit to reject obvious garbage headers.
@@ -576,7 +576,7 @@ pub mod codec3 {
         // Initial ADPCM state. A QEMU plugin trace hooking
         // `sub_198600` (the per-block kernel) showed the engine
         // enters every block with state seeded to (0, 0, 0, 0)
-        // — NOT the BE u16 of file +0x10..+0x17 that an earlier
+        // -- NOT the BE u16 of file +0x10..+0x17 that an earlier
         // version of this code extracted. The bytes at
         // +0x10..+0x17 ARE non-zero in some files (e.g.
         // Music_Common.SS2 has `ff cb 1d 00 ff ce 1a 02`) but
@@ -610,14 +610,14 @@ pub mod codec3 {
     /// `nSamplesPerSec=0x8CA0` (= 36000). No per-file rate is
     /// encoded in the codec_id=3 header:
     ///   - file `+0x04..+0x07` (the `block_period` f32) varies
-    ///     across files but is consumed elsewhere — not as a rate
+    ///     across files but is consumed elsewhere -- not as a rate
     ///   - file `+0x0E..+0x0F` is constant `00 0a` across every
     ///     retail file inspected; `sub_193780` byte-swaps it to
     ///     `0x0A00 = 2560` and stores at codec+0x40, where
     ///     `sub_193510` decrements it on each refill (a remaining-
     ///     bytes counter, not a rate)
     ///   - the QEMU plugin trace of `sub_230dc0` captured
-    ///     44100/48000 — the DSound mixer's *output* rate, not
+    ///     44100/48000 -- the DSound mixer's *output* rate, not
     ///     the codec's source rate
     /// The `block_period` f32 is retained on the parsed header
     /// for forensic purposes but plays no role in playback rate.
@@ -631,7 +631,7 @@ pub mod codec3 {
     }
 
     /// Decode a complete codec_id=3 file. Returns mono i16 PCM
-    /// for `mode=0` (the dominant case — dialogue and most LS2
+    /// for `mode=0` (the dominant case -- dialogue and most LS2
     /// content) or interleaved L/R i16 PCM for `mode=1` (true
     /// stereo, used by music).
     ///
@@ -642,8 +642,8 @@ pub mod codec3 {
     /// stream produces output that is *byte-identical* to the
     /// split-then-concat alternative on `0_0_2.LS2` (`track_count
     /// = 2`, payload divisible). That confirms the encoder drives
-    /// ADPCM state to (0,0) at clip boundaries — either by
-    /// design or because dialogue clips end in silence — so a
+    /// ADPCM state to (0,0) at clip boundaries -- either by
+    /// design or because dialogue clips end in silence -- so a
     /// single continuous decode is equivalent to per-track
     /// resets. `track_count` is therefore metadata (script cue
     /// counts, streaming-subsystem chunking) rather than a
@@ -711,14 +711,14 @@ pub mod codec3 {
             let mut state = [ChannelState::new(100, 0), ChannelState::new(-200, 0)];
             let out = decode_interleaved_stereo(&[0x07], &mut state, 1);
             assert_eq!(out.len(), 2);
-            // L: nibble=0, step=7, delta=0 → predictor stays 100.
+            // L: nibble=0, step=7, delta=0 -> predictor stays 100.
             assert_eq!(out[0], 100);
             // R: nibble=7, step=7, delta=((15)*7)>>3 = 13, predictor -200+13 = -187.
             assert_eq!(out[1], -187);
         }
 
         /// Stereo state-independence: when both channels receive the
-        /// same nibble sequence (byte 0x77 → L=7, R=7) their states
+        /// same nibble sequence (byte 0x77 -> L=7, R=7) their states
         /// stay locked together. Asymmetric input (e.g. 0x07) would
         /// diverge them; this test pins the locked-step case so a
         /// regression that crosses-bleeds state between channels
@@ -738,15 +738,15 @@ pub mod codec3 {
 
         /// Asymmetric byte 0x70 (L = high nibble = 7, R = low nibble
         /// = 0) confirms channels DO diverge when fed different
-        /// nibbles — the symmetric test above isn't masking a
+        /// nibbles -- the symmetric test above isn't masking a
         /// state-leak bug.
         #[test]
         fn stereo_channels_diverge_on_asymmetric_input() {
             let mut state = [ChannelState::new(0, 0), ChannelState::new(0, 0)];
             let _ = decode_interleaved_stereo(&[0x70, 0x70], &mut state, 2);
-            // L saw nibble 7 twice → predictor=43, step_index=16.
+            // L saw nibble 7 twice -> predictor=43, step_index=16.
             assert_eq!(state[0].predictor, 43);
-            // R saw nibble 0 twice → predictor stays 0, step_index
+            // R saw nibble 0 twice -> predictor stays 0, step_index
             // tries to go negative each step but clamps to 0.
             assert_eq!(state[1].predictor, 0);
             assert_eq!(state[1].step_index, 0);
@@ -754,7 +754,7 @@ pub mod codec3 {
     }
 }
 
-/// Multi-bank `.SS2` containers (e.g. `STREAM.SS2`) — a flat sequence
+/// Multi-bank `.SS2` containers (e.g. `STREAM.SS2`) -- a flat sequence
 /// of self-describing banks, each prefixed with a 0x2C-byte wrapper.
 /// Inside a bank, **three independent codec_id=3 voices play in
 /// parallel**, with their compressed bytes interleaved at chunk
@@ -763,7 +763,7 @@ pub mod codec3 {
 /// robin across consecutive kernel invocations, each producing 1440
 /// stereo frames per call. The captured input bytes for each voice
 /// match the bank's bytes exactly when re-interleaved by the formula
-/// implemented in `deinterleave_voice` below — verified byte-for-byte
+/// implemented in `deinterleave_voice` below -- verified byte-for-byte
 /// against 492,470 bytes of voice-A trace data.
 ///
 /// **Per-bank wrapper** (constant across all 97 banks of retail
@@ -771,18 +771,18 @@ pub mod codec3 {
 /// ```text
 ///   +0x00  u32  magic_a       = 2          (constant)
 ///   +0x04  u32  codec_id      = 3          (constant)
-///   +0x08  u32  bank_size                  ← total bytes from this
+///   +0x08  u32  bank_size                  <- total bytes from this
 ///                                              wrapper to the next
 ///                                              (or EOF). Only
 ///                                              varying field.
 ///   +0x0C  u32                = 0x14       (constant)
-///   +0x10  u32                = 0x450      ← cycle size in bytes (1104)
+///   +0x10  u32                = 0x450      <- cycle size in bytes (1104)
 ///   +0x14  u32                = 0x169      (constant)
 ///   +0x18  u32                = 1          (constant)
-///   +0x1C  u32                = 0x14       ← per-cycle trailer (20 bytes)
-///   +0x20  u32                = 0x16A      ← voice 0 region size in cycle 0
-///   +0x24  u32                = 0x169      ← voice 1 region size in cycle 0
-///   +0x28  u32                = 0x169      ← voice 2 region size in cycle 0
+///   +0x1C  u32                = 0x14       <- per-cycle trailer (20 bytes)
+///   +0x20  u32                = 0x16A      <- voice 0 region size in cycle 0
+///   +0x24  u32                = 0x169      <- voice 1 region size in cycle 0
+///   +0x28  u32                = 0x169      <- voice 2 region size in cycle 0
 /// ```
 ///
 /// **Cycle 0 layout** (with per-voice 0x44-byte headers; verified
@@ -811,9 +811,9 @@ pub mod codec3 {
 /// ```
 /// Per-cycle size sum = 361 × 3 + 1 (one voice gets the bonus byte)
 /// + 20 trailer = 1104. The bonus byte rotates by `cycle_idx % 3`:
-/// cycle 1 → voice 1 gets +1, cycle 2 → voice 2, cycle 3 → voice 0,
-/// cycle 4 → voice 1, etc.
-/// Codec id 8 — proto-only DARE-IMA variant. Replaces codec_id=3 in
+/// cycle 1 -> voice 1 gets +1, cycle 2 -> voice 2, cycle 3 -> voice 0,
+/// cycle 4 -> voice 1, etc.
+/// Codec id 8 -- proto-only DARE-IMA variant. Replaces codec_id=3 in
 /// the Sep-13-2002 prototype build (retail uses codec_id=3 for the
 /// equivalent files). The proto's `sub_199f90` dispatches per-nibble
 /// to a 4-bit kernel (`sub_1999d0`) with an MMX bit-unpacker
@@ -962,7 +962,7 @@ pub mod codec8 {
     /// this constant; deviation indicates a malformed or different-
     /// codec file.
     pub const BLOCK_BYTES: u32 = 0x600;
-    /// Total header byte size — the kernel begins reading compressed
+    /// Total header byte size -- the kernel begins reading compressed
     /// data immediately after.
     pub const HEADER_BYTES: usize = 0x40;
 
@@ -1126,7 +1126,7 @@ pub mod codec8 {
     ];
 
     /// Main 66-entry signed lookup at proto VA 0x2aeed8. Values run
-    /// from +1024 → +2007 (entries 0..32) and -1024 → -2007 (entries
+    /// from +1024 -> +2007 (entries 0..32) and -1024 -> -2007 (entries
     /// 33..65), so `(eax & 0x84)` selects the sign half (0 vs 0x84
     /// = 33×4 in dword-indexed bytes, indexing the second half).
     pub const MAIN_LOOKUP: [i32; 66] = [
@@ -1678,8 +1678,8 @@ pub mod codec8 {
         }
 
         // The kernel returns `eax = var_c = result_i32` (full 32 bits).
-        // The caller (`sub_199f90` at 0x19a0f6) writes only `ax` — the
-        // low 16 bits — to PCM. Truncate, do NOT saturate: when the
+        // The caller (`sub_199f90` at 0x19a0f6) writes only `ax` -- the
+        // low 16 bits -- to PCM. Truncate, do NOT saturate: when the
         // adaptive predictor overshoots, the engine's output wraps
         // around in i16, matching the value already stored to
         // `hist_pred[0]` here in the kernel.
@@ -2531,8 +2531,8 @@ pub mod ss2 {
             let adpcm_end = h_start + voice_size;
             out.extend_from_slice(&self.bytes[adpcm_start..adpcm_end]);
 
-            // Cycles 1..N — each voice gets 361 bytes per cycle, with
-            // the bonus +1 rotating: cycle k → voice (k % 3) gets +1.
+            // Cycles 1..N -- each voice gets 361 bytes per cycle, with
+            // the bonus +1 rotating: cycle k -> voice (k % 3) gets +1.
             let mut cycle_idx: usize = 1;
             loop {
                 let cycle_start = WRAPPER_BYTES + cycle_idx * CYCLE_BYTES;
@@ -2676,20 +2676,20 @@ pub mod ss2 {
 /// from `sub_17e250` (loads/validates the directory) and `sub_17e3f0`
 /// (linear search by map name). The format:
 ///
-///   offset 0x00  u32  version              — must be 7 in SC1 NTSC
-///   offset 0x04  u32  record_table_offset  — typically 0x0c
-///   offset 0x08  u32  record_count         — number of records
+///   offset 0x00  u32  version              -- must be 7 in SC1 NTSC
+///   offset 0x04  u32  record_table_offset  -- typically 0x0c
+///   offset 0x08  u32  record_count         -- number of records
 ///   offset record_table_offset:
 ///     repeat record_count times {
 ///       u32  reserved_0  (always 0 on disk; runtime field)
 ///       u32  reserved_1  (always 0 on disk; runtime field)
-///       u32  data_offset — absolute file offset of this map's data
-///       u32  data_size   — bytes to read at `data_offset`
-///       char name[0x20]  — null-terminated map name (e.g. "0_0_2_Training")
+///       u32  data_offset -- absolute file offset of this map's data
+///       u32  data_size   -- bytes to read at `data_offset`
+///       char name[0x20]  -- null-terminated map name (e.g. "0_0_2_Training")
 ///     }  // 0x30 bytes per record
 ///
 /// `sub_17e470` allocates `data_size` bytes, seeks to `data_offset`,
-/// reads `data_size` bytes — that's the per-map descriptor blob,
+/// reads `data_size` bytes -- that's the per-map descriptor blob,
 /// itself a fixup-relative pointer-graph. See AUDIO.md for the next
 /// layer.
 pub mod sm2 {
@@ -2714,7 +2714,7 @@ pub mod sm2 {
 
     /// One sound entry from a map's audio table. Offset is absolute
     /// into the source `.SM2` file. `length` is derived from the
-    /// difference between consecutive entries' offsets — the last
+    /// difference between consecutive entries' offsets -- the last
     /// entry's length is the gap from its offset to the start of the
     /// next map's data section.
     ///
@@ -2725,7 +2725,7 @@ pub mod sm2 {
     ///
     /// `is_ls2_redirect` is true when the array_b entry has an `LS2`
     /// tag in the last 3 bytes of its 16-byte name field. The bytes
-    /// at `file_offset` are placeholder/dead — the engine plays the
+    /// at `file_offset` are placeholder/dead -- the engine plays the
     /// actual sound from the corresponding `.LS2` file via the
     /// codec_id=3 streaming path, not via SetBufferData on the
     /// MAPS.LM2 bytes. Verified by QEMU plugin trace: zero overlap
@@ -2747,8 +2747,8 @@ pub mod sm2 {
     const ARRAY_B_OFFSET_AVG_BYTES_PER_SEC: usize = 0x40;
     /// Channel count lives in the HIGH word of the u32 at `+0x48`
     /// (i.e. read u16 at `+0x4a`). The low word is `0x0010` for all
-    /// observed entries — likely a fixed format-flags constant.
-    /// Verified: FN20IS_1 has `0x00020010` here (stereo, 44.1kHz —
+    /// observed entries -- likely a fixed format-flags constant.
+    /// Verified: FN20IS_1 has `0x00020010` here (stereo, 44.1kHz --
     /// matches its 72-byte block alignment) while every mono entry
     /// has `0x00010010`.
     const ARRAY_B_OFFSET_CHANNELS: usize = 0x4a;
@@ -2913,7 +2913,7 @@ pub mod sm2 {
             // typical SFX); the low 24 bits index `array_b`. Without
             // the mask, seq_ids like 0x40000001 are huge u32s that
             // never match `seq_id < array_b_cnt`, and the sound falls
-            // back to a hardcoded 22050 Hz — wrong rate, audible as
+            // back to a hardcoded 22050 Hz -- wrong rate, audible as
             // ~1.38× playback speed for the typical 16000 Hz SFX.
             //
             // Each array_b entry is 120 bytes; +0x44 = sample_rate,
@@ -2924,8 +2924,8 @@ pub mod sm2 {
             // Entries whose name field ends in "LS2" (last 3 bytes
             // of the 16-byte name buffer) carry an LS2 tag. Two
             // encodings observed:
-            //   "Music_Common.LS2"          — the LS2 filename itself
-            //   "EFOLOU_1.wav\0LS2"         — original .wav name + tag
+            //   "Music_Common.LS2"          -- the LS2 filename itself
+            //   "EFOLOU_1.wav\0LS2"         -- original .wav name + tag
             // Both share `name_bytes[13..16] == b"LS2"`.
             //
             // QEMU trace evidence (5_1_2_PresidentialPalace, 1024
@@ -2971,7 +2971,7 @@ pub mod sm2 {
                         // ratio to LS2-tagged entries (verified
                         // against the engine on 5_1_2_PresidentialPalace).
                         // LM2 (language-specific dialog archive)
-                        // applies the ratio to every entry — its
+                        // applies the ratio to every entry -- its
                         // array_b names omit the `LS2` suffix (they
                         // store the bare `.wav` filename), so the tag
                         // check would never fire. Empirically required:
@@ -3117,7 +3117,7 @@ mod tests {
         assert_eq!(*pcm.last().unwrap(), 32767);
     }
 
-    /// Symmetric to the above — all 0x0f nibbles (max negative) must
+    /// Symmetric to the above -- all 0x0f nibbles (max negative) must
     /// saturate at -32768.
     #[test]
     fn max_negative_nibbles_saturate_low() {

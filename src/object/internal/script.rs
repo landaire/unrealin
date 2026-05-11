@@ -1042,7 +1042,7 @@ mod tests {
         // distinguishes them), then a (0, 0) terminator.
         // packed_int(0) = 0x00 byte.
         bytes.push(0x00); // name = 0 (note: this would normally terminate)
-        // Wait — we can't actually have multiple non-terminator entries
+        // Wait -- we can't actually have multiple non-terminator entries
         // with name == 0; the loop would stop at the first one. Use a
         // single (0, line) entry which IS the terminator.
         bytes.extend_from_slice(&42i32.to_le_bytes());

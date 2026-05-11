@@ -81,7 +81,7 @@ pub struct Linker {
     /// (`0` = `common.lin`, `1` = `<map>.lin`). Captured at
     /// `load_linker` time from the active `current_source_idx`. Used
     /// by `push_linker` in unchecked mode to switch the active source
-    /// before reading this linker's export bodies — necessary when a
+    /// before reading this linker's export bodies -- necessary when a
     /// Stage-2 cascade running on src1 triggers a preload for an
     /// export whose body is in src0 (e.g. `ESam.samBMesh` referenced
     /// from `5_1_1_PresidentialPalace.MyLevel`'s actors).
@@ -432,7 +432,7 @@ impl ObjectExport {
     /// `VerifyImport` matches imports against `(ObjectName, ClassName,
     /// ClassPackage)` and ClassPackage means "the package where the class
     /// itself lives". For a class_index that's an import, this is *not* the
-    /// import's `class_package` field (that's where Core.Class is — always
+    /// import's `class_package` field (that's where Core.Class is -- always
     /// `Core`). It's the top-level package found by walking the import's
     /// `package_index` chain.
     pub fn class_package<'p>(&self, linker: &'p Linker) -> &'p str {
@@ -660,7 +660,7 @@ where
 }
 
 /// Decompress a `.lin` file and return its decompressed body
-/// truncated to `uncompressed_data_size` — the LIN format's declared
+/// truncated to `uncompressed_data_size` -- the LIN format's declared
 /// content length stored in the first metadata zlib block. Bytes past
 /// that point are zlib block alignment padding (consistently ending in
 /// a `0xb3` sentinel) that the engine never consumes, and that, if
@@ -857,7 +857,7 @@ fn compute_expected_source_per_op(metadata: &ExportedData) -> Option<Vec<u64>> {
 
 /// One `.lin` input to `LinearFileDecoder::new_unchecked`. Bundles the
 /// reader with the engine's logical end-of-data so the decoder can cap
-/// `LinReader` exactly at the LIN format's `uncompressed_data_size` —
+/// `LinReader` exactly at the LIN format's `uncompressed_data_size` --
 /// the declared size from metadata block 0, not the decompressed
 /// buffer's `len()`. Decompressed `.lin` buffers run a few bytes past
 /// the engine's EOF (zlib alignment padding consistently ending in a
@@ -911,7 +911,7 @@ where
         // by `skip_secondary_lin_header` directly on the Cursor (not
         // through the LinReader), so without this seeding the read /
         // physical-position bookkeeping would be off by `prefix_len`
-        // bytes — surfacing as a wrong `pkg_source_start` when a
+        // bytes -- surfacing as a wrong `pkg_source_start` when a
         // package on this source is loaded.
         for (i, &len) in prefix_lengths.iter().enumerate() {
             combined.seed_source_consumed(i, len);
@@ -1040,7 +1040,7 @@ where
             .unwrap_or(0)
     }
 
-    /// Map from lowercased package name (the linker key style — `"engine"`,
+    /// Map from lowercased package name (the linker key style -- `"engine"`,
     /// `"hud"`) to its original relative path with forward-slash separators
     /// (`"System/Engine.u"`, `"Textures/HUD.utx"`, `"Maps/menu.unr"`). Drawn
     /// from common.lin's `file_table`; the leading `..\` (relative to the
@@ -1052,7 +1052,7 @@ where
             let mut path = entry.name.as_str();
             // Strip leading `..\` (or repeated occurrences). Engine paths
             // are always relative to `<game>\System\`, so a single `..\`
-            // walks up one level — but be defensive in case any entry has
+            // walks up one level -- but be defensive in case any entry has
             // a different prefix.
             while let Some(rest) = path.strip_prefix("..\\") {
                 path = rest;
@@ -1082,11 +1082,11 @@ where
     pub fn decode_unchecked(&mut self) -> io::Result<()> {
         self.read_lin_header()?;
         // `read_lin_header` already populated `present_packages` from
-        // common.lin's `file_table` — every package that ships in
+        // common.lin's `file_table` -- every package that ships in
         // common.lin and every secondary `.lin` (Maps/, StaticMeshes/,
         // Animations/, Sounds/, System/) is named there. Mirrors how
         // SC's `GetPackageLinker` (xbe `0x39da0`) resolves package
-        // names against the underlying file system + LinkerCache —
+        // names against the underlying file system + LinkerCache --
         // file_table membership IS the engine's "this package
         // physically exists" signal.
         //
@@ -1096,7 +1096,7 @@ where
         // removed in favour of trusting the engine-faithful source.)
 
         // Stage 1: replay the pre-MyLevel warmup against source 0. Each
-        // call is idempotent — duplicates that the cascade already
+        // call is idempotent -- duplicates that the cascade already
         // pulled in just no-op via `runtime.loaded_objects`.
         //
         // Tolerate `UnexpectedEof`: the 009_ChineseEmbassy variant's
@@ -1133,7 +1133,7 @@ where
         // trace records (game info, HUD, controller, etc.) via actor
         // class refs.
         //
-        // Class filter is `Engine.Level` (`ULevel::StaticClass`) — SC's
+        // Class filter is `Engine.Level` (`ULevel::StaticClass`) -- SC's
         // `LoadMap` (xbe `0x81860`) calls
         // `StaticLoadObject(Engine.Level, MyLevel, FileName, ...)`,
         // and that filter is load-bearing for maps that ship two
@@ -1163,7 +1163,7 @@ where
         // but the engine's runtime continues after `LoadMap` by executing
         // each actor's PreBeginPlay/BeginPlay/PostBeginPlay UnrealScript
         // bytecode. Those scripts call `StaticLoadObject(class'X', "Y")`
-        // with literal asset names — which the LIN compactor laid out
+        // with literal asset names -- which the LIN compactor laid out
         // immediately after the cascade's last byte, in the engine's
         // exact call order. Walking the parsed bytecode of every actor
         // class's init functions and triggering each `StringConst`
@@ -1219,7 +1219,7 @@ where
         // for each actor that matches one of five `IsA` tests
         // (EPawn / EWeapon / ESensor / EchelonLevelInfo /
         // StaticMeshActor). This populates the trailing `Engine`
-        // sub-package at session.lin's tail — the last 789 bytes our
+        // sub-package at session.lin's tail -- the last 789 bytes our
         // post-MyLevel cascade otherwise misses.
         let reader = self.sources.front_mut().expect("no file reader available?");
         crate::object::internal::post_cascade::run_post_spawn_actor_loads::<E, _>(
@@ -1248,7 +1248,7 @@ where
             // 1 and then invoke the resolver with the engine's class
             // filter (`Engine.Level` = `ULevel::StaticClass`). The
             // class filter matters for maps that ship two `MyLevel`
-            // exports — see comment in `decode_unchecked`.
+            // exports -- see comment in `decode_unchecked`.
             let resolved = if object == "None.MyLevel" {
                 if let Some(secondary) = self.secondary_package_names.first() {
                     reader.switch_to_source(1);
@@ -1311,7 +1311,7 @@ where
                 // `verify_imports` will cascade-load it. Without this gate
                 // any package that's in the file_table but not in our
                 // hardcoded warmup list is treated as an engine intrinsic
-                // and skipped — leaving its header bytes in the source
+                // and skipped -- leaving its header bytes in the source
                 // unread, which then misaligns subsequent reads.
                 //
                 // Stored lowercase to match UE2 FName case-insensitive
@@ -1339,7 +1339,7 @@ where
 /// Returns `None` if the bytes don't look like a valid SC package
 /// header (wrong version, out-of-bounds offsets, etc.). Used by the
 /// merge-time `scan_tail_packages` diagnostic to label unread-tail
-/// PKG_TAG byte matches with the package's first non-`None` name —
+/// PKG_TAG byte matches with the package's first non-`None` name --
 /// purely for warning messages, never for cascade-routing decisions
 /// (those go through common.lin's file_table).
 pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<RawPackage> {
@@ -1423,7 +1423,7 @@ pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<
 
 /// Read past a secondary `.lin` source's LIN-format prefix:
 /// `u32 load_address + packed_int name_len + ANSI name`. Mirrors
-/// what the engine's `CreateFileReader` does at file-open time —
+/// what the engine's `CreateFileReader` does at file-open time --
 /// those bytes never appear in the file-data stream, only in the
 /// reader's metadata. Returns the decoded package name (e.g.
 /// `"menu"` for `menu.lin`, `"0_0_2_Training"` for the training

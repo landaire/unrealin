@@ -24,7 +24,7 @@ use crate::runtime::UnrealRuntime;
 ///   - if `LicenseeVer > 3`: raw 4-byte `FArchive::Serialize` at `+0x30`
 ///     (the FName slot for the audio asset name).
 ///   - if `LicenseeVer >= 7`: raw 4-byte `FArchive::Serialize` at `+0x38`
-///     (the lipsynch FName slot — non-zero when lipsynch data should load)
+///     (the lipsynch FName slot -- non-zero when lipsynch data should load)
 ///     followed by `operator<<(FArchive, FString)` at `+0x3c` (the lipsynch
 ///     filename, e.g. `\S0_0_Voice\00_25_01.bin`).
 ///   - SC-specific tail: when `IsLoading && +0x38 != 0`, `sub_71c80` rebuilds

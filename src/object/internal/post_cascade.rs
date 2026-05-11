@@ -93,7 +93,7 @@ const TAG_TYPE_CLASS: u8 = 8;
 
 /// Trim the trailing null and check shape: ASCII alphanumeric / `_` /
 /// `-` segments separated by `.`, at least two non-empty segments. Hyphen
-/// is intentional — SC has packages named e.g. `2-1_CIA_tex`.
+/// is intentional -- SC has packages named e.g. `2-1_CIA_tex`.
 fn asset_path_from_string_const(bytes: &[u8]) -> Option<String> {
     let trimmed = match bytes.last() {
         Some(0) => &bytes[..bytes.len() - 1],
@@ -227,8 +227,8 @@ fn resolve_referent_full_name(
 /// Class names whose `ObjectConst` references are pre-loaded by the
 /// engine when the referencing script's class umbrella is loaded
 /// (their bodies live just past the class chain in session.lin
-/// authoring-order). Other types — actor instances, GameInfo refs,
-/// HUD widgets — are spawned/touched at runtime and don't preload
+/// authoring-order). Other types -- actor instances, GameInfo refs,
+/// HUD widgets -- are spawned/touched at runtime and don't preload
 /// from script-literal sites.
 fn is_asset_class(class_name: &str) -> bool {
     matches!(
@@ -297,7 +297,7 @@ fn class_default_overrides_object(class_obj: &RcUnrealObject, prop_name: &str) -
 }
 
 /// Recognise `Token(JumpIfNot) Word(N) Native(119) Token(InstanceVariable)
-/// Object(prop_idx) Token(NoObject) Token(EndFunctionParms)` — UE2's
+/// Object(prop_idx) Token(NoObject) Token(EndFunctionParms)` -- UE2's
 /// compiled `if (this.X == None)` pattern. Returns
 /// `Some((prop_idx, target_byte_offset))` if matched.
 fn detect_var_is_none_check(parsed_script: &[Expr], i: usize) -> Option<(i32, u16)> {
@@ -350,14 +350,14 @@ fn is_asset_load_function(name: &str) -> bool {
 /// Inside a function call's argument list (i.e. between `FinalFunction`/
 /// `Native` and the matching `EndFunctionParms`), extract:
 /// 1. the first `ObjectConst Object(idx)` (UE2's compiled
-///    `class'X.Y'` argument — the InClass passed to
+///    `class'X.Y'` argument -- the InClass passed to
 ///    `StaticLoadObject` / `DynamicLoadObject`), and
 /// 2. the first `StringConst Data(...)` payload (the asset path).
 ///
 /// Returns `(class_ref_idx, name_bytes, after_end_index)`. The outer
 /// walker uses `class_ref_idx` to resolve the actual class an
 /// import expects, so the resulting load is dispatched with strict
-/// class matching — without it our default (`Core.Class`) over-
+/// class matching -- without it our default (`Core.Class`) over-
 /// matches name-only candidates of unrelated types, leaking
 /// preloads of e.g. `MeshAnimation ENPC.LadderAnims` for an import
 /// that the engine treats as null.
@@ -456,7 +456,7 @@ fn resolve_class_arg(idx: i32, func_linker: &RcLinker) -> Option<(String, String
 /// NoObject EndFunctionParms`) and skips the conditional block when
 /// the class CDO has a non-null default for `prop_idx`. The engine
 /// evaluates the same condition against the actor's current variable
-/// state — which equals the class default at PostBeginPlay time —
+/// state -- which equals the class default at PostBeginPlay time --
 /// so a non-null default flips the condition false, and the load
 /// inside doesn't fire. Without this we'd trigger the load anyway,
 /// fail the body read at the wrong cursor position, and corrupt the
@@ -486,7 +486,7 @@ where
 
     let mut i = 0;
     while i < parsed_script.len() {
-        // Detect `if (instance_var == None)` — if the var has a non-null
+        // Detect `if (instance_var == None)` -- if the var has a non-null
         // default in the class CDO, the engine would skip this block.
         if let Some((prop_idx, target_byte)) = detect_var_is_none_check(parsed_script, i) {
             let prop_name = runtime
@@ -496,13 +496,13 @@ where
                 && class_default_overrides_object(leaf_class, &prop_name)
             {
                 // Class-CDO default for this var is non-null. Skip the
-                // conditional block — the engine evaluates `var == None`
+                // conditional block -- the engine evaluates `var == None`
                 // as false, no body read fires.
                 //
                 // Note: this catches conditional loads gated by class
                 // default overrides only. Loads gated by per-actor
                 // instance tags (`Mesh = SkeletalMesh'X'` set in level
-                // editor on a specific instance) are NOT caught here —
+                // editor on a specific instance) are NOT caught here --
                 // resolving them requires parsing the actor's body tag
                 // list, which sits behind a variable-length state frame
                 // for HAS_STACK actors. Tracked as a follow-up; a small
@@ -523,13 +523,13 @@ where
         // Inline asset-literal pattern: `Token(ObjectConst) Object(idx)`
         // emitted by `Sound'X.Y'`, `Class'X.Y'`, etc. in script source.
         // The engine resolves the import at script parse time but only
-        // preloads the referenced object when that script executes —
+        // preloads the referenced object when that script executes --
         // which for HUD/PlayerController/PreBeginPlay scripts happens
         // during LoadMap. Trigger a full Load here so the cursor
         // advances through the referenced body in the same order.
         //
         // Filter to "asset-class" referents (Sound, MeshAnimation,
-        // SkeletalMesh, Texture) — pure-Object refs to actor instances
+        // SkeletalMesh, Texture) -- pure-Object refs to actor instances
         // or non-asset objects don't get preloaded by the engine here
         // and triggering them would mis-align the cursor.
         if matches!(
@@ -595,7 +595,7 @@ where
         }
 
         // The first ObjectConst arg of `StaticLoadObject(class'X', "Pkg.Y", ...)`
-        // is the InClass — the engine resolves the named object only
+        // is the InClass -- the engine resolves the named object only
         // when its class matches. Without this filter the runtime falls
         // through to the `("Class", "Core")` default + name-only fallback,
         // which over-matches: e.g. an import for `class<MeshAnimation>
@@ -667,7 +667,7 @@ fn find_function_by_name(struct_obj: &RcUnrealObject, name: &str) -> Option<RcUn
 /// Walk one phase function for one actor. Equivalent to the engine's
 /// `ProcessEvent(actor, fn_name)` for the side-effects we care about
 /// (asset preloads), but takes the unconditional super-first path
-/// rather than a `FindFunctionChecked`-style leaf-only dispatch — see
+/// rather than a `FindFunctionChecked`-style leaf-only dispatch -- see
 /// the module docstring for why this differs from the engine's
 /// runtime model.
 ///
@@ -783,7 +783,7 @@ where
     // Find MyLevel with class=Engine.Level. Some maps (e.g. 2_1_0CIA,
     // 2_1_2CIA) ship two `MyLevel` exports: the real ULevel (with the
     // actors array) and a Package wrapper container. Without the class
-    // filter `find_export_by_name` returns the first match — which
+    // filter `find_export_by_name` returns the first match -- which
     // is the Package wrapper, leaving the actor walk empty and
     // skipping ~17% of session.lin's bytes that the engine reads via
     // the actors' PreBeginPlay/BeginPlay/PostBeginPlay scripts.
@@ -947,9 +947,9 @@ fn level_id_suffix(secondary_package: &str) -> String {
 
 /// Country prefix used when constructing `Camera.Play_Random_<XX><...>`
 /// sound names. The engine selects this from the level identifier's
-/// first character — SC xbe `sub_271e0` switches on `arg2[0]`:
-/// `'0'`/`'2'` → `"US"`, `'1'`/`'5'` → `"GE"`, `'3'` → `"RU"`,
-/// `'4'` → `"CH"`. See data refs `0x262960`/`0x262950`/`0x262948`/
+/// first character -- SC xbe `sub_271e0` switches on `arg2[0]`:
+/// `'0'`/`'2'` -> `"US"`, `'1'`/`'5'` -> `"GE"`, `'3'` -> `"RU"`,
+/// `'4'` -> `"CH"`. See data refs `0x262960`/`0x262950`/`0x262948`/
 /// `0x262958` for the exact strings.
 fn country_prefix_for_level(secondary_package: &str) -> &'static str {
     match secondary_package.chars().next() {
@@ -971,23 +971,23 @@ fn country_prefix_for_level(secondary_package: &str) -> &'static str {
 /// + the level-id suffix (first 5 chars of the map basename) and calls
 /// `StaticLoadObject(Engine.Sound, name, ...)`. Names match exactly:
 ///
-/// * `EPawn` → `Special.Play_Switch_NpcMaleMove<level>`,
+/// * `EPawn` -> `Special.Play_Switch_NpcMaleMove<level>`,
 ///   `Special.Play_Switch_FisherMove<level>`
-/// * `EWeapon` → `Special.Play_Switch_BulletHit<level>`
-/// * `ESensor` → `Special.Play_Switch_BulletHit<level>`,
+/// * `EWeapon` -> `Special.Play_Switch_BulletHit<level>`
+/// * `ESensor` -> `Special.Play_Switch_BulletHit<level>`,
 ///   `Camera.Play_Random_<country>CSeePlayer`,
 ///   `Camera.Play_Random_<country>CFindCorpse`
-/// * `EchelonLevelInfo` → `Camera.Play_Random_<country>IAFindCorpse`
-/// * `StaticMeshActor` → `Special.Play_Random_BulletHitFence` (literal,
+/// * `EchelonLevelInfo` -> `Camera.Play_Random_<country>IAFindCorpse`
+/// * `StaticMeshActor` -> `Special.Play_Random_BulletHitFence` (literal,
 ///   no level suffix)
 ///
 /// Engine binary skips this entire block for the menu (`arg2 == "menu"`).
-/// We mirror that — the menu has no actors that need these sound preloads.
+/// We mirror that -- the menu has no actors that need these sound preloads.
 ///
 /// Note: the engine also checks per-actor instance flags (e.g.
 /// `*(eax_14 + 0x230) & 8 == 0` for EPawn, `*(eax_18 + 0x18e) & 1 != 0`
 /// for StaticMeshActor) before firing the loads. We skip those flag
-/// gates because `load_object_by_full_name` is idempotent — over-firing
+/// gates because `load_object_by_full_name` is idempotent -- over-firing
 /// loads of names the engine wouldn't has no byte-stream effect (each
 /// sound is read at most once on the first matching call). Skipping
 /// the gates avoids parsing actor instance state frames, which
@@ -1114,7 +1114,7 @@ mod tests {
         assert!(is_asset_load_function("DYNAMICLOADOBJECT"));
         assert!(is_asset_load_function("StaticLoadObject"));
         assert!(is_asset_load_function("staticloadobject"));
-        // Not in the recognised set — even close names should reject.
+        // Not in the recognised set -- even close names should reject.
         assert!(!is_asset_load_function("LoadObject"));
         assert!(!is_asset_load_function("DynamicLoad"));
         assert!(!is_asset_load_function("FindObject"));
@@ -1141,7 +1141,7 @@ mod tests {
             Some("ETexCharacter.Sam.SamCBody")
         );
 
-        // No `.` at all — not a full name.
+        // No `.` at all -- not a full name.
         assert_eq!(asset_path_from_string_const(b"Engine\0"), None);
         // Empty segment.
         assert_eq!(asset_path_from_string_const(b".Sound\0"), None);

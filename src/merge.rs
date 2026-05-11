@@ -216,7 +216,7 @@ fn index_traces(trace_dir: &Path) -> HashMap<String, PathBuf> {
 /// Read the `file_load_order` array from a trace JSON and return the
 /// level package's basename (the entry under `..\\Maps\\<basename>.unr`).
 /// Streams just the first 64 KiB of the file so we don't materialise the
-/// 500 MiB trace bodies during indexing — `file_load_order` is the first
+/// 500 MiB trace bodies during indexing -- `file_load_order` is the first
 /// top-level field in every recorded trace.
 fn level_basename_from_trace(path: &Path) -> Option<String> {
     use std::io::Read;
@@ -235,7 +235,7 @@ fn level_basename_from_trace(path: &Path) -> Option<String> {
         let rest = &s[start..];
         let end = rest.find(".unr")?;
         let segment = &rest[..end];
-        // Take the last `\\`-separated segment so `menu\\menu` → `menu`.
+        // Take the last `\\`-separated segment so `menu\\menu` -> `menu`.
         let basename = segment.rsplit("\\\\").next().unwrap_or(segment);
         if !basename.is_empty() {
             return Some(basename.to_string());
@@ -399,7 +399,7 @@ fn run_pair(
         // Trace-driven path: the recorded I/O ops drive `LinReader`'s
         // every read and seek, so the cascade order matches the engine's
         // exactly. This is the path that recovers the full cross-source
-        // texture coverage — `decode_unchecked`'s natural cascade only
+        // texture coverage -- `decode_unchecked`'s natural cascade only
         // hits ~71/110 character textures because src0's cursor doesn't
         // line up for stage-2-cross-source preloads without trace data.
         let f = std::fs::File::open(trace_path).map_err(|e| {
@@ -580,7 +580,7 @@ fn write_variants(pkg_out: &Path, merged: &MergedLinkers) -> io::Result<()> {
     Ok(())
 }
 
-/// `Foo/ESam.unr` + `"012_PresidentialPalace"` → `Foo/ESam.012_PresidentialPalace.unr`.
+/// `Foo/ESam.unr` + `"012_PresidentialPalace"` -> `Foo/ESam.012_PresidentialPalace.unr`.
 /// If the filename has no extension, just appends `.<group>`.
 fn insert_group_in_filename(path: &Path, group: &str) -> PathBuf {
     let parent = path.parent();

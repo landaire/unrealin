@@ -47,16 +47,16 @@ enum AudioCmd {
     /// Walk an audio file (or directory of audio files) and dump
     /// every container's banks/sounds as individual `.wav` files.
     /// Codec is auto-detected per file from the header:
-    ///   - first byte `0x08` → proto LS2/SS2 (codec_id=8). Each
-    ///     bank → `bank_NN.wav` under `<output>/<rel_stem>/`.
-    ///   - first byte `0x03` → retail single-stream LS2 (codec_id=3).
+    ///   - first byte `0x08` -> proto LS2/SS2 (codec_id=8). Each
+    ///     bank -> `bank_NN.wav` under `<output>/<rel_stem>/`.
+    ///   - first byte `0x03` -> retail single-stream LS2 (codec_id=3).
     ///     One mono or stereo `.wav` under `<output>/<rel_stem>/`.
-    ///   - `02 00 00 00 03 00 00 00` → multi-bank SS2 (codec_id=3
-    ///     container, e.g. `STREAM.SS2`). Each bank's three voices →
+    ///   - `02 00 00 00 03 00 00 00` -> multi-bank SS2 (codec_id=3
+    ///     container, e.g. `STREAM.SS2`). Each bank's three voices ->
     ///     `bank_NN_voice_M.wav`.
-    ///   - first dword `0x07` → `.SM2` Maps BigFile. Each map →
+    ///   - first dword `0x07` -> `.SM2` Maps BigFile. Each map ->
     ///     subdir of per-sound wavs.
-    ///   - Other codecs → skipped (logged).
+    ///   - Other codecs -> skipped (logged).
     /// Output structure mirrors retail's per-map convention.
     Dump {
         /// Input file or directory.
@@ -111,7 +111,7 @@ struct ExtractArgs {
 
     /// Replay a recorded I/O trace (a QEMU-plugin `reads.json`) instead
     /// of running the engine-faithful unchecked decoder. Trace mode
-    /// exists as a development oracle — it asserts our reader's bytes
+    /// exists as a development oracle -- it asserts our reader's bytes
     /// match the engine's exact recorded ops, so it's useful for
     /// validating new stubs against ground truth. NOT for production
     /// extraction: traces are bound to the specific build they were
@@ -142,7 +142,7 @@ struct MergeArgs {
     /// bound to the specific build it was recorded against; if the
     /// trace doesn't match the data (panics, panicked or under-
     /// consumes), the pair falls back to the unchecked decode.
-    /// Default: no trace dir — every pair runs unchecked.
+    /// Default: no trace dir -- every pair runs unchecked.
     #[arg(long)]
     trace_dir: Option<PathBuf>,
 }
@@ -247,10 +247,10 @@ fn walk_audio_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
 /// Dump every bank/sound of one audio file into `dst_dir` as
 /// `bank_NN.wav` (or per-map subdirs for SM2). Returns the number
 /// of WAVs written. Dispatches by the file's header:
-///   - first byte `0x08`            → codec_id=8 (proto LS2/SS2)
-///   - first byte `0x03`            → codec_id=3 (retail LS2 single)
-///   - `02 00 00 00 03 00 00 00`    → multi-bank SS2 (codec_id=3)
-///   - first dword `0x07`           → SM2 Maps BigFile
+///   - first byte `0x08`            -> codec_id=8 (proto LS2/SS2)
+///   - first byte `0x03`            -> codec_id=3 (retail LS2 single)
+///   - `02 00 00 00 03 00 00 00`    -> multi-bank SS2 (codec_id=3)
+///   - first dword `0x07`           -> SM2 Maps BigFile
 fn dump_file_banks(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
     let bytes = std::fs::read(src).wrap_err_with(|| format!("failed to read {src:?}"))?;
     if bytes.is_empty() {
@@ -312,7 +312,7 @@ fn dump_codec8(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
 fn dump_codec3_single(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
     // codec_id=3 LS2/SS2 files have no per-clip byte boundaries
     // recoverable from the file alone. `track_count` is engine-script
-    // metadata (cue counts), not a byte-layout indicator — the
+    // metadata (cue counts), not a byte-layout indicator -- the
     // payload is one continuous IMA-ADPCM stream where clip
     // boundaries land at silence and aren't equally spaced. Dump as a
     // single bank; the individually-named clips are already in

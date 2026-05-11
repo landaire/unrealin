@@ -14,12 +14,12 @@ use crate::reader::UnrealReadExt;
 use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UMeshAnimation::Serialize`
-/// (Engine_demo `0x10302d88` → `sub_104a40d0`).
+/// (Engine_demo `0x10302d88` -> `sub_104a40d0`).
 ///
 /// Verified against the binary's helper TArray readers
 /// (`sub_104c2d70` for RefBones, `sub_104c2f70` for Moves,
 /// `sub_104c3cb0` for AnimSeqs) plus the AnalogTrack chain
-/// (`sub_104c3280` → `sub_104c3770`/`sub_104c3950`/`sub_104c3b40`)
+/// (`sub_104c3280` -> `sub_104c3770`/`sub_104c3950`/`sub_104c3b40`)
 /// and the FMeshAnimNotify reader (`sub_104c3fa0`).
 ///
 /// At SC's `Ver=0x64`, `LicenseeVer=0x11`, `IsLoading=1`, `IsPersistent=1`:

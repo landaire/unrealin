@@ -14,17 +14,17 @@ use crate::runtime::UnrealRuntime;
 /// Mirrors `ULevelBase::Serialize` (Engine_demo `sub_1040fa10`).
 ///
 /// At normal package load (`IsLoading=1`, `IsTrans=0`, `IsSaving=0`):
-/// - Super (UObject tag loop) — handled via parent_object.deserialize.
-/// - `INT DbNum` (raw u32) and `INT DbMax` (raw u32) — Actors array
+/// - Super (UObject tag loop) -- handled via parent_object.deserialize.
+/// - `INT DbNum` (raw u32) and `INT DbMax` (raw u32) -- Actors array
 ///   metadata.
 /// - For each of `DbNum` actors: `Ar << UObject*` (packed_int).
 /// - `Ar << URL` (FURL operator<<: 4 FStrings + TArray<FString> +
 ///   2 INTs).
 /// - The UT2004 `!IsLoading && !IsSaving` NetDriver/DemoRecDriver
-///   tail is **dropped** in SC's body — confirmed by the
+///   tail is **dropped** in SC's body -- confirmed by the
 ///   `Engine_demo.dll` decompile.
 ///
-/// `IsTrans` branch (calls `sub_104159a0` → `sub_10415d00`) reads
+/// `IsTrans` branch (calls `sub_104159a0` -> `sub_10415d00`) reads
 /// the actors array via the standard `Ar << TArray` path; that's
 /// only used in transient archives (Editor undo, etc.), never at
 /// package load.
@@ -71,7 +71,7 @@ where
     if op_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("FURL op count negative ({op_count}) — body is misaligned"),
+            format!("FURL op count negative ({op_count}) -- body is misaligned"),
         ));
     }
     let mut op = Vec::with_capacity(op_count as usize);

@@ -44,14 +44,14 @@ pub struct GEPartitioner {
 ///   2. for tags {1,2,4,8,16,32,64}: alloc subclass, read u32 at +8,
 ///      then dispatch into subclass vtable[7] for the body
 ///   3. for tag = 0 or tag > 64 (`tag-1 u> 0x3f`): early return at
-///      `0x150868` — no body, no `+8` read
+///      `0x150868` -- no body, no `+8` read
 ///   4. for in-range tags that hit lookup_table_150890[tag-1] = 7
-///      (i.e. 3, 5..7, 9..15, 17..31, 33..63): same early return —
+///      (i.e. 3, 5..7, 9..15, 17..31, 33..63): same early return --
 ///      jump_table_150870[7] is `0x150868`
 ///
-/// Tag → subclass body reader (vtable[7]):
-/// - 1, 2, 4, 8, 64 → `sub_1502d0`: 6× u32 at obj+{0xc..0x20}
-/// - 16, 32       → `sub_150540`: 9× u32 at obj+{0xc..0x2c}
+/// Tag -> subclass body reader (vtable[7]):
+/// - 1, 2, 4, 8, 64 -> `sub_1502d0`: 6× u32 at obj+{0xc..0x20}
+/// - 16, 32       -> `sub_150540`: 9× u32 at obj+{0xc..0x2c}
 #[derive(Debug, Clone)]
 pub struct GEObject {
     pub tag: u32,
@@ -80,7 +80,7 @@ pub struct GERootNode {
 
 #[derive(Debug, Clone)]
 pub enum GERootBody {
-    /// `tag == 0` or `tag` outside `[1, 16]` — no body bytes follow.
+    /// `tag == 0` or `tag` outside `[1, 16]` -- no body bytes follow.
     Empty,
     /// Interior node: tags 1, 3, 7. xbe vftable[4] = `sub_1514d0`:
     /// 4 raw bytes, then two recursive polymorphic node reads.
@@ -120,13 +120,13 @@ where
     // Negative TArray counts cannot occur in an engine-written body
     // (FArray operator<< always writes non-negative ARCount). A negative
     // value here means the level body is misaligned with the engine's
-    // read order — see the matching FURL/TravelInfo comments in
+    // read order -- see the matching FURL/TravelInfo comments in
     // `ulevel_base.rs` / `ulevel.rs`. Abort cleanly so callers unwind
     // without panicking.
     if object_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("GEPartitioner object count negative ({object_count}) — body is misaligned"),
+            format!("GEPartitioner object count negative ({object_count}) -- body is misaligned"),
         ));
     }
     let mut objects = Vec::with_capacity(object_count as usize);
@@ -138,7 +138,7 @@ where
     if index_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("GEPartitioner index count negative ({index_count}) — body is misaligned"),
+            format!("GEPartitioner index count negative ({index_count}) -- body is misaligned"),
         ));
     }
     let mut indices = Vec::with_capacity(index_count as usize);
@@ -170,14 +170,14 @@ where
     let tag = reader.read_u32::<E>()?;
     // xbe `sub_1512b0` (the polymorphic op<<):
     //   1. read u32 tag
-    //   2. if tag-1 u> 0xf: return — no body
+    //   2. if tag-1 u> 0xf: return -- no body
     //   3. else lookup_table_15143c[tag-1] gives jump_table_151424 idx;
     //      idx 0 (tag 1) and idx 5 (any "default" in-range tag) both
     //      jump to 0x15141b which is the return block (no body)
     //
-    // Real handlers: tags 2, 4, 8 → vtable 0x281600/0x281614/0x281628,
+    // Real handlers: tags 2, 4, 8 -> vtable 0x281600/0x281614/0x281628,
     // each with vtable[4] = sub_1514d0 (interior: 4B + two recursive
-    // sub_1512b0 calls). Tag 16 → vtable 0x2815d8, vtable[4] =
+    // sub_1512b0 calls). Tag 16 -> vtable 0x2815d8, vtable[4] =
     // sub_151130 (leaf: two u32 reads via sub_150b70). Tag 1 is the
     // "null marker" the save path writes when `*arg2 == nullptr`.
     let body = match tag {
@@ -208,7 +208,7 @@ where
 {
     let tag = reader.read_u32::<E>()?;
     // xbe `sub_150710`: `(tag - 1) u> 0x3f` short-circuits to the
-    // return block at 0x150868 — no body bytes. Catches tag = 0 and
+    // return block at 0x150868 -- no body bytes. Catches tag = 0 and
     // tag > 64.
     if tag == 0 || tag > 64 {
         return Ok(GEObject {
@@ -240,7 +240,7 @@ where
             GEObjectBody::Large { field_8, body }
         }
         // Tags 3, 5..7, 9..15, 17..31, 33..63: lookup_table_150890
-        // returns 7 → return block, no body.
+        // returns 7 -> return block, no body.
         _ => GEObjectBody::Empty,
     };
     Ok(GEObject { tag, body })

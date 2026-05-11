@@ -17,9 +17,9 @@ use crate::runtime::UnrealRuntime;
 /// `0x10310f50`). For the load path (`arg2[6] == 0`, i.e. not saving):
 ///
 /// 1. `UObject::Serialize` (tagged-property loop on the parent UObject).
-/// 2. `FArchive::CountBytes` (vtable+0x14) — memory accounting only, no IO.
-/// 3. `Ar.Serialize(&Max, 4)` — 4 raw bytes (TArray Max field).
-/// 4. `Ar.Serialize(&Count, 4)` — 4 raw bytes (TArray Count field).
+/// 2. `FArchive::CountBytes` (vtable+0x14) -- memory accounting only, no IO.
+/// 3. `Ar.Serialize(&Max, 4)` -- 4 raw bytes (TArray Max field).
+/// 4. `Ar.Serialize(&Count, 4)` -- 4 raw bytes (TArray Count field).
 /// 5. (Skipped on normal load) GUndo bookkeeping; reads more for savegame.
 /// 6. For each poly (Count iterations): `operator<<(Ar, FPoly&)`
 ///    (`0x10420370`).
@@ -38,7 +38,7 @@ pub struct Polys {
 /// `Ver >= 0x4E, GIsSavegame == 0` path, which is what SC's xbox runtime
 /// uses for normal package loads:
 ///
-/// 1. `Ar << num_vertices` — packed_int.
+/// 1. `Ar << num_vertices` -- packed_int.
 /// 2. 12 individual `Ar.Serialize(buf, 4)` reads for the four FVectors
 ///    (Base, Normal, TextureU, TextureV) -> 48 raw bytes total.
 /// 3. Per vertex (`num_vertices` iterations): three `Ar.Serialize(buf, 4)`
@@ -55,7 +55,7 @@ pub struct Polys {
 /// fields and a re-orient computation; we don't model it.)
 #[derive(Default, Debug)]
 pub struct FPoly {
-    /// Base, Normal, TextureU, TextureV — four FVectors, 48 bytes total.
+    /// Base, Normal, TextureU, TextureV -- four FVectors, 48 bytes total.
     /// Stored as a Vec rather than `[u8; 48]` because Default for arrays
     /// > 32 needs an explicit impl, which isn't worth it here.
     pub vectors_raw: Vec<u8>,

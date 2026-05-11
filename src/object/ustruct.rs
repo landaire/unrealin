@@ -206,7 +206,7 @@ impl DeserializeUnrealObject for Struct {
         debug!("deserializing script_text");
         // SC's `UStruct::Serialize` (xbe `0x2b8c0`) reads ScriptText
         // through `operator<<<UObject*>(&local_var)` where `local_var`
-        // is initialized to 0 — i.e. on load it reads-and-discards, on
+        // is initialized to 0 -- i.e. on load it reads-and-discards, on
         // save it writes a null packed_int. Replicating that on the
         // capture side: we still consume the source bytes (cursor must
         // advance for the next field) but splice the captured frame so

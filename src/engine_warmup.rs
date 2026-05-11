@@ -7,7 +7,7 @@
 //! `StaticLoadObject(MapName, ULevel, ...)`. Some entries are
 //! loaded explicitly by `game_main`; the rest cascade in via
 //! property-tag and class-ref deserialization as the explicit ones
-//! go through `verify_imports`. We don't distinguish those cases —
+//! go through `verify_imports`. We don't distinguish those cases --
 //! `load_object_by_full_name` is idempotent (no-op on the second
 //! call), so iterating the full list reproduces the exact engine
 //! state regardless of which entries were "really" explicit.
@@ -17,7 +17,7 @@
 //! `game_main`'s explicit `StaticLoadObject` calls in the xbe (a
 //! fixed code path independent of which `common.lin` variant the
 //! map dir ships). The proto build mostly works with the same warmup
-//! (verified empirically — coverage matches retail across 28 maps),
+//! (verified empirically -- coverage matches retail across 28 maps),
 //! though the proto's `game_main` has its own load order; ours just
 //! happens to overlap enough that the cascade reaches engine
 //! quiescence regardless.
@@ -204,7 +204,7 @@ pub(crate) const ENGINE_CLASS_WARMUP: &[&str] = &[
 /// EchelonHUD.EchelonMainHUD
 /// ```
 ///
-/// In the engine these are scripted loads — `EchelonGameInfo`'s
+/// In the engine these are scripted loads -- `EchelonGameInfo`'s
 /// `PreBeginPlay`/`InitGame`/`PostBeginPlay` chain, plus the
 /// `PlayerController`/`Pawn` spawn that `LoadMap` does after the
 /// level cascade (xbe `0x81860`, the block after `StaticLoadObject(
@@ -216,7 +216,7 @@ pub(crate) const ENGINE_CLASS_WARMUP: &[&str] = &[
 /// explicit `load_object_by_full_name` calls after `run_post_cascade`.
 /// Triggering the class umbrellas pulls in their function children
 /// + CDO defaults, which transitively loads referenced `Sound`/
-/// `MeshAnimation` imports via property-tag resolution — closing the
+/// `MeshAnimation` imports via property-tag resolution -- closing the
 /// trailing-sounds gap that `EchelonCharacter.ESam`'s defaults
 /// account for.
 pub(crate) const POST_LEVEL_LOAD_LIST: &[&str] = &[

@@ -16,7 +16,7 @@ use crate::runtime::UnrealRuntime;
 /// At normal package load `Ar.IsPersistent()` is true, so the
 /// `DefMeshInstance` ref is NOT serialized. SC's `sub_1041df50`
 /// has the same shape (the conditional gates on what the
-/// `Engine_demo` BinAssist subagent called `Ar[7]` — empirically
+/// `Engine_demo` BinAssist subagent called `Ar[7]` -- empirically
 /// equivalent to `IsPersistent`, not `GIsSavegame`). Net effect at
 /// load time: `UMesh::Serialize` is just `UPrimitive::Serialize`.
 #[derive(Default, Debug)]

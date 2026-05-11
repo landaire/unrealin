@@ -28,7 +28,7 @@ use crate::reader::LinRead;
 type RcLinker = Rc<RefCell<Linker>>;
 
 /// Class names whose Rust stub is known to NOT match the engine's
-/// native `Serialize` byte count — typically because we have no stub
+/// native `Serialize` byte count -- typically because we have no stub
 /// at all and fall through to `UObject::Serialize` (tag loop), which
 /// terminates at the first `None` tag well before the body's actual
 /// end. For these classes we cheat the `serial_size - read_size`
@@ -37,7 +37,7 @@ type RcLinker = Rc<RefCell<Linker>>;
 /// per-class `Serialize` stub mirroring the engine.
 ///
 /// Verified-complete stubs are NOT on this list: they consume exactly
-/// what the engine consumes (which is often less than `serial_size` —
+/// what the engine consumes (which is often less than `serial_size` --
 /// see `runtime::preload` short-read comment).
 const INCOMPLETE_STUB_CLASSES: &[&str] = &[];
 
@@ -107,7 +107,7 @@ impl UnrealRuntime {
     /// `\S0_0_Voice\00_25_01.bin`, and the file_table entry for it is
     /// `Lipsynch\int\S0_0_Voice\00_25_01.bin` (the engine's `FindFile`
     /// resolves the full path through localized search dirs we don't model).
-    /// Returns `Some(len)` for the first suffix match, `None` if not found —
+    /// Returns `Some(len)` for the first suffix match, `None` if not found --
     /// matching the engine's behavior of bailing out (no read) on open
     /// failure rather than panicking.
     pub fn find_file_by_suffix(&self, body_filename: &str) -> Option<u64> {
@@ -197,7 +197,7 @@ impl UnrealRuntime {
         // that package's linker is loaded. The cascade advances the underlying
         // sequential reader past every stacked package's tables, so when a
         // subsequent preload seeks into one of *this* package's exports the
-        // bytes it consumes are the actual export body — not whatever stacked
+        // bytes it consumes are the actual export body -- not whatever stacked
         // package PKG_TAG happened to follow our header.
         //
         // Recursion safety: we insert into `self.linkers` *before* calling
@@ -273,7 +273,7 @@ impl UnrealRuntime {
                     // Source exhausted (typical: 009_ChineseEmbassy's
                     // truncated common.lin runs out of bytes mid-cascade).
                     // The engine handles this by stopping the cascade for
-                    // this source — the missing packages are physically in
+                    // this source -- the missing packages are physically in
                     // the secondary `.lin` and get loaded later via its own
                     // cascade, triggered by the Stage 2 `MyLevel` load.
                     tracing::warn!(
@@ -308,7 +308,7 @@ impl UnrealRuntime {
 
     /// Resolve a packed `raw_index` to an already-loaded object without
     /// triggering any IO. Mirrors the lookup half of
-    /// `load_object_by_raw_index` but skips construction/queue/preload —
+    /// `load_object_by_raw_index` but skips construction/queue/preload --
     /// useful for post-cascade introspection where reading new bytes
     /// would misalign the linear cursor.
     pub fn find_loaded_object_by_raw_index(
@@ -322,7 +322,7 @@ impl UnrealRuntime {
             let idx = crate::de::ExportIndex::from_raw(raw_index);
             l.objects.get(&idx).cloned()
         } else if raw_index < 0 {
-            // Import — resolve via the import's owning package and name.
+            // Import -- resolve via the import's owning package and name.
             let l = owning_linker.borrow();
             let imp_idx = crate::de::ImportIndex::from_raw(raw_index);
             let imp = l.find_import_by_index(imp_idx)?;
@@ -503,7 +503,7 @@ impl UnrealRuntime {
         // preloads push their own frames so they don't pollute ours;
         // we get only this object's body. The cheat-the-remainder
         // fallback below runs while the capture frame is still active
-        // so its bytes also land in the captured body — required for
+        // so its bytes also land in the captured body -- required for
         // re-emit to write a serial_size that matches the original.
         reader.push_capture();
         let pre_per_src = reader.source_consumed_per_source().to_vec();
@@ -523,13 +523,13 @@ impl UnrealRuntime {
             // sequential stream while the engine has independent
             // FArchives per .lin. A Stage-2 actor body deserialize
             // (running on src1) that triggers a Preload of a
-            // common.lin export reads bytes from the wrong source —
+            // common.lin export reads bytes from the wrong source --
             // surfacing as `ULodMesh TArray count negative`,
             // `ExprToken: 79`, etc. Discard the partial capture, mark
             // the object loaded so the cascade doesn't retry, restore
             // reader state, and return Ok so the rest of the cascade
             // proceeds. The body is lost (won't re-emit), but most of
-            // the level cascade still completes — the alternative
+            // the level cascade still completes -- the alternative
             // (propagating the error) aborts everything.
             tracing::warn!("skipping preload of {preload_full_name}: {e}; continuing cascade");
             let _ = reader.pop_capture();
@@ -597,7 +597,7 @@ impl UnrealRuntime {
             std::cmp::Ordering::Equal => {}
             std::cmp::Ordering::Less => {
                 // SC's `Preload` (xbe `0x38390`) does NOT bound reads
-                // by `serial_size` — it calls `Precache(serial_size)`
+                // by `serial_size` -- it calls `Precache(serial_size)`
                 // which resolves to a no-op (`vtable[0x4c]` =
                 // `FArchive::Precache` tail-calls `sub_101071a0`, an
                 // immediate-return). So `serial_size` is a stale
@@ -605,14 +605,14 @@ impl UnrealRuntime {
                 // engine-faithful behavior when our stub matches what
                 // the engine's native `Serialize` actually reads
                 // (e.g. `samAMesh` in `012_PresidentialPalace`'s
-                // common.lin reads 0x1B802 / 0x1CA66 — engine also
+                // common.lin reads 0x1B802 / 0x1CA66 -- engine also
                 // reads only 0x1B802).
                 //
                 // Default behavior: trust the stub. Don't pad the
                 // cursor. The engine doesn't, either.
                 //
                 // The exception list below is for classes whose stub
-                // is known INCOMPLETE — pure UObject tag-loop fall-
+                // is known INCOMPLETE -- pure UObject tag-loop fall-
                 // through with no native body parsing. For those, the
                 // engine reads N bytes after the tags but our
                 // deserialize doesn't, so the cursor needs to advance
@@ -648,7 +648,7 @@ impl UnrealRuntime {
             }
             std::cmp::Ordering::Greater => {
                 // SC's `Preload` (xbe `0x38390`) does NOT bound reads by
-                // `serial_size` — it calls `Precache(serial_size)` which
+                // `serial_size` -- it calls `Precache(serial_size)` which
                 // resolves to a no-op (`vtable[0x4c]` = `FArchive::Precache`
                 // tail-calls `sub_101071a0`, an immediate-return). Several
                 // SC native classes legitimately read past the export's
@@ -716,7 +716,7 @@ impl UnrealRuntime {
             // Mirror SC's `IndexToObject` (xbe `0x39620`): when the index is
             // out of range the engine logs `ImportIndex` and still calls
             // CreateImport with whatever's at `import_table[idx]`. On Xbox
-            // that's whatever happens to be in memory — usually zeroed or
+            // that's whatever happens to be in memory -- usually zeroed or
             // unmapped, which CreateImport silently treats as "no object".
             // Match that by returning None instead of crashing; the bogus
             // ref is what was on disk and the engine itself never panics.
@@ -739,7 +739,7 @@ impl UnrealRuntime {
 
             // The import row's `(class_name, class_package)` come from
             // the on-disk import table, authoritative in both unchecked
-            // and trace mode. Resolution always strict — see
+            // and trace mode. Resolution always strict -- see
             // `load_object_by_full_name_with_class` for the engine
             // VerifyImport reference.
             self.load_object_by_full_name_with_class::<E, _>(
@@ -785,7 +785,7 @@ impl UnrealRuntime {
         // `CreateExport(arg2 - 1)`, which on Xbox accesses memory past the
         // export table, usually returning nullptr. We can't safely
         // dereference past our table, so log the same diagnostic and
-        // return None — the closest safe match to "engine read NULL".
+        // return None -- the closest safe match to "engine read NULL".
         let Some(export) = linker_inner.find_export_by_index(export_index).cloned() else {
             tracing::warn!(
                 "out-of-range export index {} in {:?} (export table len {}); treating as None",
@@ -1005,8 +1005,8 @@ impl UnrealRuntime {
     /// segment, optionally filtering on the engine's static class.
     ///
     /// `class_info`:
-    /// - `None` — accept the first match by name regardless of class.
-    /// - `Some((class, package))` — match strictly. The match must
+    /// - `None` -- accept the first match by name regardless of class.
+    /// - `Some((class, package))` -- match strictly. The match must
     ///   have both the leaf name and the static class. Mirrors SC's
     ///   `VerifyImport` (xbe `0x38f60`) and `StaticLoadObject` (xbe
     ///   `0x4E740`): both consult `(name, class)` together when
@@ -1099,13 +1099,13 @@ impl UnrealRuntime {
         // candidates. Verified via LLIL at `sub_468c0+0x82..0x95`:
         // when `arg5 != 0` (the standard `StaticLoadObject` invocation
         // pattern) the comparison is `entry.class == InClass` exactly,
-        // not `IsA(InClass)` — so a `MeshAnimation` export named
+        // not `IsA(InClass)` -- so a `MeshAnimation` export named
         // `LadderAnims` does NOT match a `class<MeshAnimation>` import
         // (which is itself a `Core.Class` lookup, not a
         // `MeshAnimation` lookup).
         //
         // When `class_info` is `None`, accept any same-name export
-        // that isn't a `*Property` or `Function` — those exist as
+        // that isn't a `*Property` or `Function` -- those exist as
         // top-level exports for script reflection but aren't
         // loadable via name alone. Used by callers that genuinely
         // don't have an `InClass` (e.g. `decode_linear_file`'s
@@ -1137,7 +1137,7 @@ impl UnrealRuntime {
         // every candidate but a same-name export of a different class
         // exists, log the divergence and use the candidate. This is a
         // CONCESSION to the engine's own permissive paths that we
-        // don't fully model — `VerifyImport`'s `Mesh`→`LodMesh` rename
+        // don't fully model -- `VerifyImport`'s `Mesh`->`LodMesh` rename
         // (xbe `0x38f60`), native `UClass` lookups via `GObjects` for
         // engine intrinsics, etc. Without the fallback, the LIN file's
         // sequential layout misaligns: removing the cursor advance
@@ -1201,7 +1201,7 @@ mod tests {
                 !entry.is_empty(),
                 "INCOMPLETE_STUB_CLASSES contains an empty string"
             );
-            // Names should be valid class identifiers — no dots, no
+            // Names should be valid class identifiers -- no dots, no
             // whitespace, ASCII alphanumeric / underscore only.
             for ch in entry.chars() {
                 assert!(

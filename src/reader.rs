@@ -197,7 +197,7 @@ pub struct LinReader<R> {
     /// `physical_position()` so `load_linker` can capture the package's
     /// PKG_TAG offset before reading the header. Distinct from
     /// `source_consumed_per_source` (a monotonic counter of bytes
-    /// consumed) — physical_pos can move backwards on cross-source
+    /// consumed) -- physical_pos can move backwards on cross-source
     /// preloads (e.g. Stage-2 cascade triggering an ESam SkeletalMesh
     /// preload back into common.lin).
     source_phys_pos: Vec<u64>,
@@ -290,13 +290,13 @@ where
     R: Read,
 {
     /// Read from the current source ONLY. Source switching is the
-    /// runtime's job (`switch_to_source` at known boundaries — typically
+    /// runtime's job (`switch_to_source` at known boundaries -- typically
     /// the Stage 2 MyLevel load). We do NOT auto-advance on EOF: each
     /// `.lin` has its own engine reader, and silently spilling reads
     /// from one file into another corrupts package boundaries. For the
     /// 009_ChineseEmbassy variant whose `common.lin` is a 3.1 MB
     /// prefix of the dominant 6.6 MB file, the engine simply stops
-    /// loading common.lin packages at the truncation point — the
+    /// loading common.lin packages at the truncation point -- the
     /// trailing packages are loaded from session.lin via their own
     /// cascade, which we trigger explicitly in `decode_unchecked`'s
     /// Stage 2 with `switch_to_source(1)`.
@@ -428,7 +428,7 @@ impl<R> CheckedLinReader<R> {
     ) -> Self {
         let mut file_ptr_to_index = HashMap::new();
         // Pre-bind any file_ptrs we already know about (in case the trace
-        // never references one — won't matter, but harmless).
+        // never references one -- won't matter, but harmless).
         for (i, ptr) in file_ptr_order.iter().enumerate() {
             file_ptr_to_index.insert(*ptr, i);
         }
@@ -688,7 +688,7 @@ pub trait LinRead: io::Read + io::Seek {
     /// Read `buf.len()` bytes from the underlying source as if a *different*
     /// FArchive (sharing the same FFile) had issued the read. The bytes are
     /// removed from the source cursor and one matching trace `Read` op is
-    /// popped, but `self.pos` is left untouched — mirroring the engine's
+    /// popped, but `self.pos` is left untouched -- mirroring the engine's
     /// behavior when one FArchive's Serialize call advances the shared FFile
     /// past the linker's logical archive position. Used by
     /// `USound::Serialize`'s inline lipsynch load: SC opens a separate
@@ -707,7 +707,7 @@ pub trait LinRead: io::Read + io::Seek {
     fn pop_capture(&mut self) -> Vec<u8>;
     /// Length of the innermost capture frame (0 if none active). Used
     /// with `splice_capture_tail` to substitute the bytes captured for
-    /// a phantom field (e.g. UStruct::ScriptText) — SC's
+    /// a phantom field (e.g. UStruct::ScriptText) -- SC's
     /// `UStruct::Serialize` reads ScriptText into a discarded local on
     /// load and writes a null on save, so the LIN bytes for that field
     /// are noise that breaks UExplorer when re-emitted verbatim.
@@ -987,7 +987,7 @@ where
         // buf.len() bytes but the linker's logical archive position stays
         // put. Mirrors the engine's behavior when one FArchive (the
         // lipsynch loader) does Ar.Serialize on a SECOND archive that
-        // shares the same underlying FFile — the FFile's position
+        // shares the same underlying FFile -- the FFile's position
         // advances; the OUTER linker's logical position doesn't.
         if buf.is_empty() {
             return Ok(());

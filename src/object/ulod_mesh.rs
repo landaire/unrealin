@@ -20,7 +20,7 @@ use crate::runtime::UnrealRuntime;
 /// All reads are unconditional at SC's `Ver=0x64`, `LicenseeVer=0x11`,
 /// `IsLoading=1`, `GIsSavegame=0`. Inner TArray serializers are
 /// raw-bytes (no FName / FString / FObject) except for the materials
-/// array at `+0x70` which is `TArray<UObject*>` — each element is a
+/// array at `+0x70` which is `TArray<UObject*>` -- each element is a
 /// packed_int routed through `read_object` so the cascade fires.
 #[derive(Default, Debug)]
 pub struct LodMesh {

@@ -21,27 +21,27 @@ use crate::runtime::UnrealRuntime;
 /// Per-step (gates that always fire at SC are inlined; gates that
 /// always skip are dropped):
 /// 1. `ULevelBase::Serialize` (super).
-/// 2. `if (GIsSavegame) { ... }` — SC at package load has
+/// 2. `if (GIsSavegame) { ... }` -- SC at package load has
 ///    `GIsSavegame=0`; entire savegame block (GBackupModel, two
 ///    globals, `GCircCache` 65536 bytes, 8 raw bytes from
 ///    `+0x3964`) is **skipped**.
-/// 3. `Ar << Model` — packed_int (UObject*).
-/// 4. `if (Ar.Ver < 0x62) Ar << OldSpecs` — Ver=0x64, **skipped**.
-/// 5. `Ar.Serialize(&ApproxTime, 4)` — raw u32.
-/// 6. `Ar << FirstDeleted` — packed_int.
-/// 7. Loop i=0..15: `Ar << TextBlocks[i]` — packed_int per
+/// 3. `Ar << Model` -- packed_int (UObject*).
+/// 4. `if (Ar.Ver < 0x62) Ar << OldSpecs` -- Ver=0x64, **skipped**.
+/// 5. `Ar.Serialize(&ApproxTime, 4)` -- raw u32.
+/// 6. `Ar << FirstDeleted` -- packed_int.
+/// 7. Loop i=0..15: `Ar << TextBlocks[i]` -- packed_int per
 ///    `UTextBuffer*` (NUM_LEVEL_TEXT_BLOCKS = 16).
-/// 8. `if (Ar.Ver > 0x3E) Ar << *(this + 0xd0)` — Ver=0x64, fires.
+/// 8. `if (Ar.Ver > 0x3E) Ar << *(this + 0xd0)` -- Ver=0x64, fires.
 ///    The field at `+0xd0` is a **single FString** in SC, not the
 ///    UT2004 `TMap<FString, FString> TravelInfo`. Verified via LLIL
-///    `0x10410d2b` — the indirect call resolves through
+///    `0x10410d2b` -- the indirect call resolves through
 ///    `[0x10688db4]` = `operator<<(FArchive&, FString&)`. UT2004's
 ///    TMap<FString,FString> would have been a TMap operator<<; SC's
 ///    layout collapsed it (or the field changed semantics entirely).
-/// 9. `if (Model && !IsTrans) Ar.Preload(Model)` — `Preload` is
+/// 9. `if (Model && !IsTrans) Ar.Preload(Model)` -- `Preload` is
 ///    a no-op stub in SC (vtable[4] tail-calls a function that
 ///    immediately returns); no IO.
-/// 10. `if (Ar.LicenseeVer > 0) Ar << *(this + 0x3914)` — SC
+/// 10. `if (Ar.LicenseeVer > 0) Ar << *(this + 0x3914)` -- SC
 ///     LicenseeVer=0x11 fires this. Verified via xbe RE
 ///     (`sub_8d310` calls `sub_150ff0` with `arg1+0x3914`): the
 ///     field is a `GEPartitioner`, SC's spatial structure for

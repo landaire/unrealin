@@ -63,7 +63,7 @@ const NAME_STR_PROPERTY: u8 = 11;
 /// resolved strings are `{Vector, Rotator, Color}` per SC's `RegisterNames`
 /// (xbe `0x41320`).** This differs from PC's `Core_retail.dll` `sub_10172670`
 /// which uses the same indices but resolves them to `{Vector, Rotator, Plane}`
-/// — the global FName ordering moved `Color` into slot `0x5A` in SC. Compare
+/// -- the global FName ordering moved `Color` into slot `0x5A` in SC. Compare
 /// by resolved string, case-insensitive (matches `appStrchr_insensitive`).
 fn is_native_bin_struct(struct_obj: &RcUnrealObject) -> bool {
     let n = struct_obj.borrow().base_object().name.clone();
@@ -117,7 +117,7 @@ fn collect_chain(out: &mut Vec<RcUnrealObject>, head: Option<RcUnrealObject>) {
 /// mutably borrowed (e.g. an outer class is mid-deserialize and its
 /// `default_tags` loop spawned a nested class load whose super is back
 /// up the stack), `try_borrow()` returns `Err` and we skip. The cost is
-/// missing inherited properties for tag dispatch in the inner class —
+/// missing inherited properties for tag dispatch in the inner class --
 /// those tags fall back to `cheat()` and trace alignment is preserved.
 fn collect_super_chain(out: &mut Vec<RcUnrealObject>, super_obj: Option<RcUnrealObject>) {
     let Some(super_rc) = super_obj else {
@@ -443,7 +443,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn native_bin_allowlist() {

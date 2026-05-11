@@ -129,7 +129,7 @@ where
 
 impl SerializeUnrealObject for StaticMesh {
     /// Patch the stale absolute `lazy_seek_pos` to its new position.
-    /// Same pattern as `Texture::serialize` — only the 4-byte
+    /// Same pattern as `Texture::serialize` -- only the 4-byte
     /// TLazyArray skip target gets rewritten; everything else in the
     /// body stays verbatim. If the version gate didn't fire (no
     /// lazy_seek_pos was read), the recorded field position is 0 and

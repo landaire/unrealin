@@ -60,7 +60,7 @@ pub(crate) fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()
 /// Number of bytes [`write_packed_int`] would emit for `value`. Mirrors
 /// the encoding loop above: 1 byte for `|value| < 0x40`, then +1 byte
 /// per 7 bits of magnitude beyond that. Caps at 5 bytes (33 bits of
-/// magnitude — beyond what an `i32` can encode anyway).
+/// magnitude -- beyond what an `i32` can encode anyway).
 pub(crate) fn packed_int_size(value: i32) -> usize {
     let mut v: u32 = value.unsigned_abs();
     if v < 0x40 {
@@ -154,7 +154,7 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
 
     // Find a "None" name index in the package's name table for use as
     // the placeholder name on never-loaded exports. SC's runtime
-    // `SavePackage` neutralises export entries it never preloaded —
+    // `SavePackage` neutralises export entries it never preloaded --
     // their `class_index`, `super_index`, `package_index`, `object_flags`
     // are all zeroed and `object_name` points to "None". We mirror that
     // (see export-table write below). Most SC packages already have
@@ -166,7 +166,7 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // its neutral form; UELib / UPK Explorer / the engine itself all
     // read the result the same way the engine produced it. Do not
     // "preserve" the original class/name as a way to inflate
-    // list-exports counts on never-loaded exports — the bytes on disk
+    // list-exports counts on never-loaded exports -- the bytes on disk
     // would diverge from what `SavePackage` would have written, and
     // we'd be re-introducing a heuristic the engine deliberately doesn't
     // do. The right place to recover missing exports is upstream, by
@@ -294,10 +294,10 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     let effective_size: Vec<i32> = bodies.iter().map(|b| b.bytes.len() as i32).collect();
 
     // Standard UE2 layout (what UPK Explorer / Unreal-Library expect)
-    // is: header → names → imports → exports table → body data, with
+    // is: header -> names -> imports -> exports table -> body data, with
     // each `serial_offset` pointing forward into the body region.
     // The challenge is that `serial_offset` is a packed_int whose width
-    // depends on its value — but the value depends on the table's size,
+    // depends on its value -- but the value depends on the table's size,
     // which depends on the widths. We resolve the chicken-and-egg with
     // a fixed-point iteration: assume every `serial_offset` takes 4
     // bytes initially, compute resulting offsets, observe the actual
@@ -326,9 +326,9 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         };
         let mut sz = packed_int_size(ci);
         sz += packed_int_size(si);
-        sz += 4; // package_index (raw u32) — neutralised to 0 below for empties
+        sz += 4; // package_index (raw u32) -- neutralised to 0 below for empties
         sz += packed_int_size(on);
-        sz += 4; // object_flags (raw u32) — neutralised to 0 below for empties
+        sz += 4; // object_flags (raw u32) -- neutralised to 0 below for empties
         sz += packed_int_size(effective_size[i]); // serial_size
         entry_fixed_sizes.push(sz);
     }
@@ -378,7 +378,7 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     //
     // ENGINE PARITY (see the leading comment block at the top of this
     // function): the neutralisation here mirrors what SC does. Don't
-    // change it to preserve the original schema "for visibility" —
+    // change it to preserve the original schema "for visibility" --
     // recover missing bodies upstream instead.
     for (i, export) in pkg.exports.iter().enumerate() {
         let (ci, si, pi, on, ofl) = if effective_size[i] == 0 {
