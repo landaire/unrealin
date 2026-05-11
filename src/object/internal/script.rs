@@ -516,16 +516,15 @@ pub enum Expr {
 /// UClass script body in
 /// `004_CaspianOilRefinery/1_3_3CaspianOilRefinery.lin`.
 ///
-/// Note: the fall-through range `0x48..=0x5F` (bytes that hit
-/// `if (result u> 0x42) return` BEFORE the table dispatch even runs)
-/// is intentionally NOT included here. Empirically, treating those as
-/// no-ops causes runaway misreads in proto's
-/// `EchelonPattern.VGame` parser, indicating proto's compiled bytecode
-/// never legitimately contains those bytes and seeing one means our
-/// cursor is already misaligned. The cheat-advance recovery in
-/// `runtime::preload` handles that case; masking it via silent no-op
-/// makes the misalignment cascade through subsequent object/name
-/// reference reads.
+/// Note: bytes in `0x43..=0x5F` are ALSO engine no-ops per
+/// `sub_1012f3c0`'s `if (result u> 0x42) return` fall-through, but we
+/// don't accept them here. Empirically, treating them as no-ops makes
+/// our parser tolerate cursor drift instead of failing fast, which
+/// cascades into millions of garbage object/name reference reads and
+/// hangs the merge. The cheat-advance in `runtime::preload` is the
+/// engine-faithful recovery path when our parser hits a token it
+/// won't accept (the engine's actual compiled bytecode never legitimately
+/// contains those bytes in well-aligned script bodies).
 fn is_sc_noop_byte(b: u8) -> bool {
     matches!(b, 0x03 | 0x2B | 0x3A..=0x3F)
 }

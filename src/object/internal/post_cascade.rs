@@ -843,6 +843,51 @@ where
                 break 'phases;
             }
         }
+
+        // After the actor PostBeginPlay phase, before SetInitialState,
+        // mirror UE2's GameInfo PostBeginPlay step. SC's `LoadMap`
+        // (xbe `0x81860`) calls
+        // `StaticLoadClass(EnginePkg, nullptr, &var_c0c, nullptr, 1)`
+        // where `var_c0c` is the class name parsed from the URL
+        // `?GAME=...` option, then spawns a GameInfo of that class
+        // and calls its `PostBeginPlay`. That's what fires the
+        // StaticLoadObject cluster for level-specific assets (the
+        // ENPC anim cluster for 4_3_0ChineseEmbassy, the level's
+        // patrol patterns, etc.). Verified in
+        // `reads.json.011_ChineseEmbassy_4_3_0...bak`'s
+        // `gobj_loaded_order`: `EchelonPattern.V4_3_0ChineseEmbassy`
+        // + its `PostBeginPlay` at indices 19346/19347 immediately
+        // before the ENPC anim cluster at 19348..19353.
+        //
+        // Where does the URL get the class name? SC's menu code
+        // constructs `?GAME=EchelonPattern.V<secondary_package>`
+        // before calling LoadMap. There is no property tag in the
+        // .lin that declares this class (`LevelInfo.GameType` is
+        // not present in SC's serialized data; `PatternClass` /
+        // `BasicPatternClass` etc. exist but resolve to AI pattern
+        // classes, not the GameInfo class). The level-specific
+        // class IS declared on disk -- `EchelonPattern.u`'s export
+        // table includes `V<level>` exports for every map that has
+        // one -- but the link between the level and its V<level>
+        // lives entirely in SC's runtime menu code. We replicate
+        // the same name-construction convention here, which loads
+        // exactly the class the engine loads via URL.
+        if *fn_name == "PostBeginPlay" {
+            let v_level = format!("EchelonPattern.V{}", secondary_package);
+            runtime.begin_load();
+            let v_class_opt = runtime
+                .load_object_by_full_name::<E, _>(
+                    &v_level,
+                    crate::runtime::LoadKind::Load,
+                    reader,
+                )
+                .ok()
+                .flatten();
+            let _ = runtime.end_load::<E, _>(reader);
+            if let Some(v_class) = v_class_opt {
+                let _ = dispatch_event::<E, _>(&v_class, "PostBeginPlay", runtime, reader)?;
+            }
+        }
     }
     Ok(())
 }
