@@ -280,24 +280,25 @@ fn dump_codec8(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
     }
     std::fs::create_dir_all(dst_dir)
         .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
-    let channels = if banks[0].header.dispatch_subtype == 2 { 2u16 } else { 1u16 };
-    let rate = banks[0].header.sample_rate;
-    let subtype = banks[0].header.dispatch_subtype;
+    let channels = banks[0].channels;
+    let rate = banks[0].sample_rate;
+    let wav_channels = channels.count();
+    let wav_rate = rate.hz();
     let mut all = Vec::new();
     let mut bank_files = Vec::with_capacity(banks.len());
     for (i, bank) in banks.iter().enumerate() {
         let filename = format!("bank_{:02}.wav", i);
-        write_wav(&dst_dir.join(&filename), &bank.pcm, channels, rate)?;
+        write_wav(&dst_dir.join(&filename), &bank.pcm, wav_channels, wav_rate)?;
         all.extend_from_slice(&bank.pcm);
         bank_files.push(filename);
     }
     if banks.len() > 1 {
-        write_wav(&dst_dir.join("all_banks.wav"), &all, channels, rate)?;
+        write_wav(&dst_dir.join("all_banks.wav"), &all, wav_channels, wav_rate)?;
     }
     let mut toc = String::new();
     writeln!(
         toc,
-        "codec = 8\nsubtype = {subtype}\nsample_rate = {rate}\nchannels = {channels}\n"
+        "codec = 8\nsample_rate = {wav_rate}\nchannels = {wav_channels}\n"
     )
     .ok();
     toc.push_str("banks = [\n");
@@ -324,7 +325,7 @@ fn dump_codec3_single(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
         .map_err(|e| eyre!("decode_file: {e}"))?;
     std::fs::create_dir_all(dst_dir)
         .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
-    let channels = if header.mode == 1 { 2u16 } else { 1u16 };
+    let channels = header.mode.channels();
     let rate = audio::codec3::header_sample_rate(&header);
     write_wav(&dst_dir.join("bank_00.wav"), &pcm, channels, rate)?;
     let toc = format!(
@@ -371,7 +372,7 @@ fn dump_ss2_multibank(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
                 .map_err(|e| eyre!("bank {} voice {} header: {e}", bank.index, voice))?;
             let pcm = audio::ss2::decode_voice(bank, voice)
                 .map_err(|e| eyre!("bank {} voice {} decode: {e}", bank.index, voice))?;
-            let channels = if header.mode == 1 { 2u16 } else { 1u16 };
+            let channels = header.mode.channels();
             let rate = audio::codec3::header_sample_rate(&header);
             voice_channels[voice] = channels;
             voice_rates[voice] = rate;
@@ -450,7 +451,7 @@ fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
         let mut seen: std::collections::HashMap<String, u32> = Default::default();
         for e in entries.iter() {
             let base = if e.source_name.is_empty() {
-                format!("seq{:04x}", e.seq_id)
+                format!("seq{:04x}", e.seq_id.raw())
             } else {
                 e.source_name.trim_end_matches(".wav").to_string()
             };
@@ -469,7 +470,7 @@ fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
             writeln!(
                 toc,
                 "    {{ seq_id = 0x{:x}, file = {rel:?} }},",
-                e.seq_id,
+                e.seq_id.raw(),
             )
             .ok();
 
@@ -487,7 +488,7 @@ fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
             }
             let pcm = audio::decode(&buf, e.channels);
             let path = map_dir.join(&filename);
-            write_wav(&path, &pcm, e.channels, e.sample_rate)?;
+            write_wav(&path, &pcm, e.channels, e.sample_rate.hz())?;
             written += 1;
         }
         toc.push_str("]\n");

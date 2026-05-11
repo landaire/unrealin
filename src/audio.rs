@@ -190,6 +190,98 @@ pub fn decode(data: &[u8], channels: u16) -> Vec<i16> {
     }
 }
 
+/// Shared audio-domain newtypes. Codec modules and CLI all consume
+/// these to keep raw u32/u8 from drifting into ambiguous roles.
+pub mod units {
+    /// Sample rate in Hz.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct SampleRate(u32);
+
+    impl SampleRate {
+        pub const fn new(hz: u32) -> Self {
+            Self(hz)
+        }
+        pub const fn hz(self) -> u32 {
+            self.0
+        }
+    }
+
+    impl std::fmt::Display for SampleRate {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} Hz", self.0)
+        }
+    }
+
+    /// Engine-assigned identifier for a per-map sound entry in SM2/LM2.
+    /// Game scripts reference sounds by `SeqId`, not by table position;
+    /// inserting a new sound should pick a fresh `SeqId`, not shift
+    /// existing ones.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct SeqId(u32);
+
+    impl SeqId {
+        pub const fn new(v: u32) -> Self {
+            Self(v)
+        }
+        pub const fn raw(self) -> u32 {
+            self.0
+        }
+    }
+
+    impl std::fmt::LowerHex for SeqId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::LowerHex::fmt(&self.0, f)
+        }
+    }
+
+    /// 16:16 fixed-point playback-rate ratio from SM2/LM2 `array_a`.
+    /// `RateRatio::UNIT == 1.0`; the engine multiplies the nominal
+    /// rate by `ratio / UNIT.0` to get the effective playback rate.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    pub struct RateRatio(u32);
+
+    impl RateRatio {
+        pub const UNIT: Self = Self(0x10000);
+
+        pub const fn new(raw: u32) -> Self {
+            Self(raw)
+        }
+        pub const fn raw(self) -> u32 {
+            self.0
+        }
+        pub const fn is_zero(self) -> bool {
+            self.0 == 0
+        }
+
+        /// Scale `rate` by this ratio. Done in u64 to avoid overflow
+        /// for ratios above unity.
+        pub fn apply(self, rate: SampleRate) -> SampleRate {
+            SampleRate::new(((rate.hz() as u64 * self.0 as u64) / Self::UNIT.0 as u64) as u32)
+        }
+    }
+
+    /// A 4-bit nibble, bounded `0..=15`. Wrapping construction
+    /// guarantees the value is in range so kernel inputs don't need
+    /// to re-mask at every call site.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    pub struct Nibble(u8);
+
+    impl Nibble {
+        pub const fn new(v: u8) -> Self {
+            Self(v & 0x0F)
+        }
+        pub const fn lo(byte: u8) -> Self {
+            Self(byte & 0x0F)
+        }
+        pub const fn hi(byte: u8) -> Self {
+            Self((byte >> 4) & 0x0F)
+        }
+        pub const fn value(self) -> u8 {
+            self.0
+        }
+    }
+}
+
 /// Codec id 3 — the streamed-audio variant used by `.SS2`/`.LS2`
 /// files. Distinct from the SM2/LM2 hardware-decoded XbA above:
 /// codec 3 streams are CPU-decoded by the engine, going through the
@@ -377,13 +469,52 @@ pub mod codec3 {
     ///                                    block-availability counter
     ///                                    (decremented on each
     ///                                    inner-buffer fill).
+    /// Decoder mode at file byte 12. `0` routes per-byte through
+    /// `sub_1983a0` (one mono stream, two samples per byte); `1`
+    /// routes through `sub_1984a0` (interleaved stereo, HIGH nibble
+    /// = L, LOW nibble = R). All other values are rejected by the
+    /// engine and by `parse_header`.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        PlanarMono,
+        InterleavedStereo,
+    }
+
+    impl Mode {
+        pub const fn from_u8(v: u8) -> Option<Self> {
+            match v {
+                0 => Some(Self::PlanarMono),
+                1 => Some(Self::InterleavedStereo),
+                _ => None,
+            }
+        }
+        pub const fn channels(self) -> u16 {
+            match self {
+                Self::PlanarMono => 1,
+                Self::InterleavedStereo => 2,
+            }
+        }
+        pub const fn as_u8(self) -> u8 {
+            match self {
+                Self::PlanarMono => 0,
+                Self::InterleavedStereo => 1,
+            }
+        }
+    }
+
+    impl std::fmt::Display for Mode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.as_u8())
+        }
+    }
+
     #[derive(Clone, Debug)]
     pub struct Header {
         pub version: u8,
         /// Count of sequential ADPCM clips concatenated in the
         /// file (NOT stereo channels). See struct doc.
         pub track_count: u32,
-        pub mode: u8,
+        pub mode: Mode,
         /// f32 at file offset `+0x04`. Empirically maps to sample
         /// rate via the `header_sample_rate()` helper.
         pub block_period: f32,
@@ -448,10 +579,8 @@ pub mod codec3 {
         if track_count > 256 {
             return Err("track_count out of range");
         }
-        let mode = file_bytes[12];
-        if mode > 1 {
-            return Err("unsupported mode (must be 0 or 1)");
-        }
+        let mode = Mode::from_u8(file_bytes[12])
+            .ok_or("unsupported mode (must be 0 or 1)")?;
         let block_period = f32::from_le_bytes([
             file_bytes[4],
             file_bytes[5],
@@ -535,24 +664,14 @@ pub mod codec3 {
         let data = &file_bytes[DATA_OFFSET..];
 
         match header.mode {
-            0 => {
-                // mode=0 mono: the engine's sub_193780 still
-                // populates the L seed (file +0x10..+0x12) so we
-                // honor it here. R seed unused.
+            Mode::PlanarMono => {
                 let mut state = header.init_l;
                 Ok(decode_planar(data, &mut state, data.len() * 2))
             }
-            1 => {
-                // mode=1 stereo: both per-channel seeds drive
-                // the kernel. Without them the predictor walks
-                // from a wrong starting point and accumulates
-                // saturation drift over long streams (audible as
-                // "blown-out" distortion late in the track on
-                // Music_Birmanie.SS2 etc.).
+            Mode::InterleavedStereo => {
                 let mut state = [header.init_l, header.init_r];
                 Ok(decode_interleaved_stereo(data, &mut state, data.len()))
             }
-            _ => Err("unsupported mode (must be 0 or 1)"),
         }
     }
 
@@ -748,10 +867,110 @@ pub mod codec3 {
 ///   0x2af000..0x2af030  MMX qword constants for the state update
 ///   0x2aefe0..0x2af000  Auxiliary MMX qword constants
 pub mod codec8 {
+    use super::units::{Nibble, SampleRate};
     use std::io;
+    use std::marker::PhantomData;
 
     /// Codec selector at file +0x00.
     pub const CODEC_ID: u32 = 8;
+
+    /// Channel count carried in the file header at `+0x14` and used
+    /// by `sub_19b4a0`'s `"Adpcm allows only sound files with 1, 2,
+    /// 4 and 6 channels"` validator.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    pub enum Channels {
+        Mono,
+        Stereo,
+        Quad,
+        Six,
+    }
+
+    impl Channels {
+        pub fn from_u32(v: u32) -> io::Result<Self> {
+            match v {
+                1 => Ok(Self::Mono),
+                2 => Ok(Self::Stereo),
+                4 => Ok(Self::Quad),
+                6 => Ok(Self::Six),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "channels = {v}; engine accepts only 1, 2, 4, or 6"
+                    ),
+                )),
+            }
+        }
+        pub const fn count(self) -> u16 {
+            match self {
+                Self::Mono => 1,
+                Self::Stereo => 2,
+                Self::Quad => 4,
+                Self::Six => 6,
+            }
+        }
+    }
+
+    /// Per-nibble kernel selected by `sub_199f90`'s prologue from
+    /// `codec_params[+0x04]` (= file `+0x28`).
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum KernelKind {
+        FourBit,
+        SixBit,
+    }
+
+    impl KernelKind {
+        pub const fn from_u32(v: u32) -> Self {
+            if v == 1 {
+                Self::FourBit
+            } else {
+                Self::SixBit
+            }
+        }
+    }
+
+    /// Dispatcher mode at file `+0x2c`; selects which arm of
+    /// `sub_199f90`'s switch handles the bank. Mirrors `Channels`
+    /// in every observed file but is logically distinct (the engine
+    /// allows `dispatch_subtype != channels` and just routes
+    /// differently through the multichannel arms).
+    pub type DispatchSubtype = Channels;
+
+    /// Typestate marker for `Header<C>` indicating the file's
+    /// `dispatch_subtype` is a specific variant of `Channels`. The
+    /// trait is sealed to this module's marker structs so callers
+    /// can't fabricate header tags.
+    pub trait SubtypeMarker: sealed::Sealed {
+        const SUBTYPE: Channels;
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MonoTag;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct StereoTag;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct QuadTag;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SixTag;
+
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for super::MonoTag {}
+        impl Sealed for super::StereoTag {}
+        impl Sealed for super::QuadTag {}
+        impl Sealed for super::SixTag {}
+    }
+
+    impl SubtypeMarker for MonoTag {
+        const SUBTYPE: Channels = Channels::Mono;
+    }
+    impl SubtypeMarker for StereoTag {
+        const SUBTYPE: Channels = Channels::Stereo;
+    }
+    impl SubtypeMarker for QuadTag {
+        const SUBTYPE: Channels = Channels::Quad;
+    }
+    impl SubtypeMarker for SixTag {
+        const SUBTYPE: Channels = Channels::Six;
+    }
     /// Block size at file +0x10. Every observed codec_id=8 file uses
     /// this constant; deviation indicates a malformed or different-
     /// codec file.
@@ -775,7 +994,7 @@ pub mod codec8 {
     ///   codec_params[+0x1c] = file[+0x14]   channels
     /// ```
     #[derive(Clone, Debug)]
-    pub struct Header {
+    pub struct Header<S: SubtypeMarker> {
         /// `+0x04`. Per-bank total interleaved sample count
         /// (= `(outer_calls - 1) * block_size + tail`).
         pub total_size: u32,
@@ -789,45 +1008,82 @@ pub mod codec8 {
         /// `+0x10`. Full-chunk nibble count per dispatcher call;
         /// always 1536 in observed files.
         pub block_size: u32,
-        /// `+0x14`. Logical output channel count. Engine-validated
-        /// to be 1, 2, 4, or 6 by the `"Adpcm allows only sound
-        /// files with 1, 2, 4 and 6 channels"` check at `0x19b6e0`.
-        pub channels: u32,
-        /// `+0x18`. Per-channel sample rate (typically 36000).
-        pub sample_rate: u32,
-        /// `+0x1c`. "Separate mode" flag. `0` means the channels are
-        /// stored separately (= one channel-state per kernel call);
+        /// `+0x14`. Logical output channel count, validated against
+        /// `Channels` by `parse_header_any`.
+        pub channels: Channels,
+        /// `+0x18`. Per-channel sample rate (typically 36000 Hz).
+        pub sample_rate: SampleRate,
+        /// `+0x1c`. "Separate mode" flag. `0` means channels are
+        /// stored separately (one channel-state per kernel call);
         /// non-zero means packed. Validated only for `channels > 2`
         /// by the `"Only adpcm 4 Bits Separate work with sounds
         /// having more than 2 channels"` check; mono/stereo files
         /// load regardless of its value.
         pub separate_flag: u32,
         /// `+0x20`. Reserved/unused; engine never reads it. Always
-        /// `0` in every observed file (retail, proto, PC).
+        /// `0` in every observed file.
         pub reserved_20: u32,
-        /// `+0x24`. Bits per encoded nibble. Passed to the unpacker
-        /// `sub_199f10` as arg3 (unused there) but matches the
-        /// kernel selection: `4` for the 4-bit kernel path,
-        /// presumably `6` for the 6-bit one. Always `4` in observed
-        /// files.
+        /// `+0x24`. Bits per encoded nibble. Always `4` in observed
+        /// files; matches the `KernelKind` selection.
         pub bits_per_sample: u32,
-        /// `+0x28`. Kernel selector applied in `sub_199f90`'s
-        /// prologue (`if [codec_params+4] != 1`): `1` →
-        /// `sub_1999d0` (4-bit kernel + `sub_199f10` unpacker);
-        /// anything else → `sub_199dc0` (6-bit kernel +
-        /// `sub_199e90` unpacker). Always `1` in observed files;
-        /// the 6-bit path is reachable but unexercised.
-        pub kernel_selector: u32,
-        /// `+0x2c`. Dispatcher mode. `sub_199f90`'s inner switch is
-        /// on `(dispatch_subtype - 1)`: `1` = mono inline (case 0),
-        /// `2` = stereo MMX (case 1), `4` / `6` route to the
-        /// multichannel cases 3 / 5. In observed files this
-        /// matches `channels` (mono LS2 ⇒ subtype 1, stereo SS2 ⇒
-        /// subtype 2).
-        pub dispatch_subtype: u32,
+        /// `+0x28`. Per-nibble kernel selector.
+        pub kernel_kind: KernelKind,
+        /// `+0x2c`. Dispatcher mode encoded into the type parameter:
+        /// every concrete `Header<S>` corresponds to a specific
+        /// `Channels` variant. Code that needs the runtime variant
+        /// reads `S::SUBTYPE`.
+        _subtype: PhantomData<S>,
     }
 
-    pub fn parse_header(data: &[u8]) -> io::Result<Header> {
+    impl<S: SubtypeMarker> Header<S> {
+        pub const fn dispatch_subtype(&self) -> Channels {
+            S::SUBTYPE
+        }
+    }
+
+    /// Untagged variant of `Header<S>` produced by `parse_header`.
+    /// Codec dispatch matches on this; the inner `Header<S>` is
+    /// passed to the subtype-specific decoder.
+    #[derive(Clone, Debug)]
+    pub enum HeaderAny {
+        Mono(Header<MonoTag>),
+        Stereo(Header<StereoTag>),
+        Quad(Header<QuadTag>),
+        Six(Header<SixTag>),
+    }
+
+    impl HeaderAny {
+        pub const fn channels(&self) -> Channels {
+            match self {
+                Self::Mono(_) => Channels::Mono,
+                Self::Stereo(_) => Channels::Stereo,
+                Self::Quad(_) => Channels::Quad,
+                Self::Six(_) => Channels::Six,
+            }
+        }
+    }
+
+    fn parse_common<S: SubtypeMarker>(
+        data: &[u8],
+        channels: Channels,
+    ) -> io::Result<Header<S>> {
+        let read_u32 = |off: usize| u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+        Ok(Header {
+            total_size: read_u32(0x04),
+            outer_calls: read_u32(0x08),
+            tail: read_u32(0x0c),
+            block_size: read_u32(0x10),
+            channels,
+            sample_rate: SampleRate::new(read_u32(0x18)),
+            separate_flag: read_u32(0x1c),
+            reserved_20: read_u32(0x20),
+            bits_per_sample: read_u32(0x24),
+            kernel_kind: KernelKind::from_u32(read_u32(0x28)),
+            _subtype: PhantomData,
+        })
+    }
+
+    pub fn parse_header(data: &[u8]) -> io::Result<HeaderAny> {
         if data.len() < HEADER_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -842,18 +1098,13 @@ pub mod codec8 {
             ));
         }
         let read_u32 = |off: usize| u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
-        Ok(Header {
-            total_size: read_u32(0x04),
-            outer_calls: read_u32(0x08),
-            tail: read_u32(0x0c),
-            block_size: read_u32(0x10),
-            channels: read_u32(0x14),
-            sample_rate: read_u32(0x18),
-            separate_flag: read_u32(0x1c),
-            reserved_20: read_u32(0x20),
-            bits_per_sample: read_u32(0x24),
-            kernel_selector: read_u32(0x28),
-            dispatch_subtype: read_u32(0x2c),
+        let channels = Channels::from_u32(read_u32(0x14))?;
+        let subtype = Channels::from_u32(read_u32(0x2c))?;
+        Ok(match subtype {
+            Channels::Mono => HeaderAny::Mono(parse_common(data, channels)?),
+            Channels::Stereo => HeaderAny::Stereo(parse_common(data, channels)?),
+            Channels::Quad => HeaderAny::Quad(parse_common(data, channels)?),
+            Channels::Six => HeaderAny::Six(parse_common(data, channels)?),
         })
     }
 
@@ -1178,8 +1429,9 @@ pub mod codec8 {
     /// updating `state` in place. Faithful per-instruction port of
     /// the proto MMX kernel `sub_1999d0`, validated byte-perfect
     /// against 2048/2048 captured calls from a QEMU-plugin trace.
-    pub fn decode_nibble_4bit(state: &mut ChannelState, nibble: u8) -> i16 {
+    pub fn decode_nibble_4bit(state: &mut ChannelState, nibble: Nibble) -> i16 {
         use mmx::*;
+        let nibble = nibble.value();
 
         // The kernel views per-channel state as a 128-byte memory
         // region. Materialise the qword/dword views the kernel reads.
@@ -1529,7 +1781,7 @@ pub mod codec8 {
     /// `decode_bank` since each `.LS2` is a single bank (the per-
     /// macro-block 52-byte resync headers are state snapshots, not
     /// sub-sound markers).
-    pub fn decode_file(file_bytes: &[u8]) -> io::Result<(Header, Vec<i16>)> {
+    pub fn decode_file(file_bytes: &[u8]) -> io::Result<(HeaderAny, Vec<i16>)> {
         let header = parse_header(file_bytes)?;
         let pcm = decode_bank(file_bytes)?;
         Ok((header, pcm))
@@ -1573,19 +1825,23 @@ pub mod codec8 {
         Ok(pcm)
     }
 
-    /// One decoded bank's metadata + samples.
+    /// One decoded bank's resolved playback parameters and samples.
+    /// Carries only the values a consumer needs for WAV output; the
+    /// full `Header<S>` is dropped at the boundary so callers don't
+    /// have to thread the typestate through.
     pub struct DecodedBank {
-        pub header: Header,
+        pub channels: Channels,
+        pub sample_rate: SampleRate,
         pub pcm: Vec<i16>,
     }
 
     /// Iterate every bank in a multi-bank codec_id=8 file and decode
     /// each independently. Each `DecodedBank.pcm` is one continuous
-    /// audio clip (interleaved L,R for subtype 2, mono for subtype 1).
+    /// audio clip (interleaved L,R for stereo, mono for mono).
     pub fn decode_each_bank(file_bytes: &[u8]) -> io::Result<Vec<DecodedBank>> {
         let mut banks = Vec::new();
         let mut offset = 0usize;
-        while offset + 0x30 <= file_bytes.len() {
+        while offset + HEADER_BYTES <= file_bytes.len() {
             let codec_id = u32::from_le_bytes(
                 file_bytes[offset..offset + 4].try_into().unwrap(),
             );
@@ -1595,13 +1851,28 @@ pub mod codec8 {
             let header = parse_header(&file_bytes[offset..])?;
             let bank_size = compute_bank_size(&header);
             let bank_end = (offset + bank_size).min(file_bytes.len());
-            let bank = &file_bytes[offset..bank_end];
-            let pcm = if header.dispatch_subtype == 2 {
-                decode_stereo_bank(bank, &header)?
-            } else {
-                decode_mono_bank(bank, &header)?
+            let bank_bytes = &file_bytes[offset..bank_end];
+            let (channels, sample_rate, pcm) = match header {
+                HeaderAny::Mono(h) => {
+                    let rate = h.sample_rate;
+                    (Channels::Mono, rate, decode_mono_bank(bank_bytes, &h)?)
+                }
+                HeaderAny::Stereo(h) => {
+                    let rate = h.sample_rate;
+                    (Channels::Stereo, rate, decode_stereo_bank(bank_bytes, &h)?)
+                }
+                HeaderAny::Quad(_) | HeaderAny::Six(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "codec_id=8 multichannel (4/6) decoder not yet ported",
+                    ));
+                }
             };
-            banks.push(DecodedBank { header, pcm });
+            banks.push(DecodedBank {
+                channels,
+                sample_rate,
+                pcm,
+            });
             if bank_size == 0 {
                 break;
             }
@@ -1610,26 +1881,27 @@ pub mod codec8 {
         Ok(banks)
     }
 
-    /// Compute the on-disc byte size of one bank from its header fields.
     /// Bank layout for both subtypes:
-    ///   - 48B file header
-    ///   - `(outer_calls - 1)` full chunks consumed as N full macroblocks
-    ///     plus 0 or 1 leftover chunk inside a partial-tail macroblock
-    ///   - 1 partial last chunk sized by `tail` samples
-    /// Mono LS2 macroblock = `[52B state][769B chunk_A][769B chunk_B]` (1590B).
-    /// Stereo SS2 macroblock = `[52B L state][52B R state][769B chunk_A][769B chunk_B]` (1642B).
-    fn compute_bank_size(header: &Header) -> usize {
+    ///   48-byte file header, then `outer_calls - 1` full chunks
+    ///   packed into `floor((outer_calls-1)/2)` full macroblocks plus
+    ///   0 or 1 leftover chunk, then a state-pair header and a
+    ///   `tail`-sized partial chunk.
+    /// Mono LS2 macroblock: `[52B state][769B chunk_A][769B chunk_B]` (1590B).
+    /// Stereo SS2 macroblock: `[52B L state][52B R state][769B chunk_A][769B chunk_B]` (1642B).
+    fn compute_bank_size(header: &HeaderAny) -> usize {
         const FILE_HEADER: usize = 0x30;
         const CHUNK_SIZE: usize = 769;
-        let outer = header.outer_calls as usize;
-        let tail_nibbles = header.tail as usize;
-        let stereo = header.dispatch_subtype == 2;
-        let state_pair = if stereo { 104 } else { 52 };
+        let (outer, tail, state_pair) = match header {
+            HeaderAny::Mono(h) => (h.outer_calls as usize, h.tail as usize, 52),
+            HeaderAny::Stereo(h) => (h.outer_calls as usize, h.tail as usize, 104),
+            HeaderAny::Quad(h) => (h.outer_calls as usize, h.tail as usize, 52 * 4),
+            HeaderAny::Six(h) => (h.outer_calls as usize, h.tail as usize, 52 * 6),
+        };
         let macroblock = state_pair + CHUNK_SIZE * 2;
         let full_chunks = outer.saturating_sub(1);
         let full_macros = full_chunks / 2;
         let leftover_full_chunks = full_chunks - full_macros * 2;
-        let partial_chunk_bytes = 1 + tail_nibbles / 2;
+        let partial_chunk_bytes = 1 + tail / 2;
         FILE_HEADER
             + full_macros * macroblock
             + state_pair
@@ -1656,12 +1928,12 @@ pub mod codec8 {
         let mut nibs = vec![0u8; nib_count];
         unpack_nibbles_4bit(&src, &mut nibs);
         for pair in nibs.chunks_exact(2) {
-            pcm.push(decode_nibble_4bit(state_l, pair[0]));
-            pcm.push(decode_nibble_4bit(state_r, pair[1]));
+            pcm.push(decode_nibble_4bit(state_l, Nibble::new(pair[0])));
+            pcm.push(decode_nibble_4bit(state_r, Nibble::new(pair[1])));
         }
     }
 
-    fn decode_mono_bank(bank_bytes: &[u8], header: &Header) -> io::Result<Vec<i16>> {
+    fn decode_mono_bank(bank_bytes: &[u8], header: &Header<MonoTag>) -> io::Result<Vec<i16>> {
         const FILE_HEADER: usize = 0x30;
         const STATE_HEADER_BYTES: usize = 52;
         const NIBBLES_PER_CHUNK: usize = 1536;
@@ -1691,7 +1963,7 @@ pub mod codec8 {
                     &mut nibbles,
                 );
                 for &n in &nibbles[..] {
-                    pcm.push(decode_nibble_4bit(&mut state, n));
+                    pcm.push(decode_nibble_4bit(&mut state, Nibble::new(n)));
                 }
             }
             macroblock_start += MACROBLOCK_BYTES;
@@ -1703,7 +1975,7 @@ pub mod codec8 {
                 &mut nibbles,
             );
             for &n in &nibbles[..] {
-                pcm.push(decode_nibble_4bit(&mut state, n));
+                pcm.push(decode_nibble_4bit(&mut state, Nibble::new(n)));
             }
             chunk_off += FILE_CHUNK_STRIDE;
         }
@@ -1716,13 +1988,13 @@ pub mod codec8 {
             let mut tail_nibs = vec![0u8; tail_nibbles];
             unpack_nibbles_4bit(&src, &mut tail_nibs);
             for &n in &tail_nibs {
-                pcm.push(decode_nibble_4bit(&mut state, n));
+                pcm.push(decode_nibble_4bit(&mut state, Nibble::new(n)));
             }
         }
         Ok(pcm)
     }
 
-    fn decode_stereo_bank(bank_bytes: &[u8], header: &Header) -> io::Result<Vec<i16>> {
+    fn decode_stereo_bank(bank_bytes: &[u8], header: &Header<StereoTag>) -> io::Result<Vec<i16>> {
         const HEADER_BYTES_BANK: usize = 0x30;
         const STATE_HEADER_BYTES: usize = 52;
         const STATE_PAIR_BYTES: usize = STATE_HEADER_BYTES * 2;
@@ -1754,8 +2026,8 @@ pub mod codec8 {
                     &mut nibs,
                 );
                 for pair in nibs.chunks_exact(2) {
-                    pcm.push(decode_nibble_4bit(&mut state_l, pair[0]));
-                    pcm.push(decode_nibble_4bit(&mut state_r, pair[1]));
+                    pcm.push(decode_nibble_4bit(&mut state_l, Nibble::new(pair[0])));
+                    pcm.push(decode_nibble_4bit(&mut state_r, Nibble::new(pair[1])));
                 }
             }
             macroblock_start += MACROBLOCK_BYTES;
@@ -1768,8 +2040,8 @@ pub mod codec8 {
                 &mut nibs,
             );
             for pair in nibs.chunks_exact(2) {
-                pcm.push(decode_nibble_4bit(&mut state_l, pair[0]));
-                pcm.push(decode_nibble_4bit(&mut state_r, pair[1]));
+                pcm.push(decode_nibble_4bit(&mut state_l, Nibble::new(pair[0])));
+                pcm.push(decode_nibble_4bit(&mut state_r, Nibble::new(pair[1])));
             }
             chunk_off += FILE_CHUNK_STRIDE;
         }
@@ -1842,13 +2114,10 @@ pub mod codec8 {
                     ]));
                 }
             }
-            // Decode the on-disc file via the real decoder.
-            // Use a target_samples >= expected.len() so we cover the
-            // full captured range.
-            let mut header = parse_header(&file_bytes).expect("header");
-            header.total_size = expected.len() as u32;
-            // Patch the header in a copy of the file bytes so
-            // decode_bank stops at the right sample count.
+            // Decode the on-disc file via the real decoder. Patch
+            // `total_size` in a copy of the bytes so `decode_bank`
+            // stops at the captured sample count.
+            let _ = parse_header(&file_bytes).expect("header parses");
             let mut patched = file_bytes.clone();
             patched[0x04..0x08].copy_from_slice(&(expected.len() as u32).to_le_bytes());
             let got = decode_bank(&patched).expect("decode");
@@ -1919,7 +2188,7 @@ pub mod codec8 {
                 let mut state = state_from_bytes(&csentry);
                 let mut got = Vec::with_capacity(NIBBLES_PER_CALL);
                 for &n in &nibbles {
-                    got.push(decode_nibble_4bit(&mut state, n));
+                    got.push(decode_nibble_4bit(&mut state, Nibble::new(n)));
                 }
                 // Compare against engine's pcm_output for the first
                 // NIBBLES_PER_CALL samples.
@@ -1990,8 +2259,8 @@ pub mod codec8 {
                 let mut state_r = state_from_bytes(&csentry[52..104]);
                 let mut got = Vec::with_capacity(VALID_PCM);
                 for pair in nibbles.chunks_exact(2) {
-                    got.push(decode_nibble_4bit(&mut state_l, pair[0]));
-                    got.push(decode_nibble_4bit(&mut state_r, pair[1]));
+                    got.push(decode_nibble_4bit(&mut state_l, Nibble::new(pair[0])));
+                    got.push(decode_nibble_4bit(&mut state_r, Nibble::new(pair[1])));
                 }
                 let mut diffs = Vec::new();
                 for i in 0..VALID_PCM {
@@ -2039,7 +2308,7 @@ pub mod codec8 {
                     .map(|v| v.as_u64().unwrap() as u8)
                     .collect();
                 let mut state = state_from_bytes(&entry);
-                let _ = decode_nibble_4bit(&mut state, nib);
+                let _ = decode_nibble_4bit(&mut state, Nibble::new(nib));
                 let got = state_to_bytes(&state, &entry);
                 if got[..0x32] != truth[..0x32] {
                     if mismatches.len() < 5 {
@@ -2092,7 +2361,7 @@ pub mod codec8 {
             eprintln!("pre:  step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
                 state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
                 state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
-            let sample = decode_nibble_4bit(&mut state, 1);
+            let sample = decode_nibble_4bit(&mut state, Nibble::new(1));
             eprintln!("post: step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
                 state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
                 state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
@@ -2393,10 +2662,10 @@ pub mod sm2 {
     /// buffers (16 unique with SetFrequency calls).
     #[derive(Clone, Debug)]
     pub struct SoundEntry {
-        pub seq_id: u32,
+        pub seq_id: super::units::SeqId,
         pub file_offset: u64,
         pub length: u64,
-        pub sample_rate: u32,
+        pub sample_rate: super::units::SampleRate,
         pub channels: u16,
         pub source_name: String,
         pub is_ls2_redirect: bool,
@@ -2649,26 +2918,27 @@ pub mod sm2 {
                         // nominal per array_a, otherwise dialog plays
                         // too fast.
                         let scale = is_ls2 || kind == Kind::Lm2;
+                        let nominal = super::units::SampleRate::new(nominal_sr);
                         let sr = if scale {
-                            let ratio = array_a_by_seq
+                            let ratio_raw = array_a_by_seq
                                 .partition_point(|&(s, _)| s <= seq_id)
                                 .checked_sub(1)
                                 .map(|i| array_a_by_seq[i].1)
-                                .unwrap_or(RATE_RATIO_UNIT as u32);
-                            ((nominal_sr as u64) * (ratio as u64) / RATE_RATIO_UNIT) as u32
+                                .unwrap_or(super::units::RateRatio::UNIT.raw());
+                            super::units::RateRatio::new(ratio_raw).apply(nominal)
                         } else {
-                            nominal_sr
+                            nominal
                         };
                         (sr, ch, name, is_ls2)
                     } else {
-                        (22050, 1u16, String::new(), false)
+                        (super::units::SampleRate::new(22050), 1u16, String::new(), false)
                     }
                 } else {
-                    (22050, 1u16, String::new(), false)
+                    (super::units::SampleRate::new(22050), 1u16, String::new(), false)
                 };
 
             out.push(SoundEntry {
-                seq_id,
+                seq_id: super::units::SeqId::new(seq_id),
                 file_offset,
                 length,
                 sample_rate,
