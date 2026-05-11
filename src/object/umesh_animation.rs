@@ -28,22 +28,22 @@ use crate::runtime::UnrealRuntime;
 ///    loop, terminates at the linker's "None" FName.
 /// 2. `InternalVersion`: 4 raw bytes (DWORD).
 /// 3. `RefBones`: `TArray<FNamedBone>`. Per element on disk:
-///        FName(packed_int) + DWORD(Flags, 4 raw) + INT(ParentIndex, 4 raw).
+///    FName(packed_int), DWORD Flags (4 raw), INT ParentIndex (4 raw).
 /// 4. `Moves`: `TArray<MotionChunk>`. Per element on disk:
-///        FVector RootSpeed3D (12 raw) + FLOAT TrackTime (4 raw)
-///        + INT StartBone (4 raw) + DWORD Flags (4 raw)
-///        + TArray<INT> BoneIndices (count + count*4)
-///        + TArray<AnalogTrack> AnimTracks
-///        + AnalogTrack RootTrack (inline, no count prefix).
+///    FVector RootSpeed3D (12 raw), FLOAT TrackTime (4 raw),
+///    INT StartBone (4 raw), DWORD Flags (4 raw),
+///    TArray<INT> BoneIndices (count + count*4),
+///    TArray<AnalogTrack> AnimTracks,
+///    AnalogTrack RootTrack (inline, no count prefix).
 /// 5. `AnimSeqs`: `TArray<FMeshAnimSeq>`. Per element on disk
 ///    (in this exact order, independent of memory offset order):
-///        FName Name (packed_int)
-///        TArray<FName> Groups (count + count packed_ints)
-///        INT StartFrame (4 raw)
-///        INT NumFrames (4 raw)
-///        TArray<FMeshAnimNotify> Notifys
-///        FLOAT Rate (4 raw)
-///        BYTE trailing (1 raw): SC-specific extra byte.
+///    FName Name (packed_int),
+///    TArray<FName> Groups (count + count packed_ints),
+///    INT StartFrame (4 raw),
+///    INT NumFrames (4 raw),
+///    TArray<FMeshAnimNotify> Notifys,
+///    FLOAT Rate (4 raw),
+///    BYTE trailing (1 raw): SC-specific extra byte.
 ///
 /// `AnalogTrack` for SC's `Ver >= 0xd` path (`sub_104c4700`'s
 /// `>= 0xd` branch, inlined inside `sub_104c3280` for AnimTracks
@@ -141,9 +141,8 @@ fn read_fixed_tarray<R: LinRead>(
     Ok(buf)
 }
 
-fn read_analog_track<E, R>(reader: &mut R) -> io::Result<AnalogTrack>
+fn read_analog_track<R>(reader: &mut R) -> io::Result<AnalogTrack>
 where
-    E: ByteOrder,
     R: LinRead,
 {
     // SC's `sub_104c3280` Ver>=0xd inline path skips the `Flags` slot on
@@ -189,10 +188,10 @@ where
     }
     chunk.anim_tracks.reserve(track_count as usize);
     for _ in 0..track_count {
-        chunk.anim_tracks.push(read_analog_track::<E, _>(reader)?);
+        chunk.anim_tracks.push(read_analog_track::<_>(reader)?);
     }
 
-    chunk.root_track = read_analog_track::<E, _>(reader)?;
+    chunk.root_track = read_analog_track::<_>(reader)?;
     Ok(chunk)
 }
 

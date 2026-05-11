@@ -9,7 +9,6 @@ use byteorder::ByteOrder;
 
 use crate::de::Linker;
 use crate::object::UObjectKind;
-use crate::object::UnrealObject;
 use crate::object::builtins::Struct;
 use crate::object::internal::script;
 

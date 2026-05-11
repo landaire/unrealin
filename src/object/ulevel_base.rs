@@ -105,7 +105,7 @@ impl DeserializeUnrealObject for LevelBase {
         self.parent_object
             .deserialize::<E, _>(runtime, linker, reader)?;
 
-        // Actors array: [DbNum: u32][DbMax: u32][DbNum × packed_int].
+        // Actors array: [DbNum: u32][DbMax: u32][DbNum x packed_int].
         // No CountBytes IO at load time.
         self.actors_count = reader.read_u32::<E>()?;
         self.actors_max = reader.read_u32::<E>()?;

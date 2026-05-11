@@ -215,8 +215,8 @@ pub(crate) const ENGINE_CLASS_WARMUP: &[&str] = &[
 /// We can't simulate the full UScript VM, so we replay these as
 /// explicit `load_object_by_full_name` calls after `run_post_cascade`.
 /// Triggering the class umbrellas pulls in their function children
-/// + CDO defaults, which transitively loads referenced `Sound`/
-/// `MeshAnimation` imports via property-tag resolution -- closing the
+/// and CDO defaults, which transitively loads referenced `Sound` and
+/// `MeshAnimation` imports via property-tag resolution, closing the
 /// trailing-sounds gap that `EchelonCharacter.ESam`'s defaults
 /// account for.
 pub(crate) const POST_LEVEL_LOAD_LIST: &[&str] = &[

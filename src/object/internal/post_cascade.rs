@@ -968,7 +968,8 @@ fn country_prefix_for_level(secondary_package: &str) -> &'static str {
 /// `Echelon.EPawn`, `Echelon.EWeapon`, `EchelonIngredient.ESensor`,
 /// `Echelon.EchelonLevelInfo`, and `Engine.StaticMeshActor`. For each
 /// matching test the engine constructs a sound name from a fixed prefix
-/// + the level-id suffix (first 5 chars of the map basename) and calls
+/// concatenated with the level-id suffix (first 5 chars of the map
+/// basename) and calls
 /// `StaticLoadObject(Engine.Sound, name, ...)`. Names match exactly:
 ///
 /// * `EPawn` -> `Special.Play_Switch_NpcMaleMove<level>`,

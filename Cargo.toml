@@ -7,7 +7,6 @@ edition = "2024"
 name = "unrealin"
 path = "src/bin.rs"
 required-features = ["bin"]
-features = ["bin"]
 
 [dependencies]
 bitflags = "2.10.0"

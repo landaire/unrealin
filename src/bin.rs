@@ -44,20 +44,13 @@ enum Cmd {
 
 #[derive(Subcommand, Debug)]
 enum AudioCmd {
-    /// Walk an audio file (or directory of audio files) and dump
-    /// every container's banks/sounds as individual `.wav` files.
-    /// Codec is auto-detected per file from the header:
-    ///   - first byte `0x08` -> proto LS2/SS2 (codec_id=8). Each
-    ///     bank -> `bank_NN.wav` under `<output>/<rel_stem>/`.
-    ///   - first byte `0x03` -> retail single-stream LS2 (codec_id=3).
-    ///     One mono or stereo `.wav` under `<output>/<rel_stem>/`.
-    ///   - `02 00 00 00 03 00 00 00` -> multi-bank SS2 (codec_id=3
-    ///     container, e.g. `STREAM.SS2`). Each bank's three voices ->
-    ///     `bank_NN_voice_M.wav`.
-    ///   - first dword `0x07` -> `.SM2` Maps BigFile. Each map ->
-    ///     subdir of per-sound wavs.
-    ///   - Other codecs -> skipped (logged).
-    /// Output structure mirrors retail's per-map convention.
+    /// Walk an audio file or directory and dump every recognised
+    /// container's banks/sounds as `.wav` files. Codec is sniffed
+    /// per file from the header byte (`0x08` proto, `0x03` retail
+    /// codec_id=3, `02 00 00 00 03 00 00 00` multi-bank SS2, first
+    /// dword `0x07` SM2/LM2). Output mirrors retail's per-map
+    /// convention with one `toc.toml` per source file at the
+    /// dump-dir root.
     Dump {
         /// Input file or directory.
         input: PathBuf,

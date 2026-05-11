@@ -11,7 +11,6 @@ use std::rc::Rc;
 use std::rc::Weak;
 
 use crate::object::RcUnrealObject;
-use crate::object::UnrealObject;
 use crate::reader::CheckedLinReader;
 use crate::reader::LinRead;
 use crate::reader::LinReader;
@@ -501,7 +500,7 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) struct GenerationInfo {
+pub struct GenerationInfo {
     pub export_count: u32,
     pub name_count: u32,
 }
@@ -900,7 +899,7 @@ where
         let mut secondary_package_names = Vec::with_capacity(readers.len().saturating_sub(1));
         let mut prefix_lengths: Vec<u64> = vec![0; readers.len()];
         for (i, source) in readers.iter_mut().enumerate().skip(1) {
-            let (name, prefix_len) = skip_secondary_lin_header::<E, _>(source)
+            let (name, prefix_len) = skip_secondary_lin_header::<_>(source)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
             prefix_lengths[i] = prefix_len;
@@ -963,7 +962,7 @@ where
         // etc.).
         let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
         for source in sources.iter_mut().skip(1) {
-            let (name, _prefix_len) = skip_secondary_lin_header::<E, _>(source)
+            let (name, _prefix_len) = skip_secondary_lin_header::<_>(source)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
         }
@@ -1429,9 +1428,8 @@ pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<
 /// `"menu"` for `menu.lin`, `"0_0_2_Training"` for the training
 /// map's `.lin`) so the bootstrap can route `None.MyLevel` to the
 /// right secondary package.
-fn skip_secondary_lin_header<E, R>(source: &mut R) -> io::Result<(String, u64)>
+fn skip_secondary_lin_header<R>(source: &mut R) -> io::Result<(String, u64)>
 where
-    E: ByteOrder,
     R: Read,
 {
     let mut bytes_read: u64 = 0;

@@ -50,8 +50,8 @@ pub struct GEPartitioner {
 ///      jump_table_150870[7] is `0x150868`
 ///
 /// Tag -> subclass body reader (vtable[7]):
-/// - 1, 2, 4, 8, 64 -> `sub_1502d0`: 6× u32 at obj+{0xc..0x20}
-/// - 16, 32       -> `sub_150540`: 9× u32 at obj+{0xc..0x2c}
+/// - 1, 2, 4, 8, 64 -> `sub_1502d0`: 6x u32 at obj+{0xc..0x20}
+/// - 16, 32       -> `sub_150540`: 9x u32 at obj+{0xc..0x2c}
 #[derive(Debug, Clone)]
 pub struct GEObject {
     pub tag: u32,
@@ -64,9 +64,9 @@ pub enum GEObjectBody {
     /// lookup_table_150890 index is 7 (3, 5..7, 9..15, 17..31, 33..63).
     /// No body bytes follow the tag.
     Empty,
-    /// Tags 1, 2, 4, 8, 64. Body: u32 at +8 + 6× u32 at +0xc..+0x20.
+    /// Tags 1, 2, 4, 8, 64. Body: u32 at +8 + 6x u32 at +0xc..+0x20.
     Small { field_8: u32, body: [u32; 6] },
-    /// Tags 16, 32. Body: u32 at +8 + 9× u32 at +0xc..+0x2c.
+    /// Tags 16, 32. Body: u32 at +8 + 9x u32 at +0xc..+0x2c.
     Large { field_8: u32, body: [u32; 9] },
 }
 
@@ -222,7 +222,7 @@ where
     // {1, 2, 4, 8, 16, 32, 64}.
     let body = match tag {
         1 | 2 | 4 | 8 | 64 => {
-            // sub_1502d0: read 4 + 24 = 28 bytes (u32 at +8 + 6× u32 at +0xc..+0x20).
+            // sub_1502d0: read 4 + 24 = 28 bytes (u32 at +8 + 6x u32 at +0xc..+0x20).
             let field_8 = reader.read_u32::<E>()?;
             let mut body = [0u32; 6];
             for slot in body.iter_mut() {
@@ -231,7 +231,7 @@ where
             GEObjectBody::Small { field_8, body }
         }
         16 | 32 => {
-            // sub_150540: read 4 + 36 = 40 bytes (u32 at +8 + 9× u32 at +0xc..+0x2c).
+            // sub_150540: read 4 + 36 = 40 bytes (u32 at +8 + 9x u32 at +0xc..+0x2c).
             let field_8 = reader.read_u32::<E>()?;
             let mut body = [0u32; 9];
             for slot in body.iter_mut() {

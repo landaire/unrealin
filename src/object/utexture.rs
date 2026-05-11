@@ -10,7 +10,6 @@ use tracing::debug;
 use tracing::span;
 use tracing::trace;
 
-use std::io::Seek;
 
 use crate::de::ExportIndex;
 use crate::de::Linker;

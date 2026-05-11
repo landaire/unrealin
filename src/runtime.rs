@@ -21,7 +21,6 @@ use crate::de::read_package;
 use crate::object::ObjectFlags;
 use crate::object::RcUnrealObject;
 use crate::object::UObjectKind;
-use crate::object::UnrealObject;
 use crate::object::deserialize_object;
 use crate::reader::LinRead;
 
@@ -129,7 +128,7 @@ impl UnrealRuntime {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum LoadKind {
+pub enum LoadKind {
     Load,
     Create,
     Full,

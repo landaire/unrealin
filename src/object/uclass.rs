@@ -7,7 +7,6 @@ use crate::object::BodyKind;
 use crate::object::DeserializeUnrealObject;
 use crate::object::RcUnrealObject;
 use crate::object::SerializeUnrealObject;
-use crate::object::UnrealObject;
 use crate::object::internal::fdependency::FDependency;
 use crate::object::internal::fname::FName;
 use crate::object::internal::property::PropertyTag;
