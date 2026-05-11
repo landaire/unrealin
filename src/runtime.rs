@@ -518,7 +518,13 @@ impl UnrealRuntime {
         let result = deserialize_object::<E, _>(self, Rc::clone(obj), &linker, reader);
         if let Err(ref e) = result {
             if std::env::var("UNREALIN_PRELOAD_RANGES").is_ok() {
-                eprintln!("PRELOAD_FAIL {preload_full_name}: {e}");
+                let cur = reader.stream_position().unwrap_or(0);
+                let so = export.serial_offset();
+                let ss = export.serial_size();
+                let read_so_far = cur.saturating_sub(so);
+                eprintln!(
+                    "PRELOAD_FAIL {preload_full_name} at cur=0x{cur:x} so=0x{so:x} ss=0x{ss:x} read_so_far=0x{read_so_far:x}: {e}"
+                );
             }
             // Cross-source cleanup: in unchecked mode our LinReader
             // models the (common.lin, session.lin) pair as a single
@@ -573,11 +579,17 @@ impl UnrealRuntime {
             let l = linker.borrow();
             for (i, (pre, post)) in pre_per_src.iter().zip(post_per_src.iter()).enumerate() {
                 if pre != post {
+                    let read_bytes = post - pre;
+                    let serial_size = export.serial_size() as u64;
+                    let delta = read_bytes as i64 - serial_size as i64;
                     eprintln!(
-                        "PRELOAD_RANGE src{} {:#x}..{:#x} {} ({})",
+                        "PRELOAD_RANGE src{} {:#x}..{:#x} read={} serial_size={} delta={} {} ({})",
                         i,
                         pre,
                         post,
+                        read_bytes,
+                        serial_size,
+                        delta,
                         export.full_name(&l),
                         export.class_name(&l)
                     );
