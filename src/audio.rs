@@ -702,62 +702,51 @@ pub mod codec3 {
 /// + 20 trailer = 1104. The bonus byte rotates by `cycle_idx % 3`:
 /// cycle 1 → voice 1 gets +1, cycle 2 → voice 2, cycle 3 → voice 0,
 /// cycle 4 → voice 1, etc.
-/// Codec id 8 — proto/demo-only DARE-IMA variant. Whereas codec_id=3
-/// is a CPU-decoded standard IMA-ADPCM streamer, codec_id=8 is a
-/// hand-tuned MMX SIMD codec that processes 4 sub-channels in
-/// parallel through a "voice"-style decoder with per-voice state.
+/// Codec id 8 — proto-only DARE-IMA variant. Replaces codec_id=3 in
+/// the Sep-13-2002 prototype build (retail uses codec_id=3 for the
+/// equivalent files). The proto's `sub_199f90` dispatches per-nibble
+/// to a 4-bit kernel (`sub_1999d0`) with an MMX bit-unpacker
+/// (`sub_199f10`). All fields and dispatch paths are
+/// reverse-engineered from the binary; see `Header` for the
+/// file-header semantics and `decode_nibble_4bit` for the kernel
+/// port.
 ///
-/// File layout (first 64 bytes, all u32 LE):
+/// File-header layout (12 dwords / 48 bytes; fields documented on the
+/// `Header` struct):
+///   +0x00  codec_id          = 8
+///   +0x04  total_size        per-bank interleaved sample count
+///   +0x08  outer_calls       dispatcher invocations per bank
+///   +0x0c  tail              partial-chunk nibble count
+///   +0x10  block_size        = 1536
+///   +0x14  channels          1, 2, 4, or 6
+///   +0x18  sample_rate       typically 36000 Hz
+///   +0x1c  separate_flag     channel storage mode
+///   +0x20  reserved_20       unused
+///   +0x24  bits_per_sample   = 4 (matches kernel selection)
+///   +0x28  kernel_selector   1 = 4-bit (sub_1999d0), else 6-bit (sub_199dc0)
+///   +0x2c  dispatch_subtype  1 = mono, 2 = stereo, 4/6 = multichannel
 ///
-///   +0x00  codec_id  = 8
-///   +0x04  total_size  - whole-file byte count incl. header
-///   +0x08  ?           - small per-file value (e.g. 0x34, 0x5dc)
-///   +0x0c  ?           - similar magnitude (e.g. 0x420, 0x49c)
-///   +0x10  block_size  = 0x600 (1536 bytes per block)
-///   +0x14  channels    = 2 (always stereo in observed files)
-///   +0x18  sample_rate - typically 36000 Hz
-///   +0x1c  0           - reserved
-///   +0x20  0           - reserved
-///   +0x24  ?           - always 4 in observed files
-///   +0x28  ?           - 1 or 2
-///   +0x2c  ?           - 1 or 2
-///   +0x30  ?           - 2
-///   +0x34  ?           - 0x500 (1280)
-///   +0x38  ?           - 0 or 5
-///
-/// The kernel at retail sub_1942e0 (4-bit) and sub_1946d0 (6-bit) is
-/// a DARE-IMA variant that uses extended state (3 32-bit registers,
-/// not just predictor+step_index): a primary accumulator, a 32-bit
-/// "step magnitude" with full-resolution multiplicative growth, a
-/// rolling clamp tracker, and a per-block envelope estimator. State
-/// fields read by the kernel:
-///
+/// State-resync block (52 bytes per channel, follows the file header
+/// then again every macroblock). Layout per channel (read by the
+/// 4-bit kernel as a 52-byte struct):
+///   +0x00  u32   marker (= 2)
 ///   +0x04  i32  step_magnitude (clamped to [0x10f, 0xa00])
-///   +0x08  i32  prev_predictor (saved at block end)
-///   +0x0c  i32  current_predictor
-///   +0x10  i32  envelope_a / first_clip_bound (i16 lo + i16 hi)
-///   +0x12  i16  envelope_b
-///   +0x18  4×i16  MMX state slot 1 (filter taps?)
-///   +0x20  i32  accum_low (32-bit running sum)
-///   +0x28  4×i16  MMX state slot 2 (output history)
-///   +0x2a  4×i16  MMX state slot 3
-///   +0x2e  i16  delta_index_save
-///   +0x30  i16  delta_index_save_mirror
+///   +0x08  i32  prev_hi_dot
+///   +0x0c  i32  prev_prev_hi_dot
+///   +0x10  2×i16 coef_lo  (low-tap pair filter coefficients)
+///   +0x18  4×i16 coef_hi  (high-tap quad coefficients)
+///   +0x20  2×i16 hist_pred  (predictor sample history)
+///   +0x28  4×i16 hist_delta (delta sample history)
+///   +0x30  i16  delta_save
 ///
-/// Constant tables (verified by reading retail XBE .rdata):
-///   0x2cfd08+4n : 4-bit step-magnitude table (entries 1..7 used)
-///   0x2cfd48+4n : 4-bit step-output / envelope table
-///   0x2cfd88+4n : 6-bit input table
-///   0x2cfe08+4n : 6-bit output table
-///   0x2d0018+4n : main 64-entry signed lookup (-2007..+2007)
-///   0x2d0120-0x2d0168 : 4-bit MMX qword constants
-///   0x2d0170-0x2d01b8 : 6-bit MMX qword constants
-///
-/// PORT STATUS: scaffolding only. The MMX kernel is not yet
-/// translated to scalar Rust; this module provides the file-header
-/// parser and the lookup tables baked from the retail XBE so
-/// follow-up work can fill in the per-block decoder against ground
-/// truth from a QEMU plugin trace.
+/// Constant tables (proto VAs):
+///   0x2aebc8  4-bit step-magnitude table (8 entries, indexed by
+///             |nibble - 7|; entries [1..=7] are the real bases)
+///   0x2aec08  4-bit step-output table (8 entries)
+///   0x2aecc8  4-bit step-magnitude-update table (66 entries)
+///   0x2aeed8  Main signed lookup (66 entries; sign-half × 33)
+///   0x2af000..0x2af030  MMX qword constants for the state update
+///   0x2aefe0..0x2af000  Auxiliary MMX qword constants
 pub mod codec8 {
     use std::io;
 
