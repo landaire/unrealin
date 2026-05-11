@@ -829,26 +829,28 @@ pub mod codec8 {
             && u32::from_le_bytes(data[0..4].try_into().unwrap()) == CODEC_ID
     }
 
-    /// 4-bit step-magnitude table at retail VA 0x2cfd08, indexed by
-    /// the per-block delta-index (values 1..7 observed; index 0 is
-    /// guard-filled in the binary so the load wraps cheaply).
-    /// Verified against the retail XBE .rdata section.
-    pub const STEP_MAG_4BIT: [u32; 8] = [
-        0xfa0a_1f00, // [0] guard / unused
-        0x0000_0008, // [1]      8
-        0x0000_010d, // [2]    269
-        0x0000_01a9, // [3]    425
-        0x0000_0221, // [4]    545
-        0x0000_0285, // [5]    645
-        0x0000_02e9, // [6]    745
-        0x0000_0352, // [7]    850
+    /// 4-bit step-magnitude table at proto VA 0x2aebc8. Indexed by
+    /// `abs(nibble - 7)`; entries [1..=7] are the real step bases.
+    /// Entry [0] is read for `nibble == 7` (mag = 0); the value here
+    /// is what the engine reads at proto VA 0x2aebc4 (one dword
+    /// before the table), and is needed for byte-perfect state
+    /// updates even though the downstream sign check zeroes the
+    /// emitted delta.
+    pub const STEP_MAG_4BIT: [i32; 8] = [
+        0xfa0a_1f00u32 as i32,
+        8,
+        269,
+        425,
+        545,
+        645,
+        745,
+        850,
     ];
 
-    /// 4-bit step-output table at retail VA 0x2cfd48. Drives the
-    /// nibble→sample envelope; indexed by `(step_magnitude >> 8) - 1`
-    /// or similar. Exact indexing semantics still TBD from the
-    /// kernel translation.
-    pub const STEP_OUT_4BIT: [i32; 16] = [
+    /// 4-bit step-output table at proto VA 0x2aec08, indexed by the
+    /// per-call magnitude `abs(nibble - 7)` (range 0..8 in practice;
+    /// mag=8 reads past the array but never affects observed audio).
+    pub const STEP_OUT_4BIT: [i32; 8] = [
         -1536,         // 0xfffffa00
         0x0000_090a,   // 2314
         0x0000_147b,   // 5243
@@ -857,34 +859,47 @@ pub mod codec8 {
         0x0000_630a,   // 25354
         0x0000_b185,   // 45445
         0x0002_310a,   // 143626
-        0,
-        0,
-        0,
-        1,
-        1,
-        1,
-        3,
-        7,
     ];
 
-    /// Main 64-entry signed lookup at retail VA 0x2d0018. Values run
-    /// from +1024 → +2007 (entries 0..32) and -1024 → -1922 (entries
-    /// 33..64), so `(eax & 0x84)` selects the sign half (0 vs 0x84
+    /// Main 66-entry signed lookup at proto VA 0x2aeed8. Values run
+    /// from +1024 → +2007 (entries 0..32) and -1024 → -2007 (entries
+    /// 33..65), so `(eax & 0x84)` selects the sign half (0 vs 0x84
     /// = 33×4 in dword-indexed bytes, indexing the second half).
-    /// Verified by extracting the table from the retail XBE.
-    pub const MAIN_LOOKUP: [i32; 64] = [
-        // +0x000..+0x080: positive half (33 entries, ascending 1024..2007)
+    pub const MAIN_LOOKUP: [i32; 66] = [
         1024, 1031, 1053, 1076, 1099, 1123, 1148, 1172,
         1198, 1224, 1251, 1278, 1306, 1334, 1363, 1393,
         1423, 1454, 1485, 1518, 1551, 1584, 1619, 1654,
         1690, 1726, 1764, 1802, 1841, 1881, 1922, 1964,
         2007,
-        // +0x084..+0x100: negative half (-1024 → -1922)
         -1024, -1031, -1053, -1076, -1099, -1123, -1148, -1172,
         -1198, -1224, -1251, -1278, -1306, -1334, -1363, -1393,
         -1423, -1454, -1485, -1518, -1551, -1584, -1619, -1654,
-        -1690, -1726, -1764, -1802, -1841, -1881, -1922,
+        -1690, -1726, -1764, -1802, -1841, -1881, -1922, -1964,
+        -2007,
     ];
+
+    /// MMX memory constants at proto VA 0x2af000..0x2af030. Each
+    /// 64-bit value is the qword the kernel loads at that address.
+    /// Stored as `u64` of LE-packed `i16`/`i32` lanes per Intel MMX
+    /// register layout.
+    const MC_2AF000: u64 = packed_i16(-4096, -4096, -4096, -4096);
+    const MC_2AF008: u64 = packed_i16(0, 1024, 0, 0);
+    const MC_2AF010: u64 = packed_i16(-1, 0, 0, 0);
+    const MC_2AF018: u64 = packed_i16(30719, 30719, 30720, 30720);
+    const MC_2AF020: u64 = packed_i16(1, 1, 1, 1);
+    const MC_2AF028: u64 = packed_i16(0x0c00, 0x00ff, 0x00fe, 0x0002);
+    /// `[0x2aefe0].d` zero-extended to qword (only low 32 bits used).
+    const MC_2AEFE0: u64 = (0x00fe_00ff_u32) as u64;
+    const MC_2AEFE8: u64 = packed_i16(2048, 2048, 2048, 2048);
+    const MC_2AEFF0: u64 = packed_i16(255, 255, 255, 255);
+    const MC_2AEFF8: u64 = packed_i16(-1, -1, -1, -1);
+
+    const fn packed_i16(a: i16, b: i16, c: i16, d: i16) -> u64 {
+        (a as u16 as u64)
+            | ((b as u16 as u64) << 16)
+            | ((c as u16 as u64) << 32)
+            | ((d as u16 as u64) << 48)
+    }
 
     /// Per-channel decoder state mirroring the engine's runtime
     /// struct read by `sub_1942e0`. Each field's offset matches the
@@ -932,6 +947,184 @@ pub mod codec8 {
         v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
     }
 
+    /// Scalar MMX primitives operating on 64-bit qwords. Each function
+    /// matches the corresponding Intel MMX instruction's semantics
+    /// bit-exactly so the per-instruction port of `sub_1999d0` below
+    /// can be read line-for-line against the binary's LLIL.
+    mod mmx {
+        const M16: u64 = 0xFFFF;
+        const M32: u64 = 0xFFFF_FFFF;
+
+        #[inline] fn sat_i16_scalar(v: i32) -> i16 {
+            v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        }
+        #[inline] fn s16(q: u64, i: u32) -> i16 {
+            ((q >> (16 * i)) & M16) as u16 as i16
+        }
+        #[inline] fn s32(q: u64, i: u32) -> i32 {
+            ((q >> (32 * i)) & M32) as u32 as i32
+        }
+        #[inline] pub fn pack_i16(a: i16, b: i16, c: i16, d: i16) -> u64 {
+            (a as u16 as u64)
+                | ((b as u16 as u64) << 16)
+                | ((c as u16 as u64) << 32)
+                | ((d as u16 as u64) << 48)
+        }
+        #[inline] pub fn pack_i32(a: i32, b: i32) -> u64 {
+            (a as u32 as u64) | ((b as u32 as u64) << 32)
+        }
+        #[inline] pub fn lanes_i16(q: u64) -> [i16; 4] {
+            [s16(q, 0), s16(q, 1), s16(q, 2), s16(q, 3)]
+        }
+        #[inline] pub fn lo32(q: u64) -> i32 { s32(q, 0) }
+
+        #[inline] pub fn pmaddwd(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            let p0 = la[0] as i32 * lb[0] as i32 + la[1] as i32 * lb[1] as i32;
+            let p1 = la[2] as i32 * lb[2] as i32 + la[3] as i32 * lb[3] as i32;
+            pack_i32(p0, p1)
+        }
+        #[inline] pub fn paddsw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                sat_i16_scalar(la[0] as i32 + lb[0] as i32),
+                sat_i16_scalar(la[1] as i32 + lb[1] as i32),
+                sat_i16_scalar(la[2] as i32 + lb[2] as i32),
+                sat_i16_scalar(la[3] as i32 + lb[3] as i32),
+            )
+        }
+        #[inline] pub fn psubsw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                sat_i16_scalar(la[0] as i32 - lb[0] as i32),
+                sat_i16_scalar(la[1] as i32 - lb[1] as i32),
+                sat_i16_scalar(la[2] as i32 - lb[2] as i32),
+                sat_i16_scalar(la[3] as i32 - lb[3] as i32),
+            )
+        }
+        #[inline] pub fn paddw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                la[0].wrapping_add(lb[0]),
+                la[1].wrapping_add(lb[1]),
+                la[2].wrapping_add(lb[2]),
+                la[3].wrapping_add(lb[3]),
+            )
+        }
+        #[inline] pub fn psubw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                la[0].wrapping_sub(lb[0]),
+                la[1].wrapping_sub(lb[1]),
+                la[2].wrapping_sub(lb[2]),
+                la[3].wrapping_sub(lb[3]),
+            )
+        }
+        #[inline] pub fn psrawi(a: u64, n: u32) -> u64 {
+            let s = n.min(15);
+            let la = lanes_i16(a);
+            pack_i16(la[0] >> s, la[1] >> s, la[2] >> s, la[3] >> s)
+        }
+        #[inline] pub fn psradi(a: u64, n: u32) -> u64 {
+            let s = n.min(31);
+            pack_i32(s32(a, 0) >> s, s32(a, 1) >> s)
+        }
+        #[inline] pub fn pslldi(a: u64, n: u32) -> u64 {
+            if n >= 32 { return 0; }
+            let l0 = (s32(a, 0) as u32).wrapping_shl(n) as i32;
+            let l1 = (s32(a, 1) as u32).wrapping_shl(n) as i32;
+            pack_i32(l0, l1)
+        }
+        #[inline] pub fn psrldi(a: u64, n: u32) -> u64 {
+            if n >= 32 { return 0; }
+            let l0 = ((s32(a, 0) as u32) >> n) as i32;
+            let l1 = ((s32(a, 1) as u32) >> n) as i32;
+            pack_i32(l0, l1)
+        }
+        #[inline] pub fn psllqi(a: u64, n: u32) -> u64 {
+            if n >= 64 { 0 } else { a << n }
+        }
+        #[inline] pub fn psrlqi(a: u64, n: u32) -> u64 {
+            if n >= 64 { 0 } else { a >> n }
+        }
+        #[inline] pub fn pmullw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                (la[0] as i32 * lb[0] as i32) as i16,
+                (la[1] as i32 * lb[1] as i32) as i16,
+                (la[2] as i32 * lb[2] as i32) as i16,
+                (la[3] as i32 * lb[3] as i32) as i16,
+            )
+        }
+        #[inline] pub fn pmulhw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                ((la[0] as i32 * lb[0] as i32) >> 16) as i16,
+                ((la[1] as i32 * lb[1] as i32) >> 16) as i16,
+                ((la[2] as i32 * lb[2] as i32) >> 16) as i16,
+                ((la[3] as i32 * lb[3] as i32) >> 16) as i16,
+            )
+        }
+        #[inline] pub fn punpcklwd(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(la[0], lb[0], la[1], lb[1])
+        }
+        #[inline] pub fn punpckhdq(a: u64, b: u64) -> u64 {
+            pack_i32(s32(a, 1), s32(b, 1))
+        }
+        #[inline] pub fn paddd(a: u64, b: u64) -> u64 {
+            pack_i32(
+                s32(a, 0).wrapping_add(s32(b, 0)),
+                s32(a, 1).wrapping_add(s32(b, 1)),
+            )
+        }
+        #[inline] pub fn packssdw(a: u64, b: u64) -> u64 {
+            pack_i16(
+                sat_i16_scalar(s32(a, 0)),
+                sat_i16_scalar(s32(a, 1)),
+                sat_i16_scalar(s32(b, 0)),
+                sat_i16_scalar(s32(b, 1)),
+            )
+        }
+        #[inline] pub fn pcmpgtw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            pack_i16(
+                if la[0] > lb[0] { -1 } else { 0 },
+                if la[1] > lb[1] { -1 } else { 0 },
+                if la[2] > lb[2] { -1 } else { 0 },
+                if la[3] > lb[3] { -1 } else { 0 },
+            )
+        }
+        /// `pandn dst, src` = `(!dst) & src`. Intel semantics, not the
+        /// "AND with NOT of memory operand" that Binary Ninja's LLIL
+        /// view shows.
+        #[inline] pub fn pandn(a: u64, b: u64) -> u64 {
+            (!a) & b
+        }
+        #[inline] pub fn paddusw(a: u64, b: u64) -> u64 {
+            let la = lanes_i16(a);
+            let lb = lanes_i16(b);
+            let sat = |x: u32, y: u32| -> i16 {
+                ((x + y).min(0xFFFF)) as u16 as i16
+            };
+            pack_i16(
+                sat(la[0] as u16 as u32, lb[0] as u16 as u32),
+                sat(la[1] as u16 as u32, lb[1] as u16 as u32),
+                sat(la[2] as u16 as u32, lb[2] as u16 as u32),
+                sat(la[3] as u16 as u32, lb[3] as u16 as u32),
+            )
+        }
+    }
+
     impl ChannelState {
         /// Initialise state matching the proto engine's per-channel
         /// state after `sub_1940b0` runs. Values verified against
@@ -946,153 +1139,272 @@ pub mod codec8 {
     }
 
     /// Decode one 4-bit nibble (0..15) into one i16 PCM sample,
-    /// updating `state` in place. This is a scalar translation of
-    /// the MMX kernel at retail VA 0x1942e0.
-    ///
-    /// PORT STATUS: first-pass implementation derived from static
-    /// MLIL analysis. The IMA core (step lookup, magnitude shift,
-    /// delta application) is high-confidence. The adaptive
-    /// coefficient update in Phase 6 and the envelope-correction
-    /// term in Phase 4 (the `pmaddwd` against immediate `0xf6`) are
-    /// best-guess and need trace validation. Mismatched audio
-    /// likely traces to those two phases.
+    /// updating `state` in place. Faithful per-instruction port of
+    /// the proto MMX kernel `sub_1999d0`, validated byte-perfect
+    /// against 2048/2048 captured calls from a QEMU-plugin trace.
     pub fn decode_nibble_4bit(state: &mut ChannelState, nibble: u8) -> i16 {
-        let nibble = (nibble & 0xF) as i32;
+        use mmx::*;
 
-        // ---- Phase 1: dot products of current history × coefficients
-        // (sar by 10 matches the MMX `psradi 0xa` after `pmaddwd`).
-        let dot_lo: i32 = (state.hist_pred[0] as i32 * state.coef_lo[0] as i32
-            + state.hist_pred[1] as i32 * state.coef_lo[1] as i32)
-            >> 10;
-        let dot_hi: i32 = (state.hist_delta[0] as i32 * state.coef_hi[0] as i32
-            + state.hist_delta[1] as i32 * state.coef_hi[1] as i32
-            + state.hist_delta[2] as i32 * state.coef_hi[2] as i32
-            + state.hist_delta[3] as i32 * state.coef_hi[3] as i32)
-            >> 10;
-
-        // ---- Phase 2: IMA-style step + magnitude lookup
-        // Offset-binary nibble encoding: magnitude = abs(nibble - 7),
-        // sign comes from sign of (nibble - 7). Verified against
-        // proto QEMU plugin trace: my static port with this layout
-        // matches the first ~60 silence samples byte-perfect, then
-        // diverges as the engine's adaptive filter (Phase 6) builds
-        // up — confirming the structure is right but Phase 6 needs
-        // implementing.
-        let centered = (nibble as i32) - 7;
-        let mag_idx = centered.unsigned_abs() as usize;
-        let sign_neg = centered < 0;
-        let is_silence_nibble = mag_idx == 0;
-        let step_full = if is_silence_nibble {
-            state.step_magnitude
-        } else {
-            (STEP_MAG_4BIT[mag_idx.min(7)] as i32).wrapping_add(state.step_magnitude)
-        };
-        let step_hi_byte: u32 = ((step_full as u32) >> 8) & 0xFF;
-        let step_lo_aligned: i32 = (step_full as u32 & 0xFFFF_FF00) as i32;
-        let step_lo_byte = (step_full as u32 & 0xFF) as i32;
-
-        let sign_half: usize = if sign_neg { 33 } else { 0 };
-        let lookup_idx = (step_lo_byte >> 3) as usize;
-        let delta_raw = MAIN_LOOKUP
-            .get(sign_half + lookup_idx)
-            .copied()
-            .unwrap_or(0);
-
-        let shifted = (delta_raw as u32).wrapping_shl(step_hi_byte) as i32;
-        let shifted = shifted >> 10;
-        // Guard: when the high byte is zero (i.e. step_full < 256) the
-        // shift result is suppressed in the binary via a sign-mask
-        // trick. Match that by zeroing when there's no magnitude.
-        // Also force delta to 0 for the silence nibble (mag_idx=0).
-        let delta = if is_silence_nibble || step_lo_aligned == 0 { 0 } else { shifted };
-
-        // ---- Phase 3: combine
-        let result_i32 = dot_lo.wrapping_add(dot_hi).wrapping_add(delta);
-
-        // ---- Phase 4: update step_magnitude
-        // STEP_OUT_4BIT[mag_idx] is the per-bucket step increment;
-        // the envelope-correction term `step_magnitude.lo16 * 246`
-        // is the kernel's `pmaddwd(st7, 0xf6)` — TBD whether that
-        // immediate is truly 0xf6 or a memory ref; verify with trace.
-        let step_inc = STEP_OUT_4BIT[mag_idx.min(15)];
-        let envelope = (state.step_magnitude & 0xFFFF) * 246;
-        let new_step = (step_inc.wrapping_add(envelope)) >> 8;
-        state.step_magnitude = new_step.clamp(0x10F, 0xA00);
-
-        // ---- Phase 5: shift history
-        let result_sat = sat_i16(result_i32);
-        let delta_sat = sat_i16(delta);
-        state.hist_pred = [result_sat, state.hist_pred[0]];
-        state.hist_delta = [
-            delta_sat,
+        // The kernel views per-channel state as a 128-byte memory
+        // region. Materialise the qword/dword views the kernel reads.
+        let cl_lo_dword: u32 = (state.coef_lo[0] as u16 as u32)
+            | ((state.coef_lo[1] as u16 as u32) << 16);
+        let hp_dword: u32 = (state.hist_pred[0] as u16 as u32)
+            | ((state.hist_pred[1] as u16 as u32) << 16);
+        let slow_qword: u64 = pack_i16(
+            state.coef_hi[0],
+            state.coef_hi[1],
+            state.coef_hi[2],
+            state.coef_hi[3],
+        );
+        let hd_qword: u64 = pack_i16(
             state.hist_delta[0],
             state.hist_delta[1],
             state.hist_delta[2],
-        ];
+            state.hist_delta[3],
+        );
+        let prev_dot_qword: u64 = (state.prev_hi_dot as u32 as u64)
+            | ((state.prev_prev_hi_dot as u32 as u64) << 32);
+        let entry_step_mag = state.step_magnitude;
 
-        // ---- Phase 6: adaptive coefficient growth (HEURISTIC port).
-        // The engine's exact MMX-based adaptive update is multi-
-        // stage and depends on per-channel state in a memory region
-        // we haven't captured runtime ground truth for. Instead, this
-        // approximates: grow coef_lo[0] by 1/call toward 896 when
-        // signal is non-silent, and slowly populate coef_hi[*] so
-        // the high-tap dot product also contributes.
-        //
-        // Validated against the proto QEMU trace (capture[0]+[1] =
-        // 3072 samples): this variant reaches mean magnitude 4018
-        // vs engine's 4324 (within 7%) and mean abs error 2097.
-        // Not byte-perfect but tracks the signal envelope well
-        // enough to produce intelligible audio.
-        //
-        // The real algorithm (per HLIL at 0x19453e..0x1944e0) does
-        // leak (coef *= 255/256), then adds an LMS-style update term
-        // built from the saturating-add ladder, per-lane biases
-        // (data_2d0128 = 0x800), and per-tap weights from
-        // data_2d0168. Future trace hooks reading per-channel state
-        // would enable byte-perfect reverse-engineering.
-        if delta_sat != 0 {
-            if (state.coef_lo[0] as i32) < 896 {
-                state.coef_lo[0] += 1;
-            }
-            for i in 0..4 {
-                if state.coef_hi[i] < 128 {
-                    state.coef_hi[i] += 1;
-                }
-            }
+        // Dispatcher (0x1999d0..0x199ad9)
+        let mut mm0 = cl_lo_dword as u64;                              // 0x1999e6 mm0 = zx.q([eax+0x10].d)
+        let mut mm6 = hp_dword as u64;                                 // 0x1999ea mm6 = zx.q([eax+0x20].d)
+        let mut mm2 = slow_qword;                                      // 0x1999ee mm2 = [eax+0x18].q
+        let mut mm4 = hd_qword;                                        // 0x1999f2 mm4 = [eax+0x28].q
+        mm0 = pmaddwd(mm0, mm6);                                       // 0x1999f6
+        let centered: i32 = (nibble & 0xF) as i32 - 7;                 // 0x1999f9 ebx -= 7
+        let si_save: i16 = state.hist_delta[3];                        // 0x199a07 si = [eax+0x2e].w
+        let mut mm3 = hd_qword;                                        // 0x199a0d
+        mm0 = psradi(mm0, 0xa);                                        // 0x199a11 (dot_lo >>= 10)
+        let mag = centered.unsigned_abs() as i32;                      // 0x199a15 ebx = abs(centered)
+        mm2 = pmaddwd(mm2, mm3);                                       // 0x199a17
+        let dot_lo_lo32: i32 = lo32(mm0);                              // 0x199a29 [ebp-0x10] = mm0.d
+        let mut mm1 = mm2;                                             // 0x199a2d
+        // `mag` ranges 0..=7 for nibbles 0..=14; nibble == 15 would
+        // produce mag == 8 (an OOB read in the engine). No real audio
+        // ever produces that input (verified across the entire music
+        // and dialog trace, 96k+ nibbles), so we clamp here rather
+        // than carry the OOB value as a guard entry.
+        let step_full = STEP_MAG_4BIT[(mag as usize).min(7)]
+            .wrapping_add(entry_step_mag);                             // 0x199a30 ebx += ecx
+        mm1 = punpckhdq(mm1, mm2);                                     // 0x199a32
+        let step_aligned: i32 = (step_full as u32 & 0xFFFF_FF00) as i32; // 0x199a3a ebx &= 0xffffff00
+        mm1 = paddd(mm1, mm2);                                         // 0x199a37
+        mm1 = psradi(mm1, 0xa);                                        // 0x199a40
+        let sign_half: usize = if centered < 0 { 33 } else { 0 };      // 0x199a4f eax &= 0x84
+        let step_lo_idx: usize = (((step_full - step_aligned) >> 3) & 0xFF) as usize; // 0x199a47 + 0x199a54
+        let main_val: i32 = MAIN_LOOKUP
+            .get(sign_half + step_lo_idx)
+            .copied()
+            .unwrap_or(0);                                             // 0x199a67
+        let cl_shift: u32 = ((step_aligned as u32) >> 8) & 0x1F;       // 0x199a64 (signed >> 8, then low 5 bits)
+        let dot_hi_lo32: i32 = lo32(mm1);                              // 0x199a59 [ebp-4] = mm1.d
+        mm4 = psllqi(mm4, 0x10);                                       // 0x199a5d
+        let shifted: i32 = (main_val as u32)
+            .wrapping_shl(cl_shift) as i32;                            // 0x199a70 edx <<= cl
+        let shifted: i32 = shifted >> 0xa;                             // 0x199a72 edx >>= 10 (signed)
+        let mask: i32 = if step_aligned >= 1 { -1 } else { 0 };        // 0x199a6a + 0x199a75
+        let delta: i32 = if mask == -1 { shifted } else { 0 };         // 0x199a7b
+        let result_i32: i32 = dot_hi_lo32
+            .wrapping_add(delta)
+            .wrapping_add(dot_lo_lo32);                                // 0x199a80 + 0x199a82
+        let var_8_dot_hi: i32 = dot_hi_lo32;                           // saved as var_8 = mm1.d (pre-paddw)
+
+        let mut mm5: u64 = result_i32 as u32 as u64;                   // 0x199a87 mm5 = zx.q(result)
+        mm6 = psllqi(mm6, 0x10);                                       // 0x199a8a
+        mm0 = delta as u32 as u64;                                     // 0x199a8e mm0 = zx.q(delta)
+        mm5 = pslldi(mm5, 0x10);                                       // 0x199a92
+        mm2 = prev_dot_qword;                                          // 0x199a96 mm2 = [eax+8].q
+        mm0 = pslldi(mm0, 0x10);                                       // 0x199a9a
+        mm3 = MC_2AF028;                                               // 0x199a9e
+        mm5 = psrldi(mm5, 0x10);                                       // 0x199aa5
+        mm0 = psrldi(mm0, 0x10);                                       // 0x199aa9
+        mm5 |= mm6;                                                    // 0x199aad
+        mm4 |= mm0;                                                    // 0x199ab0
+        mm1 = paddw(mm1, mm0);                                         // 0x199ab3
+        let new_hp_dword: u32 = lo32(mm5) as u32;                      // 0x199ab6 [eax+0x20].d = mm5.d
+        mm2 = packssdw(mm2, mm5);                                      // 0x199aba
+        let new_hd_qword: u64 = mm4;                                   // 0x199abd [eax+0x28].q = mm4
+        mm2 = psllqi(mm2, 0x10);                                       // 0x199ac1
+        let new_delta_save: i16 = si_save;                             // 0x199ac5 [eax+0x30].w = si
+        let branch_test: u32 = lo32(mm1) as u32 & 0xFFFF;              // 0x199ad3 ebx &= 0xffff
+        mm1 = pslldi(mm1, 0x10);                                       // 0x199acf
+        let is_silence = branch_test == 0;                             // 0x199ad9
+
+        // Both branches converge at 0x199cf1 with mm1 (going into the
+        // saturation ladder), mm2 (new slow_filter), and a new
+        // step_magnitude. Compute these via whichever branch applies.
+        let mut new_step_mag: i32;
+        if is_silence {
+            // Branch A (silence path, 0x199c2e..0x199cee).
+            mm1 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199c2e mm1 = [eax+0x10].q
+            mm3 = MC_2AEFE0;                                          // 0x199c32 (255, 254, 0, 0)
+            mm2 = mm1;                                                // 0x199c39
+            mm1 = pmullw(mm1, mm3);                                   // 0x199c3c
+            mm2 = pmulhw(mm2, mm3);                                   // 0x199c47
+            mm1 = punpcklwd(mm1, mm2);                                // 0x199c4a
+            mm1 = psradi(mm1, 8);                                     // 0x199c4d
+            mm1 = packssdw(mm1, mm3);                                 // 0x199c51
+            let mut mm0a: u64 = new_hd_qword;                         // 0x199c54 mm0 = [esi+0x28].q
+            let mut mm7a: u64 = entry_step_mag as u32 as u64;         // 0x199c58 mm7 = zx.q([esi+4].d)
+            mm0a = psllqi(mm0a, 0x30);                                // 0x199c5c
+            let mut mm4a: u64 = 0xf6;                                 // 0x199c68 mm4 = ecx (ecx=0xf6)
+            let mm6a_save: u64 = mm0a;                                // 0x199c6b mm6 = mm0
+            mm0a = psrlqi(mm0a, 0x20);                                // 0x199c6e
+            let stepout = STEP_OUT_4BIT[mag.min(7) as usize];
+            mm0a |= mm6a_save;                                        // 0x199c79
+            // Post-write read of state+0x2a..0x31 (new hd + delta_save).
+            let post_hd = lanes_i16(new_hd_qword);
+            let mm6a_2a = pack_i16(post_hd[1], post_hd[2], post_hd[3], new_delta_save);
+            mm0a = psradi(mm0a, 0x20);                                // 0x199c80
+            mm0a &= MC_2AF000;                                        // 0x199c84
+            mm7a = pmaddwd(mm7a, mm4a);                               // 0x199c8b (step_mag.lo16 * 0xf6)
+            mm2 = MC_2AEFF0;                                          // 0x199c8e (255, 255, 255, 255)
+            let mm6a_cmp = pcmpgtw(mm6a_2a, MC_2AEFF8);                // 0x199c95
+            let mm6a_cmp = pandn(mm6a_cmp, MC_2AEFF8);                // 0x199c9c
+            mm2 = pmullw(mm2, slow_qword);                            // 0x199ca3
+            mm0a |= MC_2AEFE8;                                        // 0x199ca7
+            let mm6a_cmp = paddusw(mm6a_cmp, MC_2AF020);              // 0x199cae
+            let edi_step: i32 = lo32(mm7a);                           // 0x199cb5
+            mm0a = pmullw(mm0a, mm6a_cmp);                            // 0x199cb8
+            new_step_mag = stepout.wrapping_add(edi_step) >> 8;       // 0x199cbd
+            mm2 = paddsw(mm2, mm0a);                                  // 0x199ccd
+            new_step_mag = new_step_mag.clamp(0x10F, 0xA00);          // 0x199cc6..0x199cdc
+            mm2 = psrawi(mm2, 8);                                     // 0x199cd6
+            mm6 = 0;                                                  // 0x199cee
+        } else {
+            // Branch B (LMS path, 0x199adf..0x199c29).
+            let mut mm0b: u64 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199adf
+            mm1 = psradi(mm1, 0x1f);                                  // 0x199ae3
+            mm1 |= MC_2AF020;                                         // 0x199ae7
+            mm4 = paddsw(new_hd_qword, mm2);                          // 0x199aee (mm4 = new_hd; mm2 = packssdw output)
+            mm4 = psrawi(mm4, 0xf);                                   // 0x199af1
+            mm5 = mm3;                                                // 0x199af5 (mm3 was MC_2AF028)
+            mm4 |= MC_2AF020;                                         // 0x199af8
+            mm0b = pslldi(mm0b, 0x10);                                // 0x199aff (Binary Ninja's LLIL view missed this; verified via raw bytes)
+            let mut mm7b: u64 = MC_2AF018;                            // 0x199b03
+            mm4 = psrlqi(mm4, 0x10);                                  // 0x199b0a
+            mm4 = pmullw(mm4, mm1);                                   // 0x199b0e
+            mm1 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199b14 mm1 = [eax+0x10].q
+            mm5 = psrlqi(mm5, 0x20);                                  // 0x199b18
+            mm1 = psllqi(mm1, 0x20);                                  // 0x199b1c
+            mm2 = mm4;                                                // 0x199b25
+            mm1 = psrlqi(mm1, 0x30);                                  // 0x199b28
+            mm4 &= MC_2AF010;                                         // 0x199b2c
+            mm4 |= mm0b;                                              // 0x199b33
+            let mut mm6b: u64 = entry_step_mag as u32 as u64;         // 0x199b39 mm6 = zx.q([esi+4].d)
+            mm3 = pmaddwd(mm3, mm4);                                  // 0x199b3d
+            let mm4_ecx: u64 = 0xf6;                                  // 0x199b4c mm4 = ecx (ecx=0xf6)
+            mm6b = pmaddwd(mm6b, mm4_ecx);                            // 0x199b4f
+            mm3 = psrldi(mm3, 8);                                     // 0x199b52
+            mm4 = mm3;                                                // 0x199b56
+            mm3 = pslldi(mm3, 2);                                     // 0x199b59
+            let edi_step: i32 = lo32(mm6b);                           // 0x199b5d
+            mm3 = paddsw(mm3, mm7b);                                  // 0x199b60
+            mm3 = psubsw(mm3, mm7b);                                  // 0x199b63
+            mm7b = psrlqi(mm7b, 0x20);                                // 0x199b66
+            let mut mm0c: u64 = new_hd_qword;                         // 0x199b6a
+            mm3 = psubsw(mm3, mm7b);                                  // 0x199b6e
+            mm0c = psllqi(mm0c, 0x30);                                // 0x199b71
+            mm3 = paddsw(mm3, mm7b);                                  // 0x199b75
+            let mm6c_save: u64 = mm0c;                                // 0x199b78
+            mm3 &= MC_2AF010;                                         // 0x199b7b
+            mm0c = psrlqi(mm0c, 0x20);                                // 0x199b82
+            mm3 |= MC_2AF008;                                         // 0x199b86
+            mm0c |= mm6c_save;                                        // 0x199b8d
+            mm3 = pmullw(mm3, mm2);                                   // 0x199b90
+            mm2 = mm3;                                                // 0x199b9c
+            mm0c = psradi(mm0c, 0x20);                                // 0x199b95
+            mm0c &= MC_2AF000;                                        // 0x199b9f
+            mm2 = psrlqi(mm2, 0x10);                                  // 0x199ba6
+            let post_hd = lanes_i16(new_hd_qword);
+            let mm6c_2a = pack_i16(post_hd[1], post_hd[2], post_hd[3], new_delta_save); // 0x199baa [esi+0x2a].q
+            mm2 = psubw(mm2, mm3);                                    // 0x199bae
+            let mm6c_cmp = pcmpgtw(mm6c_2a, MC_2AEFF8);                // 0x199bb1
+            mm2 = pslldi(mm2, 0x10);                                  // 0x199bb8
+            let mm6c_cmp = pandn(mm6c_cmp, MC_2AEFF8);                // 0x199bbc
+            mm1 |= mm2;                                               // 0x199bc3
+            let mm6c_cmp = paddusw(mm6c_cmp, MC_2AF020);              // 0x199bc6
+            mm1 = pmaddwd(mm1, mm5);                                  // 0x199bcd
+            let stepout = STEP_OUT_4BIT[mag.min(7) as usize];
+            new_step_mag = stepout.wrapping_add(edi_step) >> 8;       // 0x199bcd..0x199bd6 ebx s>>= 8
+            new_step_mag = new_step_mag.clamp(0x10F, 0xA00);          // 0x199bd6..0x199be5
+            mm2 = MC_2AEFF0;                                          // 0x199bed
+            mm1 = psradi(mm1, 8);                                     // 0x199bf4
+            mm0c |= MC_2AEFE8;                                        // 0x199bf8
+            mm1 = pslldi(mm1, 0x10);                                  // 0x199bff
+            mm2 = pmullw(mm2, slow_qword);                            // 0x199c03 [esi+0x18] = old slow_filter
+            mm4 = pslldi(mm4, 0x10);                                  // 0x199c07
+            mm0c = pmullw(mm0c, mm6c_cmp);                            // 0x199c15
+            mm6 = 0;                                                  // 0x199c18
+            mm4 = psrldi(mm4, 0x10);                                  // 0x199c1b
+            mm2 = paddsw(mm2, mm0c);                                  // 0x199c1f
+            mm1 |= mm4;                                               // 0x199c22
+            mm2 = psrawi(mm2, 8);                                     // 0x199c25
         }
 
-        // ---- Phase 7: tail clamps on coef[0], coef[1]
-        // Verified from engine trace data: coef_lo[1] clamped to
-        // [-0x300, +0x300], then coef_lo[0] clamped to
-        // ±(0x3C0 - SIGNED(coef_lo[1])) — NOT abs(coef_lo[1]).
-        // With negative coef_lo[1] the bound INCREASES (e.g. for
-        // coef_lo[1]=-702 the bound is 1662, not 258), which is how
-        // the engine reaches coef_lo[0]=1610.
-        let c1 = (state.coef_lo[1] as i32).clamp(-0x300, 0x300);
-        state.coef_lo[1] = c1 as i16;
-        let bound = 0x3C0 - c1;
-        // bound can be positive or negative depending on sign of c1.
-        // For c1 > 0 (positive), bound = 960 - c1 (shrinks toward 0).
-        // For c1 < 0 (negative), bound = 960 + |c1| (grows).
-        // The clamp is symmetric: coef[0] ∈ [-bound, +bound].
-        state.coef_lo[0] = sat_i16((state.coef_lo[0] as i32).clamp(-bound, bound));
+        // Saturation ladder (0x199cf1..0x199d3e), shared by both
+        // branches. mm2 ends up written to coef_lo; mm1 going in is
+        // the per-branch LMS chain output.
+        let new_slow_qword = mm2;
+        let mm4_lad: u64 = 0x7cff_0000u32 as u64;                     // 0x199cf5 mm4 = zx.q(eax)
+        let mut mm2l = mm1;                                           // 0x199cf8
+        let mut mm1l = punpcklwd(mm1, mm6);                           // 0x199cfb
+        mm2l = paddsw(mm2l, mm4_lad);                                 // 0x199cfe
+        let mm5_lad: u64 = 0x8300_0000u32 as u64;                     // 0x199d01 mm5 = zx.q(ebx)
+        mm1l = psrlqi(mm1l, 0x20);                                    // 0x199d09
+        mm2l = psubsw(mm2l, mm4_lad);                                 // 0x199d0d
+        mm2l = paddsw(mm2l, mm5_lad);                                 // 0x199d13
+        let mm1d: i32 = lo32(mm1l);                                   // 0x199d16 ebx = mm1.d
+        mm2l = psubsw(mm2l, mm5_lad);                                 // 0x199d19
+        let ecx_clamp: i32 = 0x3c0i32.wrapping_sub(mm1d);             // 0x199d1c
+        let edx_clamp: i32 = 0x7fffi32.wrapping_sub(ecx_clamp);       // 0x199d23
+        let mm5_lad2: u64 = edx_clamp as u32 as u64;                  // 0x199d27 mm5 = zx.q(edx)
+        let prev_dot1 = state.prev_hi_dot;                            // 0x199d2a eax = [esi+8].d
+        mm2l = paddsw(mm2l, mm5_lad2);                                // 0x199d2d
+        mm2l = psubsw(mm2l, mm5_lad2);                                // 0x199d33
 
-        // ---- Phase 8: emit sample (low 16 bits of saturated result)
-        state.prev_prev_hi_dot = state.prev_hi_dot;
-        state.prev_hi_dot = dot_hi;
-        result_sat
+        // Commit final state writes (0x199ce1 / 0x199bea / 0x199d36..).
+        state.step_magnitude = new_step_mag;
+        state.prev_prev_hi_dot = prev_dot1;                           // 0x199d36 [esi+0xc] = old [esi+8]
+        state.prev_hi_dot = var_8_dot_hi;                             // 0x199d3a [esi+8] = var_8_1
+        let cl_lo_new = lo32(mm2l) as u32;                            // 0x199d3e [esi+0x10].d = mm2.d
+        state.coef_lo = [cl_lo_new as i16, (cl_lo_new >> 16) as i16];
+        state.coef_hi = lanes_i16(new_slow_qword);
+        let hp_lanes = lanes_i16(new_hp_dword as u64);
+        state.hist_pred = [hp_lanes[0], hp_lanes[1]];
+        state.hist_delta = lanes_i16(new_hd_qword);
+        state.delta_save = new_delta_save;
+
+        // Phase 7 tail clamps on coef_lo (0x199d44..0x199da7).
+        let mut cl1 = state.coef_lo[1] as i32;
+        if cl1.abs() > 0x300 {
+            cl1 = if cl1 >= 0 { 0x300 } else { -0x300 };
+            state.coef_lo[1] = cl1 as i16;
+        }
+        let cl0 = state.coef_lo[0] as i32;
+        let bound = 0x3c0 - cl1;
+        if cl0.abs() > bound {
+            let sign = if cl0 >= 0 { 1 } else { -1 };
+            state.coef_lo[0] = sat_i16(sign * bound);
+        }
+
+        // The kernel returns `eax = var_c = result_i32` (full 32 bits).
+        // The caller (`sub_199f90` at 0x19a0f6) writes only `ax` — the
+        // low 16 bits — to PCM. Truncate, do NOT saturate: when the
+        // adaptive predictor overshoots, the engine's output wraps
+        // around in i16, matching the value already stored to
+        // `hist_pred[0]` here in the kernel.
+        result_i32 as i16
     }
 
     /// Unpack 4-bit nibbles from a packed byte stream, matching the
-    /// engine's `sub_194820`. The input is read as a sequence of
-    /// 8-byte qwords; within each qword the two 4-byte dwords are
-    /// swapped before extraction. Nibbles are then taken from bit
-    /// position 60 (high) down to 0 in 4-bit steps, producing 16
-    /// nibbles per qword in the output array.
-    ///
-    /// Output is written as one nibble per byte (values 0..15).
-    /// `input.len()` must be a multiple of 8 and large enough for
-    /// `(out_count + 15) / 16` qwords.
+    /// engine's `sub_199f10`. Each 8 source bytes form a qword
+    /// `(lo_dword << 32) | hi_dword` (the two halves swap places),
+    /// then 16 nibbles are extracted at bit positions
+    /// `60, 56, 52, ..., 4, 0` (descending). Verified against
+    /// kernel_captures `stack4` values from the QEMU trace.
     pub fn unpack_nibbles_4bit(input: &[u8], output: &mut [u8]) {
         let count = output.len();
         let mut written = 0usize;
@@ -1101,8 +1413,6 @@ pub mod codec8 {
             assert!(src + 8 <= input.len(), "unpack_nibbles_4bit: input exhausted");
             let lo = u32::from_le_bytes(input[src..src + 4].try_into().unwrap()) as u64;
             let hi = u32::from_le_bytes(input[src + 4..src + 8].try_into().unwrap()) as u64;
-            // psrlq(esi,32)→high in low; punpckldq merges (mem.lo, reg.lo) =
-            // (low_dword, high_dword) — i.e. the two dwords swap places.
             let qword = (lo << 32) | hi;
             src += 8;
             for shift in (0..=60).rev().step_by(4) {
@@ -1115,20 +1425,6 @@ pub mod codec8 {
         }
     }
 
-    /// Variant of `unpack_nibbles_4bit` that extracts low-nibble-
-    /// first within each byte. Use for diagnostic A/B comparison —
-    /// the actual engine's bit order is high-first (per the MMX
-    /// kernel), but the picket-fence artifact may come from a
-    /// reversal in the byte→nibble convention.
-    pub fn unpack_nibbles_4bit_swapped(input: &[u8], output: &mut [u8]) {
-        unpack_nibbles_4bit(input, output);
-        // Swap adjacent pairs in place.
-        let n = output.len() & !1;
-        for i in (0..n).step_by(2) {
-            output.swap(i, i + 1);
-        }
-    }
-
     /// Decode a whole codec_id=8 file (header + data) into PCM. The
     /// caller is responsible for splitting stereo output into L/R
     /// channels if the header reports `channels == 2`.
@@ -1136,54 +1432,656 @@ pub mod codec8 {
     /// PORT STATUS: the 4-bit kernel is a first-pass static port
     /// (Phases 4 and 6 are best-guess). Validation needs listening
     /// or a proto/demo runtime trace.
+    /// Iterate the codec_id=8 banks of an `.LS2`/`.SS2` style
+    /// container. A bank is a self-contained codec_id=8 file (its own
+    /// 0x40-byte header + 0x24 zero pad + nibble-packed audio data).
+    /// Banks are concatenated back-to-back: scan forward for the next
+    /// plausible codec_id=8 header to find each bank's end.
+    pub fn iter_banks(file_bytes: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+        let mut cursor = 0usize;
+        std::iter::from_fn(move || {
+            if cursor + HEADER_BYTES > file_bytes.len() {
+                return None;
+            }
+            // Confirm cursor is on a real bank header.
+            if !is_plausible_bank_header(file_bytes, cursor) {
+                return None;
+            }
+            // Search forward for the next plausible bank header to
+            // bound this bank. End of file otherwise.
+            let search_start = cursor + HEADER_BYTES;
+            let mut bank_end = file_bytes.len();
+            let mut probe = search_start;
+            while probe + HEADER_BYTES <= file_bytes.len() {
+                if is_plausible_bank_header(file_bytes, probe) {
+                    bank_end = probe;
+                    break;
+                }
+                probe += 1;
+            }
+            let bytes = &file_bytes[cursor..bank_end];
+            let bank_offset = cursor;
+            cursor = bank_end;
+            Some((bank_offset, bytes))
+        })
+    }
+
+    /// Heuristic: a real codec_id=8 bank header has codec_id=8 at
+    /// `+0x00`, block_size=1536 at `+0x10`, channels in {1, 2} at
+    /// `+0x14`, a recognised sample rate at `+0x18`, and the
+    /// init-step-magnitude constant `1280` at `+0x34`.
+    fn is_plausible_bank_header(bytes: &[u8], at: usize) -> bool {
+        if at + HEADER_BYTES > bytes.len() {
+            return false;
+        }
+        let read = |o: usize| u32::from_le_bytes(
+            bytes[at + o..at + o + 4].try_into().unwrap(),
+        );
+        let codec = read(0x00);
+        let block = read(0x10);
+        let channels = read(0x14);
+        let rate = read(0x18);
+        let init = read(0x34);
+        codec == CODEC_ID
+            && block == 0x600
+            && (channels == 1 || channels == 2)
+            && matches!(rate, 8000 | 11025 | 16000 | 22050 | 32000 | 36000 | 44100 | 48000)
+            && init == 1280
+    }
+
+    /// Decode the whole codec_id=8 file into PCM. Delegates to
+    /// `decode_bank` since each `.LS2` is a single bank (the per-
+    /// macro-block 52-byte resync headers are state snapshots, not
+    /// sub-sound markers).
     pub fn decode_file(file_bytes: &[u8]) -> io::Result<(Header, Vec<i16>)> {
         let header = parse_header(file_bytes)?;
-        // Empirically: bytes 0x40..0x64 of observed proto files are
-        // zero-padded (zero run extends from 0x36 in-header to 0x64
-        // post-header). The actual nibble stream starts at 0x64
-        // with the codec's "silence" pattern (0x77 = nibble 7,7 in
-        // the offset-binary IMA scheme). Treat the first 36 bytes
-        // after the header as state-init padding; this is a guess
-        // pending fuller reverse-engineering of the file loader.
-        const DATA_START: usize = 0x64;
-        if file_bytes.len() < DATA_START {
+        let pcm = decode_bank(file_bytes)?;
+        Ok((header, pcm))
+    }
+
+    /// Decode one codec_id=8 file. Two on-disc layouts are observed,
+    /// distinguished by the `unknown_2c` field of the header
+    /// (= 1 for voice/SFX `.LS2`, = 2 for stereo music `.SS2`):
+    ///
+    /// **Mono LS2** (`unknown_2c == 1`), 1590-byte macroblock stride:
+    /// ```text
+    ///   0..769     chunk A   (768 nibble bytes + 1 reserved)
+    ///   769..1538  chunk B   (768 nibble bytes + 1 reserved)
+    ///   1538..1590 52-byte mono state-resync header (skip)
+    /// ```
+    ///
+    /// **Stereo SS2** (`unknown_2c == 2`), 1642-byte macroblock stride
+    /// starting at file offset `0x30`:
+    /// ```text
+    ///   0..52     52-byte L channel state-resync header (skip)
+    ///   52..104   52-byte R channel state-resync header (skip)
+    ///   104..873  chunk_A (768 nibble bytes + 1 padding)
+    ///   873..1642 chunk_B (768 nibble bytes + 1 padding)
+    /// ```
+    /// Each chunk is one `sub_199f90` dispatcher invocation: the
+    /// unpacker produces 1536 nibbles interleaved as L,R,L,R; the
+    /// inline case-1 loop applies the same 4-bit kernel (`sub_1999d0`)
+    /// to L state (offset 0 of channel_state region) for even-indexed
+    /// nibbles and R state (offset 52) for odd-indexed, writing 768
+    /// stereo frames as interleaved L,R i16. Verified byte-perfect
+    /// against the engine for all 64 captured music dispatches via
+    /// `tests::stereo_pcm_matches_engine_output`.
+    ///
+    /// State flows continuously across all state-resync headers
+    /// during sequential decode; we just skip them.
+    pub fn decode_bank(file_bytes: &[u8]) -> io::Result<Vec<i16>> {
+        let mut pcm = Vec::new();
+        for bank in decode_each_bank(file_bytes)? {
+            pcm.extend_from_slice(&bank.pcm);
+        }
+        Ok(pcm)
+    }
+
+    /// One decoded bank's metadata + samples.
+    pub struct DecodedBank {
+        pub header: Header,
+        pub pcm: Vec<i16>,
+    }
+
+    /// Iterate every bank in a multi-bank codec_id=8 file and decode
+    /// each independently. Each `DecodedBank.pcm` is one continuous
+    /// audio clip (interleaved L,R for subtype 2, mono for subtype 1).
+    pub fn decode_each_bank(file_bytes: &[u8]) -> io::Result<Vec<DecodedBank>> {
+        let mut banks = Vec::new();
+        let mut offset = 0usize;
+        while offset + 0x30 <= file_bytes.len() {
+            let codec_id = u32::from_le_bytes(
+                file_bytes[offset..offset + 4].try_into().unwrap(),
+            );
+            if codec_id != CODEC_ID {
+                break;
+            }
+            let header = parse_header(&file_bytes[offset..])?;
+            let bank_size = compute_bank_size(&header);
+            let bank_end = (offset + bank_size).min(file_bytes.len());
+            let bank = &file_bytes[offset..bank_end];
+            let pcm = if header.unknown_2c == 2 {
+                decode_stereo_bank(bank, &header)?
+            } else {
+                decode_mono_bank(bank, &header)?
+            };
+            banks.push(DecodedBank { header, pcm });
+            if bank_size == 0 {
+                break;
+            }
+            offset += bank_size;
+        }
+        Ok(banks)
+    }
+
+    /// Compute the on-disc byte size of one bank from its header fields.
+    /// Bank layout for both subtypes:
+    ///   - 48B file header
+    ///   - `(outer_calls - 1)` full chunks consumed as N full macroblocks
+    ///     plus 0 or 1 leftover chunk inside a partial-tail macroblock
+    ///   - 1 partial last chunk sized by `tail` samples
+    /// Mono LS2 macroblock = `[52B state][769B chunk_A][769B chunk_B]` (1590B).
+    /// Stereo SS2 macroblock = `[52B L state][52B R state][769B chunk_A][769B chunk_B]` (1642B).
+    fn compute_bank_size(header: &Header) -> usize {
+        const FILE_HEADER: usize = 0x30;
+        const CHUNK_SIZE: usize = 769;
+        let outer = header.unknown_08 as usize;
+        let tail_nibbles = header.unknown_0c as usize;
+        let stereo = header.unknown_2c == 2;
+        let state_pair = if stereo { 104 } else { 52 };
+        let macroblock = state_pair + CHUNK_SIZE * 2;
+        let full_chunks = outer.saturating_sub(1);
+        let full_macros = full_chunks / 2;
+        let leftover_full_chunks = full_chunks - full_macros * 2;
+        let partial_chunk_bytes = 1 + tail_nibbles / 2;
+        FILE_HEADER
+            + full_macros * macroblock
+            + state_pair
+            + leftover_full_chunks * CHUNK_SIZE
+            + partial_chunk_bytes
+    }
+
+    /// Decode a partial chunk of `nib_count` nibbles into pcm, with
+    /// zero-padded input if the on-disc chunk has fewer source bytes
+    /// than the unpacker's 8-byte qword granularity requires.
+    fn decode_partial_chunk(
+        bank: &[u8],
+        chunk_off: usize,
+        nib_count: usize,
+        state_l: &mut ChannelState,
+        state_r: &mut ChannelState,
+        pcm: &mut Vec<i16>,
+    ) {
+        let src_bytes_needed = nib_count.div_ceil(16) * 8;
+        let avail = bank.len().saturating_sub(chunk_off);
+        let mut src = vec![0u8; src_bytes_needed];
+        let copy = src_bytes_needed.min(avail);
+        src[..copy].copy_from_slice(&bank[chunk_off..chunk_off + copy]);
+        let mut nibs = vec![0u8; nib_count];
+        unpack_nibbles_4bit(&src, &mut nibs);
+        for pair in nibs.chunks_exact(2) {
+            pcm.push(decode_nibble_4bit(state_l, pair[0]));
+            pcm.push(decode_nibble_4bit(state_r, pair[1]));
+        }
+    }
+
+    fn decode_mono_bank(bank_bytes: &[u8], header: &Header) -> io::Result<Vec<i16>> {
+        const FILE_HEADER: usize = 0x30;
+        const STATE_HEADER_BYTES: usize = 52;
+        const NIBBLES_PER_CHUNK: usize = 1536;
+        const SRC_BYTES_PER_CHUNK: usize = NIBBLES_PER_CHUNK / 2;
+        const FILE_CHUNK_STRIDE: usize = SRC_BYTES_PER_CHUNK + 1;
+        const MACROBLOCK_BYTES: usize = STATE_HEADER_BYTES + FILE_CHUNK_STRIDE * 2;
+        if bank_bytes.len() < FILE_HEADER + STATE_HEADER_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "codec_id=8 file too short for data section",
+                "codec_id=8 bank too short for state header",
             ));
         }
-        let data = &file_bytes[DATA_START..];
-        // Each input byte → 2 nibbles → 2 output samples per channel.
-        // For stereo, the channels are interleaved; we decode them
-        // as two separate state machines and produce interleaved
-        // L/R output.
-        let total_nibbles = (data.len() / 8) * 16;
-        let mut nibbles = vec![0u8; total_nibbles];
-        unpack_nibbles_4bit(data, &mut nibbles);
-
-        let channels = header.channels.max(1) as usize;
-        let frames = nibbles.len() / channels;
-        let mut pcm = vec![0i16; frames * channels];
-        let mut states: Vec<ChannelState> = (0..channels).map(|_| ChannelState::init()).collect();
-        // The engine's outer loop (sub_1948a0) processes "four
-        // nibbles per state struct per iteration" — i.e. the
-        // channel interleave is block-based at 4-nibble granularity,
-        // not per-nibble. For stereo, a 8-nibble loop iteration
-        // covers (L0, L1, L2, L3, R0, R1, R2, R3).
-        const BLOCK_NIBBLES_PER_CHANNEL: usize = 4;
-        let block_total = channels * BLOCK_NIBBLES_PER_CHANNEL;
-        let block_count = nibbles.len() / block_total;
-        for block in 0..block_count {
-            let base = block * block_total;
-            for c in 0..channels {
-                for i in 0..BLOCK_NIBBLES_PER_CHANNEL {
-                    let nib = nibbles[base + c * BLOCK_NIBBLES_PER_CHANNEL + i];
-                    let frame = block * BLOCK_NIBBLES_PER_CHANNEL + i;
-                    pcm[frame * channels + c] = decode_nibble_4bit(&mut states[c], nib);
+        let outer_calls = header.unknown_08 as usize;
+        let tail_nibbles = header.unknown_0c as usize;
+        let full_chunks = outer_calls.saturating_sub(1);
+        let full_macros = full_chunks / 2;
+        let leftover_full_chunks = full_chunks - full_macros * 2;
+        let mut pcm = Vec::with_capacity(header.total_size as usize);
+        let mut state = ChannelState::init();
+        let mut nibbles = vec![0u8; NIBBLES_PER_CHUNK];
+        let mut macroblock_start = FILE_HEADER;
+        for _ in 0..full_macros {
+            let chunk_a = macroblock_start + STATE_HEADER_BYTES;
+            for chunk_off in [chunk_a, chunk_a + FILE_CHUNK_STRIDE] {
+                unpack_nibbles_4bit(
+                    &bank_bytes[chunk_off..chunk_off + SRC_BYTES_PER_CHUNK],
+                    &mut nibbles,
+                );
+                for &n in &nibbles[..] {
+                    pcm.push(decode_nibble_4bit(&mut state, n));
                 }
             }
+            macroblock_start += MACROBLOCK_BYTES;
         }
-        Ok((header, pcm))
+        let mut chunk_off = macroblock_start + STATE_HEADER_BYTES;
+        for _ in 0..leftover_full_chunks {
+            unpack_nibbles_4bit(
+                &bank_bytes[chunk_off..chunk_off + SRC_BYTES_PER_CHUNK],
+                &mut nibbles,
+            );
+            for &n in &nibbles[..] {
+                pcm.push(decode_nibble_4bit(&mut state, n));
+            }
+            chunk_off += FILE_CHUNK_STRIDE;
+        }
+        if tail_nibbles > 0 {
+            let src_bytes_needed = tail_nibbles.div_ceil(16) * 8;
+            let avail = bank_bytes.len().saturating_sub(chunk_off);
+            let mut src = vec![0u8; src_bytes_needed];
+            let copy = src_bytes_needed.min(avail);
+            src[..copy].copy_from_slice(&bank_bytes[chunk_off..chunk_off + copy]);
+            let mut tail_nibs = vec![0u8; tail_nibbles];
+            unpack_nibbles_4bit(&src, &mut tail_nibs);
+            for &n in &tail_nibs {
+                pcm.push(decode_nibble_4bit(&mut state, n));
+            }
+        }
+        Ok(pcm)
+    }
+
+    fn decode_stereo_bank(bank_bytes: &[u8], header: &Header) -> io::Result<Vec<i16>> {
+        const HEADER_BYTES_BANK: usize = 0x30;
+        const STATE_HEADER_BYTES: usize = 52;
+        const STATE_PAIR_BYTES: usize = STATE_HEADER_BYTES * 2;
+        const NIBBLES_PER_CHUNK: usize = 1536;
+        const SRC_BYTES_PER_CHUNK: usize = NIBBLES_PER_CHUNK / 2;
+        const FILE_CHUNK_STRIDE: usize = SRC_BYTES_PER_CHUNK + 1;
+        const MACROBLOCK_BYTES: usize = STATE_PAIR_BYTES + FILE_CHUNK_STRIDE * 2;
+        if bank_bytes.len() < HEADER_BYTES_BANK + STATE_PAIR_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "codec_id=8 stereo bank too short for state header",
+            ));
+        }
+        let outer_calls = header.unknown_08 as usize;
+        let tail_nibbles = header.unknown_0c as usize;
+        let full_chunks = outer_calls.saturating_sub(1);
+        let full_macros = full_chunks / 2;
+        let leftover_full_chunks = full_chunks - full_macros * 2;
+        let mut pcm = Vec::with_capacity((header.total_size as usize) * 2);
+        let mut state_l = ChannelState::init();
+        let mut state_r = ChannelState::init();
+        let mut nibs = vec![0u8; NIBBLES_PER_CHUNK];
+        let mut macroblock_start = HEADER_BYTES_BANK;
+        for _ in 0..full_macros {
+            let chunk_a = macroblock_start + STATE_PAIR_BYTES;
+            for chunk_off in [chunk_a, chunk_a + FILE_CHUNK_STRIDE] {
+                unpack_nibbles_4bit(
+                    &bank_bytes[chunk_off..chunk_off + SRC_BYTES_PER_CHUNK],
+                    &mut nibs,
+                );
+                for pair in nibs.chunks_exact(2) {
+                    pcm.push(decode_nibble_4bit(&mut state_l, pair[0]));
+                    pcm.push(decode_nibble_4bit(&mut state_r, pair[1]));
+                }
+            }
+            macroblock_start += MACROBLOCK_BYTES;
+        }
+        // Partial macroblock: state pair + (leftover_full_chunks) full chunks + 1 partial chunk.
+        let mut chunk_off = macroblock_start + STATE_PAIR_BYTES;
+        for _ in 0..leftover_full_chunks {
+            unpack_nibbles_4bit(
+                &bank_bytes[chunk_off..chunk_off + SRC_BYTES_PER_CHUNK],
+                &mut nibs,
+            );
+            for pair in nibs.chunks_exact(2) {
+                pcm.push(decode_nibble_4bit(&mut state_l, pair[0]));
+                pcm.push(decode_nibble_4bit(&mut state_r, pair[1]));
+            }
+            chunk_off += FILE_CHUNK_STRIDE;
+        }
+        if tail_nibbles > 0 {
+            decode_partial_chunk(
+                bank_bytes,
+                chunk_off,
+                tail_nibbles,
+                &mut state_l,
+                &mut state_r,
+                &mut pcm,
+            );
+        }
+        Ok(pcm)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Full-file ground truth: concatenate `pcm_output` from
+        /// every captured outer-call in the trace and require that
+        /// `decode_file` on the corresponding on-disc `.LS2` produces
+        /// exactly the same samples. This validates not just the
+        /// kernel but the file-level chunk + state-resync-header
+        /// layout (skip 52 bytes every 2 chunks).
+        #[test]
+        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
+        fn whole_file_matches_engine() {
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
+                .expect("trace file");
+            let trace: serde_json::Value =
+                serde_json::from_slice(&raw).expect("parse");
+            let calls = trace["calls"].as_array().expect("calls");
+            if calls.is_empty() {
+                return;
+            }
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
+                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
+            if subtype != 1 {
+                eprintln!("trace is not mono LS2 (subtype={subtype}); skipping whole-file test");
+                return;
+            }
+            // Identify the LS2 the trace's calls came from by
+            // matching the first call's block_buffer head against
+            // the candidate file on disc.
+            let first_bb: Vec<u8> = calls[0]["block_buffer"]
+                .as_array().unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
+            let head_size = 256.min(first_bb.len());
+            let candidate = "/Users/lander/Downloads/Tom Clancy's Splinter Cell \
+                             (Sep 13, 2002 prototype)/dumped/Sounds/ENGLISH/1_1_0.LS2";
+            let Ok(file_bytes) = std::fs::read(candidate) else { return };
+            if file_bytes.windows(head_size).position(|w| w == &first_bb[..head_size]).is_none() {
+                return;
+            }
+            // Build the engine-expected PCM from the captures'
+            // pcm_output, taking exactly 1536 valid samples per call.
+            const VALID_PER_CALL: usize = 1536;
+            let mut expected = Vec::new();
+            for c in calls {
+                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                for i in 0..VALID_PER_CALL {
+                    expected.push(i16::from_le_bytes([
+                        pcm_b[2*i], pcm_b[2*i + 1],
+                    ]));
+                }
+            }
+            // Decode the on-disc file via the real decoder.
+            // Use a target_samples >= expected.len() so we cover the
+            // full captured range.
+            let mut header = parse_header(&file_bytes).expect("header");
+            header.total_size = expected.len() as u32;
+            // Patch the header in a copy of the file bytes so
+            // decode_bank stops at the right sample count.
+            let mut patched = file_bytes.clone();
+            patched[0x04..0x08].copy_from_slice(&(expected.len() as u32).to_le_bytes());
+            let got = decode_bank(&patched).expect("decode");
+            assert_eq!(got.len(), expected.len(),
+                "decoded len {} != expected len {}",
+                got.len(), expected.len());
+            let mut diffs = Vec::new();
+            for i in 0..expected.len() {
+                if got[i] != expected[i] {
+                    if diffs.len() < 8 {
+                        diffs.push((i, got[i], expected[i]));
+                    }
+                }
+            }
+            assert!(diffs.is_empty(),
+                "whole-file pcm mismatches at sample indices: first 8 = {diffs:?}");
+        }
+
+        /// Validate the full decoder pipeline (unpack + per-nibble
+        /// kernel + state continuity) against the engine's recorded
+        /// PCM output for one outer-loop call from the QEMU trace.
+        /// Each outer call records `block_buffer` (source bytes),
+        /// `pcm_output` (engine PCM), and `channel_state_entry/post`.
+        /// We replay each call's source bytes through our decoder
+        /// starting from the captured entry state and assert every
+        /// sample matches the engine's pcm_output up to the valid
+        /// region.
+        #[test]
+        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
+        fn pcm_matches_engine_output() {
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
+                .expect("trace file");
+            let trace: serde_json::Value =
+                serde_json::from_slice(&raw).expect("parse");
+            let calls = trace["calls"].as_array().expect("calls");
+            assert!(!calls.is_empty());
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
+                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
+            if subtype != 1 {
+                eprintln!("trace is not mono LS2 (subtype={subtype}); skipping mono pcm test");
+                return;
+            }
+            // Per-call expected layout (verified empirically against
+            // pcm_output):
+            //   block_buffer: 2048 source bytes (only first SRC_BYTES used)
+            //   unpacker output: NIBBLES_PER_CALL nibbles per outer call,
+            //     matching `[codec_params+8] = 0x600 = 1536`.
+            //   pcm_output: 4096 i16; the first NIBBLES_PER_CALL are the
+            //     actual decoded samples, the rest is uninitialised buffer
+            //     memory captured by the trace tool.
+            const NIBBLES_PER_CALL: usize = 1536;
+            const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
+            let mut total_mismatch_calls = 0usize;
+            for (call_idx, c) in calls.iter().enumerate() {
+                let block: Vec<u8> = c["block_buffer"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let csentry: Vec<u8> = c["channel_state_entry"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let mut expected_pcm = vec![0i16; pcm_b.len() / 2];
+                for i in 0..expected_pcm.len() {
+                    expected_pcm[i] = i16::from_le_bytes([pcm_b[2*i], pcm_b[2*i + 1]]);
+                }
+                let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
+                unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
+                let mut state = state_from_bytes(&csentry);
+                let mut got = Vec::with_capacity(NIBBLES_PER_CALL);
+                for &n in &nibbles {
+                    got.push(decode_nibble_4bit(&mut state, n));
+                }
+                // Compare against engine's pcm_output for the first
+                // NIBBLES_PER_CALL samples.
+                let mut diffs = Vec::new();
+                for i in 0..NIBBLES_PER_CALL {
+                    if got[i] != expected_pcm[i] {
+                        if diffs.len() < 5 {
+                            diffs.push((i, got[i], expected_pcm[i]));
+                        }
+                    }
+                }
+                if !diffs.is_empty() {
+                    total_mismatch_calls += 1;
+                    eprintln!("call {call_idx}: {} mismatches; first 5 = {:?}",
+                        diffs.len(), diffs);
+                }
+            }
+            assert_eq!(total_mismatch_calls, 0,
+                "outer-call pcm mismatches: {total_mismatch_calls} / {}",
+                calls.len());
+        }
+
+        /// Hypothesis test for codec_id=8 subtype-2 stereo music
+        /// (sub_199f90 case 1): per dispatcher call the unpacker
+        /// produces 1536 nibbles interleaved as L,R,L,R; the inline
+        /// loop applies the same per-nibble 4-bit kernel to L state
+        /// for even-indexed nibbles and R state for odd-indexed
+        /// nibbles, writing pcm_output as interleaved L,R i16. The
+        /// channel_state region holds L state at offset 0 and R state
+        /// at offset 52 (each is the same 52-byte struct as mono).
+        /// Only the first 1536 i16 of pcm_output are valid output
+        /// (= 768 L + 768 R stereo frames).
+        #[test]
+        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json with stereo music captures"]
+        fn stereo_pcm_matches_engine_output() {
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
+                .expect("trace file");
+            let trace: serde_json::Value =
+                serde_json::from_slice(&raw).expect("parse");
+            let calls = trace["calls"].as_array().expect("calls");
+            assert!(!calls.is_empty());
+            // Skip if these aren't stereo music captures (codec_state[+0x4c] != 2).
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
+                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
+            if subtype != 2 {
+                eprintln!("trace is not stereo music (subtype={subtype}); skipping");
+                return;
+            }
+            const NIBBLES_PER_CALL: usize = 1536;
+            const VALID_PCM: usize = 1536;
+            const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
+            let mut total_mismatch_calls = 0usize;
+            for (call_idx, c) in calls.iter().enumerate() {
+                let block: Vec<u8> = c["block_buffer"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let csentry: Vec<u8> = c["channel_state_entry"].as_array().unwrap()
+                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let mut expected = vec![0i16; VALID_PCM];
+                for i in 0..VALID_PCM {
+                    expected[i] = i16::from_le_bytes([pcm_b[2*i], pcm_b[2*i + 1]]);
+                }
+                let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
+                unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
+                let mut state_l = state_from_bytes(&csentry[0..52]);
+                let mut state_r = state_from_bytes(&csentry[52..104]);
+                let mut got = Vec::with_capacity(VALID_PCM);
+                for pair in nibbles.chunks_exact(2) {
+                    got.push(decode_nibble_4bit(&mut state_l, pair[0]));
+                    got.push(decode_nibble_4bit(&mut state_r, pair[1]));
+                }
+                let mut diffs = Vec::new();
+                for i in 0..VALID_PCM {
+                    if got[i] != expected[i] {
+                        if diffs.len() < 5 {
+                            diffs.push((i, got[i], expected[i]));
+                        }
+                    }
+                }
+                if !diffs.is_empty() {
+                    total_mismatch_calls += 1;
+                    eprintln!("call {call_idx}: first 5 = {:?}", diffs);
+                }
+            }
+            assert_eq!(total_mismatch_calls, 0,
+                "stereo pcm mismatches: {total_mismatch_calls} / {}",
+                calls.len());
+        }
+
+        /// Replay the captured QEMU trace through the Rust kernel and
+        /// require byte-perfect agreement on every captured call's
+        /// post-state. Skipped by default since the trace file is
+        /// machine-local; run with `cargo test --release -- --ignored
+        /// byte_perfect_against_qemu_trace`.
+        #[test]
+        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
+        fn byte_perfect_against_qemu_trace() {
+            let path = "/var/tmp/sc1_proto_audio_trace.json";
+            let raw = std::fs::read(path).expect("trace file");
+            let trace: serde_json::Value =
+                serde_json::from_slice(&raw).expect("trace parse");
+            let calls = trace["kernel_captures"].as_array().expect("calls");
+            assert!(!calls.is_empty(), "trace has no calls");
+            let mut mismatches: Vec<(usize, u8, [usize; 8])> = Vec::new();
+            for (i, c) in calls.iter().enumerate() {
+                let nib = c["stack4"].as_u64().unwrap() as u8;
+                let entry: Vec<u8> = c["state_at_stack8"]
+                    .as_array().unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let truth: Vec<u8> = c["state_at_stack8_post"]
+                    .as_array().unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let mut state = state_from_bytes(&entry);
+                let _ = decode_nibble_4bit(&mut state, nib);
+                let got = state_to_bytes(&state, &entry);
+                if got[..0x32] != truth[..0x32] {
+                    if mismatches.len() < 5 {
+                        let mut diffs = [0usize; 8];
+                        let mut n = 0;
+                        for j in 0..0x32 {
+                            if got[j] != truth[j] && n < 8 {
+                                diffs[n] = j;
+                                n += 1;
+                            }
+                        }
+                        mismatches.push((i, nib, diffs));
+                    }
+                }
+            }
+            assert!(
+                mismatches.is_empty(),
+                "trace replay mismatches: first 5 = {mismatches:?}"
+            );
+        }
+
+        fn state_from_bytes(b: &[u8]) -> ChannelState {
+            let r16 = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+            let r32 = |o: usize| i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            ChannelState {
+                step_magnitude: r32(0x04),
+                prev_hi_dot: r32(0x08),
+                prev_prev_hi_dot: r32(0x0c),
+                coef_lo: [r16(0x10), r16(0x12)],
+                coef_hi: [r16(0x18), r16(0x1a), r16(0x1c), r16(0x1e)],
+                hist_pred: [r16(0x20), r16(0x22)],
+                hist_delta: [r16(0x28), r16(0x2a), r16(0x2c), r16(0x2e)],
+                delta_save: r16(0x30),
+            }
+        }
+
+        /// Targeted divergence reproducer. Feeds the exact entry
+        /// state observed at sample 1546 of 1_1_2.LS2 (where the
+        /// Rust kernel saturates but the Python sim produces 27146)
+        /// and prints the post-state.
+        #[test]
+        #[ignore = "diagnostic"]
+        fn diagnose_sample_1546() {
+            let entry_hex = "00000000fe09000051fcffff3cfeffff6b0625fd000000007f00530000001100b79d66c600000000c4e9c4e914f3a1fc6700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+            let entry: Vec<u8> = (0..entry_hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&entry_hex[i..i+2], 16).unwrap())
+                .collect();
+            let mut state = state_from_bytes(&entry);
+            eprintln!("pre:  step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
+                state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
+                state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
+            let sample = decode_nibble_4bit(&mut state, 1);
+            eprintln!("post: step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
+                state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
+                state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
+            eprintln!("sample returned: {sample}");
+            eprintln!("python sim expected: sample=27146; step=2558, prev_hi=-943, cl=(1643,-731)");
+        }
+
+        fn state_to_bytes(s: &ChannelState, entry: &[u8]) -> Vec<u8> {
+            let mut out = entry.to_vec();
+            out[0x04..0x08].copy_from_slice(&s.step_magnitude.to_le_bytes());
+            out[0x08..0x0c].copy_from_slice(&s.prev_hi_dot.to_le_bytes());
+            out[0x0c..0x10].copy_from_slice(&s.prev_prev_hi_dot.to_le_bytes());
+            out[0x10..0x12].copy_from_slice(&s.coef_lo[0].to_le_bytes());
+            out[0x12..0x14].copy_from_slice(&s.coef_lo[1].to_le_bytes());
+            for (i, v) in s.coef_hi.iter().enumerate() {
+                out[0x18 + 2 * i..0x18 + 2 * i + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            out[0x20..0x22].copy_from_slice(&s.hist_pred[0].to_le_bytes());
+            out[0x22..0x24].copy_from_slice(&s.hist_pred[1].to_le_bytes());
+            for (i, v) in s.hist_delta.iter().enumerate() {
+                out[0x28 + 2 * i..0x28 + 2 * i + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            out[0x30..0x32].copy_from_slice(&s.delta_save.to_le_bytes());
+            out
+        }
     }
 }
 
@@ -1513,10 +2411,31 @@ pub mod sm2 {
     /// record.data_size`); each entry's `audio_rel_offset` is
     /// relative to that audio base, and the length is implicit:
     /// `next_entry.audio_rel_offset - this_entry.audio_rel_offset`.
+    /// Container kind. Both `.SM2` (SFX/ambient) and `.LM2`
+    /// (language-specific dialog) share the v7 archive header and the
+    /// descriptor blob layout, but differ in how `array_a`'s rate
+    /// ratio applies: SM2 only scales LS2-tagged entries (rest play at
+    /// nominal rate), LM2 scales every entry. The `kind` lets the
+    /// parser pick the right rule.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Kind {
+        Sm2,
+        Lm2,
+    }
+
     pub fn parse_sound_table(
         descriptor: &[u8],
         record: &Record,
         next_record_offset: Option<u32>,
+    ) -> io::Result<Vec<SoundEntry>> {
+        parse_sound_table_for(descriptor, record, next_record_offset, Kind::Sm2)
+    }
+
+    pub fn parse_sound_table_for(
+        descriptor: &[u8],
+        record: &Record,
+        next_record_offset: Option<u32>,
+        kind: Kind,
     ) -> io::Result<Vec<SoundEntry>> {
         if descriptor.len() < 0x24 {
             return Err(io::Error::new(
@@ -1681,10 +2600,20 @@ pub mod sm2 {
                             .position(|&b| b == 0)
                             .unwrap_or(ARRAY_B_NAME_BYTES);
                         let name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
-                        // For LS2-tagged entries, scale the nominal
-                        // rate by array_a's +0x10 ratio. Non-LS2
-                        // entries play at the nominal rate directly.
-                        let sr = if is_ls2 {
+                        // Rate scaling: SM2 only applies array_a's
+                        // ratio to LS2-tagged entries (verified
+                        // against the engine on 5_1_2_PresidentialPalace).
+                        // LM2 (language-specific dialog archive)
+                        // applies the ratio to every entry — its
+                        // array_b names omit the `LS2` suffix (they
+                        // store the bare `.wav` filename), so the tag
+                        // check would never fire. Empirically required:
+                        // `ENGLISH/MAPS.LM2` 0_0_3 entries from
+                        // `seq=0x4000007e` onward play at 0.6674×
+                        // nominal per array_a, otherwise dialog plays
+                        // too fast.
+                        let scale = is_ls2 || kind == Kind::Lm2;
+                        let sr = if scale {
                             let ratio = array_a_by_seq
                                 .partition_point(|&(s, _)| s <= seq_id)
                                 .checked_sub(1)
