@@ -347,62 +347,81 @@ fn is_asset_load_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("DynamicLoadObject") || name.eq_ignore_ascii_case("StaticLoadObject")
 }
 
+/// Args extracted from one `StaticLoadObject`/`DynamicLoadObject` call
+/// site. The outer walker uses `class_idx` to resolve the actual class
+/// an import expects (strict class matching avoids over-matching name-
+/// only candidates of unrelated types). `after` is the bytecode cursor
+/// position immediately past `EndFunctionParms`.
+struct LoadCallArgs<'a> {
+    class_idx: Option<i32>,
+    name_bytes: Option<&'a [u8]>,
+    after: usize,
+}
+
 /// Inside a function call's argument list (i.e. between `FinalFunction`/
 /// `Native` and the matching `EndFunctionParms`), extract:
 /// 1. the first `ObjectConst Object(idx)` (UE2's compiled
 ///    `class'X.Y'` argument -- the InClass passed to
 ///    `StaticLoadObject` / `DynamicLoadObject`), and
 /// 2. the first `StringConst Data(...)` payload (the asset path).
-///
-/// Returns `(class_ref_idx, name_bytes, after_end_index)`. The outer
-/// walker uses `class_ref_idx` to resolve the actual class an
-/// import expects, so the resulting load is dispatched with strict
-/// class matching -- without it our default (`Core.Class`) over-
-/// matches name-only candidates of unrelated types, leaking
-/// preloads of e.g. `MeshAnimation ENPC.LadderAnims` for an import
-/// that the engine treats as null.
-fn extract_load_args(
-    parsed_script: &[Expr],
-    args_start: usize,
-) -> (Option<i32>, Option<&[u8]>, usize) {
-    let mut found_class: Option<i32> = None;
-    let mut found_str: Option<&[u8]> = None;
+fn extract_load_args(parsed_script: &[Expr], args_start: usize) -> LoadCallArgs<'_> {
+    let mut class_idx: Option<i32> = None;
+    let mut name_bytes: Option<&[u8]> = None;
     let mut i = args_start;
     while i < parsed_script.len() {
         match &parsed_script[i] {
-            Expr::Token(ExprToken::EndFunctionParms) => return (found_class, found_str, i + 1),
+            Expr::Token(ExprToken::EndFunctionParms) => {
+                return LoadCallArgs {
+                    class_idx,
+                    name_bytes,
+                    after: i + 1,
+                };
+            }
             Expr::Token(ExprToken::ObjectConst) => {
                 if let Some(Expr::Object(idx)) = parsed_script.get(i + 1)
-                    && found_class.is_none()
+                    && class_idx.is_none()
                 {
-                    found_class = Some(*idx);
+                    class_idx = Some(*idx);
                 }
             }
             Expr::Token(ExprToken::StringConst) => {
                 if let Some(Expr::Data(bytes)) = parsed_script.get(i + 1)
-                    && found_str.is_none()
+                    && name_bytes.is_none()
                 {
-                    found_str = Some(bytes.as_slice());
+                    name_bytes = Some(bytes.as_slice());
                 }
             }
             _ => {}
         }
         i += 1;
     }
-    (found_class, found_str, i)
+    LoadCallArgs {
+        class_idx,
+        name_bytes,
+        after: i,
+    }
 }
 
-/// Resolve an `ObjectConst` index in `func_linker` to a
-/// `(class_name, class_package_name)` pair suitable for passing to
-/// `load_object_by_full_name_with_class`. Mirrors what the engine's
-/// `StaticLoadObject` does to the `InClass` arg before searching for
-/// the named object: it inspects the UClass's name and outer-package
-/// chain. We need the same identity to filter exports correctly.
+/// A class identity suitable for the engine's `StaticLoadObject` filter:
+/// the UClass's own name and the package it lives in. Same shape as the
+/// `Option<(&str, &str)>` argument
+/// `Runtime::load_object_by_full_name_with_class` accepts.
+struct ClassRef {
+    name: String,
+    package: String,
+}
+
+/// Resolve an `ObjectConst` index in `func_linker` to a `ClassRef`
+/// suitable for passing to `load_object_by_full_name_with_class`.
+/// Mirrors what the engine's `StaticLoadObject` does to the `InClass`
+/// arg before searching for the named object: it inspects the UClass's
+/// name and outer-package chain. We need the same identity to filter
+/// exports correctly.
 ///
 /// For an export-typed referent the class is "Class" (since UClasses
 /// are themselves Class-typed objects); the meaningful piece is the
 /// referent's *name*, which becomes the `expected_class_name` filter.
-fn resolve_class_arg(idx: i32, func_linker: &RcLinker) -> Option<(String, String)> {
+fn resolve_class_arg(idx: i32, func_linker: &RcLinker) -> Option<ClassRef> {
     if idx == 0 {
         return None;
     }
@@ -432,14 +451,20 @@ fn resolve_class_arg(idx: i32, func_linker: &RcLinker) -> Option<(String, String
             }
             last_pkg
         };
-        Some((class_name, class_package?))
+        Some(ClassRef {
+            name: class_name,
+            package: class_package?,
+        })
     } else {
         let exp_idx = (idx - 1) as usize;
         let exp = l.package.exports.get(exp_idx)?;
         let class_name = l.package.names.get(exp.object_name as usize)?.name.clone();
         // For an export-typed class arg the package is the linker's
         // own name (the class lives in this package).
-        Some((class_name, l.name.clone()))
+        Some(ClassRef {
+            name: class_name,
+            package: l.name.clone(),
+        })
     }
 }
 
@@ -577,9 +602,9 @@ where
         }
 
         // FinalFunction at i, Object(idx) at i+1, args from i+2.
-        let (class_arg_idx, str_arg, after) = extract_load_args(parsed_script, i + 2);
-        i = after;
-        let Some(bytes) = str_arg else { continue };
+        let args = extract_load_args(parsed_script, i + 2);
+        i = args.after;
+        let Some(bytes) = args.name_bytes else { continue };
         let Some(name) = asset_path_from_string_const(bytes) else {
             continue;
         };
@@ -604,8 +629,10 @@ where
         // export of the same name, the wrong-typed body gets preloaded
         // out of disk order, and the cascade misaligns by hundreds of KB
         // (verified on `4_3_0ChineseEmbassy`).
-        let class_info = class_arg_idx.and_then(|idx| resolve_class_arg(idx, func_linker));
-        let class_info_pair = class_info.as_ref().map(|(n, p)| (n.as_str(), p.as_str()));
+        let class_info = args.class_idx.and_then(|idx| resolve_class_arg(idx, func_linker));
+        let class_info_pair = class_info
+            .as_ref()
+            .map(|cr| (cr.name.as_str(), cr.package.as_str()));
 
         runtime.begin_load();
         let result = if let Some(ci) = class_info_pair {

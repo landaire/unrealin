@@ -75,6 +75,43 @@ pub(crate) fn packed_int_size(value: i32) -> usize {
     n
 }
 
+/// The five fields the export table emits for one export, after applying
+/// SC's `SavePackage` neutral form for never-loaded entries
+/// (class/super/package/flags zeroed, object_name = "None"). Bundles
+/// them so the size-accounting loop and the emit loop both walk the
+/// same struct and can't drift apart on field order.
+struct ExportTableFields {
+    class_index: i32,
+    super_index: i32,
+    package_index: i32,
+    object_name: i32,
+    object_flags: u32,
+}
+
+fn export_table_fields(
+    export: &crate::de::ObjectExport,
+    effective_size: i32,
+    none_idx: i32,
+) -> ExportTableFields {
+    if effective_size == 0 {
+        ExportTableFields {
+            class_index: 0,
+            super_index: 0,
+            package_index: 0,
+            object_name: none_idx,
+            object_flags: 0,
+        }
+    } else {
+        ExportTableFields {
+            class_index: export.class_index,
+            super_index: export.super_index,
+            package_index: export.package_index,
+            object_name: export.object_name,
+            object_flags: export.object_flags,
+        }
+    }
+}
+
 fn write_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
     if s.is_empty() {
         write_packed_int(w, 0)?;
@@ -319,15 +356,11 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // so size accounting matches the bytes we'll actually emit.
     let mut entry_fixed_sizes: Vec<usize> = Vec::with_capacity(pkg.exports.len());
     for (i, export) in pkg.exports.iter().enumerate() {
-        let (ci, si, on) = if effective_size[i] == 0 {
-            (0i32, 0i32, none_idx)
-        } else {
-            (export.class_index, export.super_index, export.object_name)
-        };
-        let mut sz = packed_int_size(ci);
-        sz += packed_int_size(si);
+        let fields = export_table_fields(export, effective_size[i], none_idx);
+        let mut sz = packed_int_size(fields.class_index);
+        sz += packed_int_size(fields.super_index);
         sz += 4; // package_index (raw u32) -- neutralised to 0 below for empties
-        sz += packed_int_size(on);
+        sz += packed_int_size(fields.object_name);
         sz += 4; // object_flags (raw u32) -- neutralised to 0 below for empties
         sz += packed_int_size(effective_size[i]); // serial_size
         entry_fixed_sizes.push(sz);
@@ -381,22 +414,12 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // change it to preserve the original schema "for visibility" --
     // recover missing bodies upstream instead.
     for (i, export) in pkg.exports.iter().enumerate() {
-        let (ci, si, pi, on, ofl) = if effective_size[i] == 0 {
-            (0i32, 0i32, 0i32, none_idx, 0u32)
-        } else {
-            (
-                export.class_index,
-                export.super_index,
-                export.package_index,
-                export.object_name,
-                export.object_flags,
-            )
-        };
-        write_packed_int(&mut writer, ci)?;
-        write_packed_int(&mut writer, si)?;
-        writer.write_i32::<E>(pi)?;
-        write_packed_int(&mut writer, on)?;
-        writer.write_u32::<E>(ofl)?;
+        let fields = export_table_fields(export, effective_size[i], none_idx);
+        write_packed_int(&mut writer, fields.class_index)?;
+        write_packed_int(&mut writer, fields.super_index)?;
+        writer.write_i32::<E>(fields.package_index)?;
+        write_packed_int(&mut writer, fields.object_name)?;
+        writer.write_u32::<E>(fields.object_flags)?;
         write_packed_int(&mut writer, effective_size[i])?;
         if effective_size[i] > 0 {
             let pre = writer.stream_position()?;
