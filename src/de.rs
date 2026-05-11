@@ -348,18 +348,64 @@ where
     })
 }
 
+/// The five fields the export table emits per export row. Layout-
+/// independent: `serial_size` and `serial_offset` are intentionally
+/// excluded so the same struct can be used for both the on-disk
+/// neutralised form and the size-accounting pass without re-listing
+/// the field names.
+///
+/// Has no inherent methods so that `Deref<Target = ExportTableFields>`
+/// on `ObjectExport` can't accidentally shadow callers' method lookups.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
-pub struct ObjectExport {
+pub struct ExportTableFields {
     pub class_index: i32,
     pub super_index: i32,
     pub package_index: i32,
     pub object_name: i32,
     pub object_flags: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+pub struct ObjectExport {
+    #[serde(flatten)]
+    pub fields: ExportTableFields,
     pub serial_size: i32,
     pub serial_offset: i32,
 }
 
+impl std::ops::Deref for ObjectExport {
+    type Target = ExportTableFields;
+    fn deref(&self) -> &ExportTableFields {
+        &self.fields
+    }
+}
+
+impl std::ops::DerefMut for ObjectExport {
+    fn deref_mut(&mut self) -> &mut ExportTableFields {
+        &mut self.fields
+    }
+}
+
 impl ObjectExport {
+    /// SC's `SavePackage` neutral form for a never-loaded export:
+    /// class/super/package/flags zeroed, `object_name = "None"`
+    /// (caller passes the linker's name-table index for `"None"`).
+    /// Used by the serializer to emit a parseable but inert table
+    /// row for exports whose body we don't write.
+    pub fn neutral(object_name: i32) -> Self {
+        Self {
+            fields: ExportTableFields {
+                class_index: 0,
+                super_index: 0,
+                package_index: 0,
+                object_name,
+                object_flags: 0,
+            },
+            serial_size: 0,
+            serial_offset: 0,
+        }
+    }
+
     fn partially_eq(&self, other: &Self) -> bool {
         self.class_index == other.class_index
             && self.super_index == other.super_index
@@ -489,11 +535,13 @@ where
         0
     };
     Ok(ObjectExport {
-        class_index,
-        super_index,
-        package_index,
-        object_name,
-        object_flags,
+        fields: ExportTableFields {
+            class_index,
+            super_index,
+            package_index,
+            object_name,
+            object_flags,
+        },
         serial_size,
         serial_offset,
     })
@@ -1488,6 +1536,28 @@ fn package_name_from_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Locks down the flat JSON wire format produced by the QEMU plugin
+    /// (`reads.json`): all 7 export fields appear at the top level of
+    /// the object. `#[serde(flatten)]` on `ObjectExport::fields` must
+    /// preserve that shape so existing trace files keep loading.
+    #[test]
+    fn object_export_round_trips_flat_json() {
+        let json = br#"{"class_index":-1,"super_index":0,"package_index":2,"object_name":42,"object_flags":99,"serial_size":100,"serial_offset":2000}"#;
+        let e: ObjectExport = serde_json::from_slice(json).expect("flat-json deserialize");
+        assert_eq!(e.fields.class_index, -1);
+        assert_eq!(e.fields.super_index, 0);
+        assert_eq!(e.fields.package_index, 2);
+        assert_eq!(e.fields.object_name, 42);
+        assert_eq!(e.fields.object_flags, 99);
+        assert_eq!(e.serial_size, 100);
+        assert_eq!(e.serial_offset, 2000);
+
+        // Deref makes the inner fields accessible without `.fields.`,
+        // so historical call-site shape keeps working.
+        assert_eq!(e.class_index, -1);
+        assert_eq!(e.object_name, 42);
+    }
 
     #[test]
     fn package_name_from_path_strips_backslash_dirs_and_extension() {

@@ -3479,61 +3479,27 @@ pub mod sm2 {
             // at music/stream rates (36k/48k/22k/44k), never at
             // sub-16k for SFX. So per the binary, all entries here
             // should play at +0x44 Hz.
-            let meta = lookup_array_b_meta(
+            out.push(build_sound_entry(
                 descriptor,
                 array_b_off,
                 array_b_cnt,
                 &array_a_by_seq,
                 seq_id,
-                kind,
-            );
-
-            out.push(SoundEntry {
-                seq_id: super::units::SeqId::new(seq_id),
                 file_offset,
                 length,
-                sample_rate: meta.sample_rate,
-                channels: meta.channels,
-                source_name: meta.source_name,
-                is_ls2_redirect: meta.is_ls2_redirect,
-            });
+                kind,
+            ));
         }
         Ok(out)
     }
 
-    /// Per-sound resolved values from one `array_b` entry, after rate
-    /// scaling by `array_a` per SM2/LM2 rules. Returned by
-    /// `lookup_array_b_meta`; collapses the four loosely-related fields
-    /// (sample rate, channel count, source name, LS2 flag) that were
-    /// previously a positional tuple at the SoundEntry assembly site.
-    struct ArrayBMeta {
-        sample_rate: super::units::SampleRate,
-        channels: u16,
-        source_name: String,
-        is_ls2_redirect: bool,
-    }
-
-    impl Default for ArrayBMeta {
-        /// Fallback for an out-of-range `array_b_idx` or a truncated
-        /// descriptor. 22050 Hz mono is what the engine falls back to
-        /// when its `seq_id < array_b_cnt` check fails.
-        fn default() -> Self {
-            Self {
-                sample_rate: super::units::SampleRate::new(22050),
-                channels: 1,
-                source_name: String::new(),
-                is_ls2_redirect: false,
-            }
-        }
-    }
-
-    /// Look up `array_b[seq_id & 0xFFFFFF]` and apply SM2/LM2 rate
-    /// scaling. The high byte of `seq_id` is a TYPE tag (e.g. 0x40 for
-    /// typical SFX); the low 24 bits index `array_b`. Without the mask,
-    /// seq_ids like 0x40000001 are huge u32s that never match
-    /// `seq_id < array_b_cnt`, and the sound falls back to a hardcoded
-    /// 22050 Hz -- wrong rate, audible as ~1.38x playback speed for the
-    /// typical 16000 Hz SFX.
+    /// Build one `SoundEntry` by looking up `array_b[seq_id & 0xFFFFFF]`
+    /// and applying SM2/LM2 rate scaling. The high byte of `seq_id` is a
+    /// TYPE tag (e.g. 0x40 for typical SFX); the low 24 bits index
+    /// `array_b`. Without the mask, seq_ids like 0x40000001 are huge
+    /// u32s that never match `seq_id < array_b_cnt`, and the sound
+    /// falls back to a hardcoded 22050 Hz -- wrong rate, audible as
+    /// ~1.38x playback speed for the typical 16000 Hz SFX.
     ///
     /// Each array_b entry is 120 bytes; `+0x44` = sample_rate,
     /// `+0x40` = avg bytes-per-sec, `+0x4a` = channel count (u16 high
@@ -3552,35 +3518,53 @@ pub mod sm2 {
     /// `ENGLISH/MAPS.LM2` 0_0_3 entries from `seq=0x4000007e` onward
     /// play at 0.6674x nominal per array_a, otherwise dialog plays too
     /// fast.
-    fn lookup_array_b_meta(
+    #[allow(clippy::too_many_arguments)]
+    fn build_sound_entry(
         descriptor: &[u8],
         array_b_off: usize,
         array_b_cnt: u32,
         array_a_by_seq: &[(u32, u32)],
         seq_id: u32,
+        file_offset: u64,
+        length: u64,
         kind: Kind,
-    ) -> ArrayBMeta {
+    ) -> SoundEntry {
+        // Engine fallback for out-of-range / truncated descriptor:
+        // 22050 Hz mono, no source name, no LS2 tag. Acts as the base
+        // for struct-update on the success path -- the lookup only
+        // overrides the four array_b-derived fields.
+        let fallback = SoundEntry {
+            seq_id: super::units::SeqId::new(seq_id),
+            file_offset,
+            length,
+            sample_rate: super::units::SampleRate::new(22050),
+            channels: 1,
+            source_name: String::new(),
+            is_ls2_redirect: false,
+        };
+
         let array_b_idx = (seq_id & 0x00FF_FFFF) as usize;
         if array_b_idx >= array_b_cnt as usize {
-            return ArrayBMeta::default();
+            return fallback;
         }
         let entry_off = array_b_off + array_b_idx * ARRAY_B_ENTRY_SIZE;
         if entry_off + ARRAY_B_ENTRY_SIZE > descriptor.len() {
-            return ArrayBMeta::default();
+            return fallback;
         }
-        let entry = &descriptor[entry_off..entry_off + ARRAY_B_ENTRY_SIZE];
+        let array_b_entry = &descriptor[entry_off..entry_off + ARRAY_B_ENTRY_SIZE];
         let nominal_sr = u32::from_le_bytes(
-            entry[ARRAY_B_OFFSET_SAMPLE_RATE..ARRAY_B_OFFSET_SAMPLE_RATE + 4]
+            array_b_entry[ARRAY_B_OFFSET_SAMPLE_RATE..ARRAY_B_OFFSET_SAMPLE_RATE + 4]
                 .try_into()
                 .unwrap(),
         );
         let ch = u16::from_le_bytes(
-            entry[ARRAY_B_OFFSET_CHANNELS..ARRAY_B_OFFSET_CHANNELS + 2]
+            array_b_entry[ARRAY_B_OFFSET_CHANNELS..ARRAY_B_OFFSET_CHANNELS + 2]
                 .try_into()
                 .unwrap(),
         );
         let channels = if ch == 1 || ch == 2 { ch } else { 1 };
-        let name_bytes = &entry[ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
+        let name_bytes =
+            &array_b_entry[ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
         let is_ls2_redirect = &name_bytes[13..16] == b"LS2";
         let name_end = name_bytes
             .iter()
@@ -3601,11 +3585,12 @@ pub mod sm2 {
             nominal
         };
 
-        ArrayBMeta {
+        SoundEntry {
             sample_rate,
             channels,
             source_name,
             is_ls2_redirect,
+            ..fallback
         }
     }
 

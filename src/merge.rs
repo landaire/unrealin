@@ -955,11 +955,13 @@ mod tests {
                     .collect(),
                 exports: (0..exports_len)
                     .map(|_| ObjectExport {
-                        class_index: 0,
-                        super_index: 0,
-                        package_index: 0,
-                        object_name: 0,
-                        object_flags: 0,
+                        fields: crate::de::ExportTableFields {
+                            class_index: 0,
+                            super_index: 0,
+                            package_index: 0,
+                            object_name: 0,
+                            object_flags: 0,
+                        },
                         serial_size: 0,
                         serial_offset: 0,
                     })
