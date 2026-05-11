@@ -70,8 +70,15 @@ impl DeserializeUnrealObject for Property {
         // TODO: This is only for splinter cell?
         self.array_dim = reader.read_u16::<E>()?;
         trace!("property_flags");
-        self.property_flags = PropertyFlags::from_bits(reader.read_u32::<E>()?)
-            .expect("failed to parse property flags");
+        // Keep unknown bits rather than panicking on them. SC's
+        // `UProperty::Serialize` (and UE2 in general) reads `Ar << PropertyFlags`
+        // as a u32 and stores it verbatim; the engine never validates the bit
+        // set, it only tests specific bits via `flags & MASK` later. Strict
+        // `from_bits` was our addition; relaxing to `from_bits_retain` mirrors
+        // engine behavior and lets the surrounding `preload` cheat-advance
+        // recover gracefully when cursor drift puts garbage here, instead of
+        // panicking and aborting the cascade for the whole map.
+        self.property_flags = PropertyFlags::from_bits_retain(reader.read_u32::<E>()?);
         trace!("category");
         self.category.deserialize::<E, _>(runtime, linker, reader)?;
 
