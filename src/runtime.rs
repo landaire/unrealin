@@ -1,20 +1,29 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    io::{self, SeekFrom},
-    rc::Rc,
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::SeekFrom;
+use std::io::{
+    self,
 };
+use std::rc::Rc;
 
 use byteorder::ByteOrder;
-use tracing::{Level, debug, info, span, trace};
+use tracing::Level;
+use tracing::debug;
+use tracing::info;
+use tracing::span;
+use tracing::trace;
 
-use crate::object::{DeserializeUnrealObject, RcUnrealObject, deserialize_object};
-use crate::{
-    de::{ExportIndex, ImportIndex, Linker, ObjectExport, read_package},
-    object::builtins::*,
-    object::{ObjectFlags, UObjectKind, UnrealObject},
-    reader::LinRead,
-};
+use crate::de::ExportIndex;
+use crate::de::ImportIndex;
+use crate::de::Linker;
+use crate::de::read_package;
+use crate::object::ObjectFlags;
+use crate::object::RcUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
+use crate::object::deserialize_object;
+use crate::reader::LinRead;
 
 type RcLinker = Rc<RefCell<Linker>>;
 
@@ -179,8 +188,7 @@ impl UnrealRuntime {
         }
 
         let linker_rc = Rc::new(RefCell::new(linker));
-        self.linkers
-            .insert(expected_name, Rc::clone(&linker_rc));
+        self.linkers.insert(expected_name, Rc::clone(&linker_rc));
 
         // Mirror SC's `VerifyAllImports` (xbe `0x39da0`), called at the end of
         // `ULinkerLoad::ULinkerLoad`. For every import in the new package, walk
@@ -216,9 +224,7 @@ impl UnrealRuntime {
                 loop {
                     let imp = &l.package.imports[idx];
                     if imp.package_index == 0 {
-                        top_name = Some(
-                            l.package.names[imp.object_name as usize].name.clone(),
-                        );
+                        top_name = Some(l.package.names[imp.object_name as usize].name.clone());
                         break;
                     }
                     if imp.package_index >= 0 {
@@ -260,10 +266,7 @@ impl UnrealRuntime {
             match self.load_linker::<E, _>(pkg_name.clone(), reader) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                    tracing::warn!(
-                        "skipping linker {} (unsupported header): {e}",
-                        pkg_name
-                    );
+                    tracing::warn!("skipping linker {} (unsupported header): {e}", pkg_name);
                     return Err(e);
                 }
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -288,11 +291,7 @@ impl UnrealRuntime {
     /// Wraps `load_linker` for use from `decode_linear_file`'s bootstrap
     /// loop at known multi-`.lin` boundary points (e.g. `None.MyLevel`).
     /// Idempotent: if the linker is already loaded, returns Ok.
-    pub fn force_load_linker<E, R>(
-        &mut self,
-        name: &str,
-        reader: &mut R,
-    ) -> io::Result<()>
+    pub fn force_load_linker<E, R>(&mut self, name: &str, reader: &mut R) -> io::Result<()>
     where
         R: LinRead,
         E: ByteOrder,
@@ -361,15 +360,12 @@ impl UnrealRuntime {
     }
 
     fn linker_by_export_name_mut(&mut self, name: &str) -> Option<RcLinker> {
-        let key = self
-            .linkers
-            .iter()
-            .find_map(|(linker_name, linker)| {
-                linker
-                    .borrow()
-                    .find_export_by_name(name)
-                    .map(|_| linker_name.clone())
-            });
+        let key = self.linkers.iter().find_map(|(linker_name, linker)| {
+            linker
+                .borrow()
+                .find_export_by_name(name)
+                .map(|_| linker_name.clone())
+        });
 
         key.and_then(|k| self.linkers.get(&k).map(Rc::clone))
     }
@@ -410,11 +406,7 @@ impl UnrealRuntime {
             if batch.is_empty() {
                 break;
             }
-            tracing::info!(
-                "end_load iter {}: {} item(s) (FIFO)",
-                iter_no,
-                batch.len()
-            );
+            tracing::info!("end_load iter {}: {} item(s) (FIFO)", iter_no, batch.len());
             for (i, obj) in batch.iter().enumerate().take(20) {
                 let inner = obj.borrow();
                 let base = inner.base_object();
@@ -539,9 +531,7 @@ impl UnrealRuntime {
             // proceeds. The body is lost (won't re-emit), but most of
             // the level cascade still completes — the alternative
             // (propagating the error) aborts everything.
-            tracing::warn!(
-                "skipping preload of {preload_full_name}: {e}; continuing cascade"
-            );
+            tracing::warn!("skipping preload of {preload_full_name}: {e}; continuing cascade");
             let _ = reader.pop_capture();
             self.objects_full_loading.remove(&pointer_value);
             self.loaded_objects.insert(pointer_value);
@@ -865,7 +855,8 @@ impl UnrealRuntime {
                     // signal to add a stub.
                     tracing::warn!(
                         "no stub for class {}; treating {} as plain Object",
-                        class_name, export_full_name
+                        class_name,
+                        export_full_name
                     );
                     UObjectKind::Object
                 });
@@ -1134,15 +1125,13 @@ impl UnrealRuntime {
                 }
             })
             .or_else(|| match class_info {
-                Some((cn, cp)) => {
-                    linker_inner.find_export_by_name_and_class(object_name, cn, cp)
-                }
-                None => linker_inner.find_export_by_name(object_name).filter(
-                    |(_, export)| {
+                Some((cn, cp)) => linker_inner.find_export_by_name_and_class(object_name, cn, cp),
+                None => linker_inner
+                    .find_export_by_name(object_name)
+                    .filter(|(_, export)| {
                         let cn = export.class_name(&linker_inner);
                         !cn.ends_with("Property") && cn != "Function"
-                    },
-                ),
+                    }),
             });
         // Diagnostic + behavior fallback: when strict matching rejects
         // every candidate but a same-name export of a different class

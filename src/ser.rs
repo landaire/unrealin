@@ -12,13 +12,24 @@
 //! `serial_offset`, and any future per-type position-dependent fields
 //! under a single late-binding mechanism.
 
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
+use std::io::{
+    self,
+};
 
-use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use byteorder::ByteOrder;
+use byteorder::LittleEndian;
+use byteorder::WriteBytesExt;
 
 use crate::PKG_TAG;
-use crate::de::{ExportIndex, GenerationInfo, Linker};
-use crate::object::{BodyKind, BodyOffsetPatch, serialize_object};
+use crate::de::ExportIndex;
+use crate::de::GenerationInfo;
+use crate::de::Linker;
+use crate::object::BodyKind;
+use crate::object::BodyOffsetPatch;
+use crate::object::serialize_object;
 
 pub(crate) fn write_packed_int<W: Write>(w: &mut W, value: i32) -> io::Result<()> {
     let sign = if value < 0 { 0x80u8 } else { 0 };
@@ -126,9 +137,7 @@ where
         writer.seek(SeekFrom::Start(c.at))?;
         match c.encoding {
             CorrectionEncoding::U32Le => writer.write_u32::<E>(c.value)?,
-            CorrectionEncoding::PaddedPackedInt => {
-                write_padded_packed_int(writer, c.value as i32)?
-            }
+            CorrectionEncoding::PaddedPackedInt => write_padded_packed_int(writer, c.value as i32)?,
         }
     }
     Ok(())
@@ -163,7 +172,10 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // do. The right place to recover missing exports is upstream, by
     // capturing more of the cascade (traces, cross-pair body grafting),
     // not by lying in the export table.
-    let existing_none_idx = pkg.names.iter().position(|n| n.name.eq_ignore_ascii_case("None"));
+    let existing_none_idx = pkg
+        .names
+        .iter()
+        .position(|n| n.name.eq_ignore_ascii_case("None"));
     let appended_none = existing_none_idx.is_none();
     let none_idx: i32 = match existing_none_idx {
         Some(i) => i as i32,
@@ -268,7 +280,7 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
             Some(obj) => {
                 let inner = obj.borrow();
                 serialize_object::<E>(&*inner, linker, export_index, captured)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                    .map_err(io::Error::other)?
             }
             None => BodyKind::Opaque(captured.to_vec()),
         };
@@ -372,7 +384,13 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
         let (ci, si, pi, on, ofl) = if effective_size[i] == 0 {
             (0i32, 0i32, 0i32, none_idx, 0u32)
         } else {
-            (export.class_index, export.super_index, export.package_index, export.object_name, export.object_flags)
+            (
+                export.class_index,
+                export.super_index,
+                export.package_index,
+                export.object_name,
+                export.object_flags,
+            )
         };
         write_packed_int(&mut writer, ci)?;
         write_packed_int(&mut writer, si)?;
@@ -409,8 +427,7 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
             let new_value = body_pos + patch.target_offset_within_body as u32;
             let bytes_le = new_value.to_le_bytes();
             if patch.body_offset + 4 <= body.bytes.len() {
-                body.bytes[patch.body_offset..patch.body_offset + 4]
-                    .copy_from_slice(&bytes_le);
+                body.bytes[patch.body_offset..patch.body_offset + 4].copy_from_slice(&bytes_le);
             }
         }
         writer.write_all(&body.bytes)?;

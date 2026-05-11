@@ -1,21 +1,17 @@
-use std::{
-    cell::RefCell,
-    io::{Read, Seek},
-    rc::Rc,
-};
 
-use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span, trace};
+use tracing::Level;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    de::{Linker, RcLinker},
-    object::{
-        DeserializeUnrealObject, RcUnrealObject, UObjectKind, UnrealObject, builtins::Link,
-        uobject::Object,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
 pub struct Field {
@@ -76,7 +72,9 @@ impl DeserializeUnrealObject for Field {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

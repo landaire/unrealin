@@ -1,14 +1,16 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span};
+use byteorder::ByteOrder;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UPalette::Serialize` (Engine_demo 0x10305123,
 /// 0x104fbf90):

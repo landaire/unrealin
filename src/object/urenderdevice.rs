@@ -1,9 +1,11 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
 use crate::de::RcLinker;
-use crate::object::{DeserializeUnrealObject, usubsystem::Subsystem};
+use crate::object::DeserializeUnrealObject;
+use crate::object::usubsystem::Subsystem;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -36,13 +38,14 @@ impl DeserializeUnrealObject for RenderDevice {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, R>(runtime, linker, reader)?;
-        
+        self.parent_object
+            .deserialize::<E, R>(runtime, linker, reader)?;
+
         // Read the basic render device properties
         self.decomp_format = reader.read_u8()?;
         self.recommended_lod = reader.read_i32::<E>()?;
         self.terrain_lod = reader.read_u32::<E>()?;
-        
+
         // Read bitfield flags
         let flags = reader.read_u32::<E>()?;
         self.high_detail_actors = (flags & 0x01) != 0;
@@ -54,7 +57,7 @@ impl DeserializeUnrealObject for RenderDevice {
         self.use_16bit_textures = (flags & 0x40) != 0;
         self.low_quality_terrain = (flags & 0x80) != 0;
         self.skybox_hack = (flags & 0x100) != 0;
-        
+
         Ok(())
     }
 }

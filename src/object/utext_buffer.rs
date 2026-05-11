@@ -1,14 +1,17 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::io;
 
 use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span, trace};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    de::{Linker, RcLinker},
-    object::{DeserializeUnrealObject, builtins::Link, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
 pub struct TextBuffer {
@@ -53,7 +56,9 @@ impl DeserializeUnrealObject for TextBuffer {
 
 #[cfg(test)]
 mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

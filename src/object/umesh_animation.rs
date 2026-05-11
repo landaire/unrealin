@@ -1,14 +1,17 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UMeshAnimation::Serialize`
 /// (Engine_demo `0x10302d88` → `sub_104a40d0`).
@@ -210,8 +213,10 @@ where
     E: ByteOrder,
     R: LinRead,
 {
-    let mut seq = FMeshAnimSeq::default();
-    seq.name = reader.read_packed_int()?;
+    let mut seq = FMeshAnimSeq {
+        name: reader.read_packed_int()?,
+        ..FMeshAnimSeq::default()
+    };
 
     let group_count = reader.read_packed_int()?;
     if group_count < 0 {
@@ -232,9 +237,7 @@ where
     if notify_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "UMeshAnimation FMeshAnimSeq Notifys count negative ({notify_count})"
-            ),
+            format!("UMeshAnimation FMeshAnimSeq Notifys count negative ({notify_count})"),
         ));
     }
     seq.notifys.reserve(notify_count as usize);

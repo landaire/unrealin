@@ -1,17 +1,27 @@
-use std::io::{self, Seek, SeekFrom};
-
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span};
-
-use crate::{
-    de::{ExportIndex, Linker, RcLinker},
-    object::{
-        BodyKind, BodyOffsetPatch, DeserializeUnrealObject, RcUnrealObject, SerializeUnrealObject,
-        uprimitive::Primitive,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::{
+    self,
 };
+
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::object::BodyKind;
+use crate::object::BodyOffsetPatch;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::uprimitive::Primitive;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UStaticMesh::Serialize` (Engine_demo `0x10303dc3`
 /// tail-calls `sub_104d4010`). The body is heavily version-gated; SC's
@@ -140,8 +150,7 @@ impl SerializeUnrealObject for StaticMesh {
             .find_export_by_index(export_index)
             .map(|e| e.serial_offset())
             .unwrap_or(0);
-        let target =
-            (self.lazy_seek_pos as u64).saturating_sub(old_body_offset) as usize;
+        let target = (self.lazy_seek_pos as u64).saturating_sub(old_body_offset) as usize;
         Ok(BodyKind::Patched {
             bytes: captured.to_vec(),
             patches: vec![BodyOffsetPatch {

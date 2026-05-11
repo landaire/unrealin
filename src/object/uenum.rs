@@ -1,13 +1,15 @@
 use std::io;
 
-use tracing::{Level, span};
+use tracing::Level;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, internal::fname::FName, ufield::Field},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::internal::fname::FName;
+use crate::object::ufield::Field;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
 pub struct Enum {
@@ -41,7 +43,9 @@ impl DeserializeUnrealObject for Enum {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

@@ -2,12 +2,11 @@ use std::io;
 
 use byteorder::ByteOrder;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, utexture::Texture},
-    reader::LinRead,
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::utexture::Texture;
+use crate::reader::LinRead;
+use crate::runtime::UnrealRuntime;
 
 /// `UCubemap::Serialize` resolves to `UTexture::Serialize` via vtable
 /// slot 10 (`Engine_demo` UCubemap vtable at `0x10535cb8 + 0x28` =

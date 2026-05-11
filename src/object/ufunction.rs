@@ -1,11 +1,15 @@
 use bitflags::bitflags;
 use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::de::{ExportIndex, Linker};
-use crate::object::{
-    BodyKind, DeserializeUnrealObject, SerializeUnrealObject, ustruct::Struct,
-};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::object::BodyKind;
+use crate::object::DeserializeUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::ustruct::Struct;
 
 #[derive(Default, Debug)]
 pub struct Function {
@@ -154,7 +158,9 @@ bitflags! {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

@@ -1,16 +1,20 @@
-use std::{
-    io::{BufReader, Cursor, Write},
-    path::PathBuf,
-};
+use std::io::BufReader;
+use std::io::Cursor;
+use std::io::Write;
+use std::path::PathBuf;
 
 use byteorder::LittleEndian;
-use clap::{Parser, Subcommand};
-use color_eyre::{
-    Result,
-    eyre::{Context, eyre},
-};
-use tracing_subscriber::{EnvFilter, fmt};
-use unrealin::{ExportedData, audio, de::LinearFileDecoder, merge};
+use clap::Parser;
+use clap::Subcommand;
+use color_eyre::Result;
+use color_eyre::eyre::Context;
+use color_eyre::eyre::eyre;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt;
+use unrealin::ExportedData;
+use unrealin::audio;
+use unrealin::de::LinearFileDecoder;
+use unrealin::merge;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -168,15 +172,13 @@ fn run_audio(cmd: AudioCmd) -> Result<()> {
             sample_rate,
             output,
             raw,
-        } => run_audio_decode_region(
-            input, offset, length, channels, sample_rate, output, raw,
-        ),
+        } => run_audio_decode_region(input, offset, length, channels, sample_rate, output, raw),
     }
 }
 
 fn run_dump(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
-    let metadata = std::fs::metadata(&input)
-        .wrap_err_with(|| format!("failed to stat {input:?}"))?;
+    let metadata =
+        std::fs::metadata(&input).wrap_err_with(|| format!("failed to stat {input:?}"))?;
     let root = output.unwrap_or_else(|| {
         let stem = input
             .file_name()
@@ -184,13 +186,15 @@ fn run_dump(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
             .unwrap_or("audio");
         PathBuf::from(format!("{stem}_wav"))
     });
-    std::fs::create_dir_all(&root)
-        .wrap_err_with(|| format!("failed to create {root:?}"))?;
+    std::fs::create_dir_all(&root).wrap_err_with(|| format!("failed to create {root:?}"))?;
     let (base, files): (PathBuf, Vec<PathBuf>) = if metadata.is_dir() {
         (input.clone(), walk_audio_files(&input)?)
     } else {
         (
-            input.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf(),
+            input
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf(),
             vec![input.clone()],
         )
     };
@@ -221,22 +225,19 @@ fn walk_audio_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .wrap_err_with(|| format!("failed to read {dir:?}"))?
-        {
+        for entry in std::fs::read_dir(&dir).wrap_err_with(|| format!("failed to read {dir:?}"))? {
             let entry = entry?;
             let path = entry.path();
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 stack.push(path);
-            } else if ft.is_file() {
-                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+            } else if ft.is_file()
+                && let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     let ext_u = ext.to_ascii_uppercase();
                     if matches!(ext_u.as_str(), "LS2" | "SS2" | "UAX" | "SM2" | "LM2") {
                         out.push(path);
                     }
                 }
-            }
         }
     }
     out.sort();
@@ -251,8 +252,7 @@ fn walk_audio_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
 ///   - `02 00 00 00 03 00 00 00`    → multi-bank SS2 (codec_id=3)
 ///   - first dword `0x07`           → SM2 Maps BigFile
 fn dump_file_banks(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
-    let bytes = std::fs::read(src)
-        .wrap_err_with(|| format!("failed to read {src:?}"))?;
+    let bytes = std::fs::read(src).wrap_err_with(|| format!("failed to read {src:?}"))?;
     if bytes.is_empty() {
         return Err(eyre!("empty file"));
     }
@@ -273,13 +273,11 @@ fn dump_file_banks(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<u
 
 fn dump_codec8(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
     use std::fmt::Write as _;
-    let banks = audio::codec8::decode_each_bank(bytes)
-        .map_err(|e| eyre!("decode failed: {e}"))?;
+    let banks = audio::codec8::decode_each_bank(bytes).map_err(|e| eyre!("decode failed: {e}"))?;
     if banks.is_empty() {
         return Err(eyre!("no banks found"));
     }
-    std::fs::create_dir_all(dst_dir)
-        .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
+    std::fs::create_dir_all(dst_dir).wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
     let channels = banks[0].channels;
     let rate = banks[0].sample_rate;
     let wav_channels = channels.count();
@@ -319,12 +317,9 @@ fn dump_codec3_single(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
     // boundaries land at silence and aren't equally spaced. Dump as a
     // single bank; the individually-named clips are already in
     // `<lang>/MAPS/<map>/<name>.wav` from LM2's sound table.
-    let header = audio::codec3::parse_header(bytes)
-        .map_err(|e| eyre!("parse_header: {e}"))?;
-    let pcm = audio::codec3::decode_file(bytes)
-        .map_err(|e| eyre!("decode_file: {e}"))?;
-    std::fs::create_dir_all(dst_dir)
-        .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
+    let header = audio::codec3::parse_header(bytes).map_err(|e| eyre!("parse_header: {e}"))?;
+    let pcm = audio::codec3::decode_file(bytes).map_err(|e| eyre!("decode_file: {e}"))?;
+    std::fs::create_dir_all(dst_dir).wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
     let channels = header.mode.channels();
     let rate = audio::codec3::header_sample_rate(&header);
     write_wav(&dst_dir.join("bank_00.wav"), &pcm, channels, rate)?;
@@ -339,13 +334,11 @@ fn dump_codec3_single(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
 
 fn dump_ss2_multibank(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
     use std::fmt::Write as _;
-    let banks = audio::ss2::list(bytes)
-        .map_err(|e| eyre!("ss2::list: {e}"))?;
+    let banks = audio::ss2::list(bytes).map_err(|e| eyre!("ss2::list: {e}"))?;
     if banks.is_empty() {
         return Err(eyre!("no banks found"));
     }
-    std::fs::create_dir_all(dst_dir)
-        .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
+    std::fs::create_dir_all(dst_dir).wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
     let mut toc = String::new();
     writeln!(
         toc,
@@ -360,8 +353,7 @@ fn dump_ss2_multibank(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
     // stream concept. Each SS2 voice is one logical audio track that
     // the engine plays in sequence across banks (the wrapper splits
     // the stream for streaming buffering, not for playback semantics).
-    let mut all_voices: Vec<Vec<i16>> =
-        vec![Vec::new(); audio::ss2::VOICES_PER_BANK];
+    let mut all_voices: Vec<Vec<i16>> = vec![Vec::new(); audio::ss2::VOICES_PER_BANK];
     let mut voice_channels = [1u16; audio::ss2::VOICES_PER_BANK];
     let mut voice_rates = [0u32; audio::ss2::VOICES_PER_BANK];
     for bank in &banks {
@@ -403,7 +395,9 @@ fn dump_ss2_multibank(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> 
 
 fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
     use std::fmt::Write as _;
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
     let kind = match src
         .extension()
         .and_then(|s| s.to_str())
@@ -417,12 +411,9 @@ fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
         audio::sm2::Kind::Lm2 => "lm2",
         audio::sm2::Kind::Sm2 => "sm2",
     };
-    let mut file = std::fs::File::open(src)
-        .wrap_err_with(|| format!("failed to open {src:?}"))?;
-    let records = audio::sm2::read_directory(&mut file)
-        .wrap_err("sm2::read_directory")?;
-    std::fs::create_dir_all(dst_dir)
-        .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
+    let mut file = std::fs::File::open(src).wrap_err_with(|| format!("failed to open {src:?}"))?;
+    let records = audio::sm2::read_directory(&mut file).wrap_err("sm2::read_directory")?;
+    std::fs::create_dir_all(dst_dir).wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
     let mut toc = String::new();
     writeln!(toc, "kind = {kind_str:?}").ok();
     let mut written = 0usize;
@@ -478,7 +469,7 @@ fn dump_sm2(src: &std::path::Path, dst_dir: &std::path::Path) -> Result<usize> {
                 continue;
             }
             let block_size = audio::BLOCK_BYTES_PER_CHANNEL * e.channels as usize;
-            if (e.length as usize) % block_size != 0 {
+            if !(e.length as usize).is_multiple_of(block_size) {
                 continue;
             }
             file.seek(SeekFrom::Start(e.file_offset))?;
@@ -527,15 +518,17 @@ fn run_audio_decode_region(
         return Err(eyre!("--channels must be 1 or 2, got {channels}"));
     }
     let block_size = audio::BLOCK_BYTES_PER_CHANNEL * channels as usize;
-    if length % block_size != 0 {
+    if !length.is_multiple_of(block_size) {
         return Err(eyre!(
             "--length {length} is not a multiple of block size {block_size} for {channels}-channel"
         ));
     }
 
-    let mut file = std::fs::File::open(&input)
-        .wrap_err_with(|| format!("failed to open {input:?}"))?;
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file =
+        std::fs::File::open(&input).wrap_err_with(|| format!("failed to open {input:?}"))?;
+    use std::io::Read as _;
+    use std::io::Seek as _;
+    use std::io::SeekFrom;
     file.seek(SeekFrom::Start(offset))
         .wrap_err_with(|| format!("failed to seek to {offset:#x} in {input:?}"))?;
     let mut buf = vec![0u8; length];
@@ -585,7 +578,6 @@ fn run_audio_decode_region(
     Ok(())
 }
 
-
 fn run_extract(mut args: ExtractArgs) -> Result<()> {
     let common_file = std::fs::File::open(&args.common_lin)
         .wrap_err_with(|| format!("failed to open {:?}", &args.common_lin))?;
@@ -623,10 +615,7 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     // next source's first byte without consuming the alignment tail
     // (009_ChineseEmbassy variant otherwise mis-shifts session.lin's
     // first PKG_TAG read).
-    fn read_source(
-        path: &std::path::Path,
-        raw: &mut &[u8],
-    ) -> color_eyre::Result<(Vec<u8>, u64)> {
+    fn read_source(path: &std::path::Path, raw: &mut &[u8]) -> color_eyre::Result<(Vec<u8>, u64)> {
         let is_lin = path
             .extension()
             .and_then(std::ffi::OsStr::to_str)
@@ -653,13 +642,13 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     let map_lin_data_len = map_lin_data.len();
     eprintln!(
         "decompressed sizes: common.lin={:#x}, map.lin={:#x}",
-        common_lin_data_len,
-        map_lin_data_len,
+        common_lin_data_len, map_lin_data_len,
     );
 
     if let Some(trace_path) = args.checked.as_ref() {
         let reader = BufReader::new(
-            std::fs::File::open(trace_path).wrap_err_with(|| format!("failed to open {trace_path:?}"))?,
+            std::fs::File::open(trace_path)
+                .wrap_err_with(|| format!("failed to open {trace_path:?}"))?,
         );
         let mut metadata: ExportedData = serde_json::from_reader(reader)
             .wrap_err_with(|| format!("failed to parse {trace_path:?}"))?;
@@ -683,10 +672,15 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
             lin_decoder.trace_ops_remaining(),
             (lin_decoder.trace_ops_consumed() as f64
                 / (lin_decoder.trace_ops_consumed() as f64
-                    + lin_decoder.trace_ops_remaining() as f64).max(1.0))
+                    + lin_decoder.trace_ops_remaining() as f64)
+                    .max(1.0))
                 * 100.0,
         );
-        merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+        merge::write_packages(
+            &pkg_out,
+            lin_decoder.linkers(),
+            &lin_decoder.package_filenames(),
+        )?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
         stats.print_summary(20);
     } else {
@@ -706,19 +700,32 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         let caps = [common_size, map_size];
         for (i, c) in consumed.iter().enumerate() {
             let cap = caps[i];
-            let pct = if cap == 0 { 0.0 } else { (*c as f64 / cap as f64) * 100.0 };
+            let pct = if cap == 0 {
+                0.0
+            } else {
+                (*c as f64 / cap as f64) * 100.0
+            };
             eprintln!("source {i} consumed={c:#x}/{cap:#x} ({pct:.1}%)");
         }
-        merge::write_packages(&pkg_out, lin_decoder.linkers(), &lin_decoder.package_filenames())?;
+        merge::write_packages(
+            &pkg_out,
+            lin_decoder.linkers(),
+            &lin_decoder.package_filenames(),
+        )?;
         let stats = unrealin::diag::script_roundtrip_stats::<LittleEndian>(lin_decoder.linkers());
         stats.print_summary(20);
-        if let Ok(mut f) = std::fs::File::create(output_dir.join("script_roundtrip_mismatches.txt")) {
+        if let Ok(mut f) = std::fs::File::create(output_dir.join("script_roundtrip_mismatches.txt"))
+        {
             for m in &stats.mismatches {
                 let _ = writeln!(
                     f,
                     "{} | {} | {} | captured={:#X} serialized={:#X} first_diff_at={:?}",
-                    m.package, m.export_name, m.class_name,
-                    m.captured_len, m.serialized_len, m.first_diff_at,
+                    m.package,
+                    m.export_name,
+                    m.class_name,
+                    m.captured_len,
+                    m.serialized_len,
+                    m.first_diff_at,
                 );
             }
         }

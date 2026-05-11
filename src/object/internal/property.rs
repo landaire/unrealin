@@ -1,10 +1,14 @@
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span, trace};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
 use crate::de::RcLinker;
 use crate::object::DeserializeUnrealObject;
 use crate::object::internal::fname::FName;
-use crate::reader::{LinRead, UnrealReadExt};
+use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
@@ -51,7 +55,8 @@ impl DeserializeUnrealObject for PropertyTag {
         self.property_type = self.info & 0x0f;
 
         if self.property_type == NAME_STRUCT_PROPERTY {
-            self.item_name.deserialize::<E, _>(runtime, linker, reader)?;
+            self.item_name
+                .deserialize::<E, _>(runtime, linker, reader)?;
         }
 
         self.size = match self.info & 0x70 {

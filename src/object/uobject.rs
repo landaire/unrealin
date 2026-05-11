@@ -1,22 +1,29 @@
-use std::{
-    cell::RefCell,
-    io,
-    rc::{Rc, Weak},
-};
+use std::cell::RefCell;
+use std::io;
+use std::rc::Rc;
 
 use byteorder::ByteOrder;
-use tracing::{Level, debug, event, span, trace};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker},
-    object::{
-        DeserializeUnrealObject, ObjectFlags, RcUnrealObject, UObjectKind, UnrealObject,
-        WeakUnrealObject,
-        internal::{property::PropertyTag, serialize_item},
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::{LoadKind, UnrealRuntime},
-};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::de::WeakLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::ObjectFlags;
+use crate::object::RcUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
+use crate::object::WeakUnrealObject;
+use crate::object::internal::property::PropertyTag;
+use crate::object::internal::serialize_item;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::LoadKind;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Debug)]
 pub struct Object {
@@ -412,7 +419,6 @@ where
     Ok(())
 }
 
-
 impl UnrealObject for Object {
     fn kind(&self) -> UObjectKind {
         UObjectKind::Object
@@ -465,7 +471,8 @@ impl UnrealObject for Object {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UnrealObject, test_common::test_object_is_a};
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

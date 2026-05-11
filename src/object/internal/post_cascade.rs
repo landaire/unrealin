@@ -75,14 +75,17 @@ use std::rc::Rc;
 use byteorder::ByteOrder;
 
 use crate::de::RcLinker;
-use crate::object::internal::script::{Expr, ExprToken};
-use crate::object::ufield::Field;
+use crate::object::RcUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::internal::script::Expr;
+use crate::object::internal::script::ExprToken;
 use crate::object::uclass::Class;
+use crate::object::ufield::Field;
 use crate::object::ulevel_base::LevelBase;
 use crate::object::ustruct::Struct;
-use crate::object::{RcUnrealObject, UObjectKind};
 use crate::reader::LinRead;
-use crate::runtime::{LoadKind, UnrealRuntime};
+use crate::runtime::LoadKind;
+use crate::runtime::UnrealRuntime;
 
 /// Object/Class property type byte constants matching `read_tag_value`.
 const TAG_TYPE_OBJECT: u8 = 5;
@@ -148,7 +151,11 @@ pub enum WalkOutcome {
 /// `func_linker` (the linker the bytecode was deserialized from). Returns
 /// the function's UObject name (e.g. "DynamicLoadObject") if the callee
 /// is already loaded, otherwise None.
-fn resolve_callee_name(idx: i32, func_linker: &RcLinker, runtime: &UnrealRuntime) -> Option<String> {
+fn resolve_callee_name(
+    idx: i32,
+    func_linker: &RcLinker,
+    runtime: &UnrealRuntime,
+) -> Option<String> {
     let obj = runtime.find_loaded_object_by_raw_index(idx, func_linker)?;
     let inner = obj.try_borrow().ok()?;
     let n = inner.base_object().name.clone();
@@ -160,7 +167,11 @@ fn resolve_callee_name(idx: i32, func_linker: &RcLinker, runtime: &UnrealRuntime
 /// linker's class-index resolution; for imports it comes from the
 /// `class_name` field in the import row. Returns `None` when the
 /// index doesn't resolve cleanly (already-discarded import, etc.).
-fn resolve_referent_class(idx: i32, func_linker: &RcLinker, runtime: &UnrealRuntime) -> Option<String> {
+fn resolve_referent_class(
+    idx: i32,
+    func_linker: &RcLinker,
+    runtime: &UnrealRuntime,
+) -> Option<String> {
     if idx < 0 {
         let imp_idx = (-idx - 1) as usize;
         let l = func_linker.borrow();
@@ -180,7 +191,11 @@ fn resolve_referent_class(idx: i32, func_linker: &RcLinker, runtime: &UnrealRunt
 /// can pass it to `load_object_by_full_name`. Walks `package_index`
 /// chains the same way the engine's `LinkerLoad::IndexToFullName`
 /// does.
-fn resolve_referent_full_name(idx: i32, func_linker: &RcLinker, runtime: &UnrealRuntime) -> Option<String> {
+fn resolve_referent_full_name(
+    idx: i32,
+    func_linker: &RcLinker,
+    runtime: &UnrealRuntime,
+) -> Option<String> {
     let l = func_linker.borrow();
     let mut parts: Vec<String> = Vec::new();
     let mut cur = idx;
@@ -194,7 +209,7 @@ fn resolve_referent_full_name(idx: i32, func_linker: &RcLinker, runtime: &Unreal
             let exp_idx = (cur - 1) as usize;
             let exp = l.package.exports.get(exp_idx)?;
             parts.push(l.package.names.get(exp.object_name as usize)?.name.clone());
-            cur = exp.package_index as i32;
+            cur = exp.package_index;
         }
         if parts.len() > 16 {
             return None;
@@ -218,13 +233,7 @@ fn resolve_referent_full_name(idx: i32, func_linker: &RcLinker, runtime: &Unreal
 fn is_asset_class(class_name: &str) -> bool {
     matches!(
         class_name,
-        "Sound"
-            | "MeshAnimation"
-            | "SkeletalMesh"
-            | "Texture"
-            | "Cubemap"
-            | "StaticMesh"
-            | "Mesh"
+        "Sound" | "MeshAnimation" | "SkeletalMesh" | "Texture" | "Cubemap" | "StaticMesh" | "Mesh"
     )
 }
 
@@ -292,10 +301,15 @@ fn class_default_overrides_object(class_obj: &RcUnrealObject, prop_name: &str) -
 /// compiled `if (this.X == None)` pattern. Returns
 /// `Some((prop_idx, target_byte_offset))` if matched.
 fn detect_var_is_none_check(parsed_script: &[Expr], i: usize) -> Option<(i32, u16)> {
-    if !matches!(parsed_script.get(i), Some(Expr::Token(ExprToken::JumpIfNot))) {
+    if !matches!(
+        parsed_script.get(i),
+        Some(Expr::Token(ExprToken::JumpIfNot))
+    ) {
         return None;
     }
-    let Some(Expr::Word(target)) = parsed_script.get(i + 1) else { return None };
+    let Some(Expr::Word(target)) = parsed_script.get(i + 1) else {
+        return None;
+    };
     if !matches!(parsed_script.get(i + 2), Some(Expr::Native(119))) {
         return None;
     }
@@ -308,7 +322,10 @@ fn detect_var_is_none_check(parsed_script: &[Expr], i: usize) -> Option<(i32, u1
     let Some(Expr::Object(prop_idx)) = parsed_script.get(i + 4).cloned() else {
         return None;
     };
-    if !matches!(parsed_script.get(i + 5), Some(Expr::Token(ExprToken::NoObject))) {
+    if !matches!(
+        parsed_script.get(i + 5),
+        Some(Expr::Token(ExprToken::NoObject))
+    ) {
         return None;
     }
     if !matches!(
@@ -327,8 +344,7 @@ fn detect_var_is_none_check(parsed_script: &[Expr], i: usize) -> Option<(i32, u1
 /// then `EndFunctionParms`. Mirroring this exact call shape avoids the
 /// false-positive loads a flat `Data`-iteration walker would trigger.
 fn is_asset_load_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("DynamicLoadObject")
-        || name.eq_ignore_ascii_case("StaticLoadObject")
+    name.eq_ignore_ascii_case("DynamicLoadObject") || name.eq_ignore_ascii_case("StaticLoadObject")
 }
 
 /// Inside a function call's argument list (i.e. between `FinalFunction`/
@@ -386,10 +402,7 @@ fn extract_load_args(
 /// For an export-typed referent the class is "Class" (since UClasses
 /// are themselves Class-typed objects); the meaningful piece is the
 /// referent's *name*, which becomes the `expected_class_name` filter.
-fn resolve_class_arg(
-    idx: i32,
-    func_linker: &RcLinker,
-) -> Option<(String, String)> {
+fn resolve_class_arg(idx: i32, func_linker: &RcLinker) -> Option<(String, String)> {
     if idx == 0 {
         return None;
     }
@@ -405,7 +418,13 @@ fn resolve_class_arg(
                 if cur < 0 {
                     let i = (-cur - 1) as usize;
                     let parent = l.package.imports.get(i)?;
-                    last_pkg = Some(l.package.names.get(parent.object_name as usize)?.name.clone());
+                    last_pkg = Some(
+                        l.package
+                            .names
+                            .get(parent.object_name as usize)?
+                            .name
+                            .clone(),
+                    );
                     cur = parent.package_index;
                 } else {
                     return None;
@@ -513,10 +532,13 @@ where
         // SkeletalMesh, Texture) — pure-Object refs to actor instances
         // or non-asset objects don't get preloaded by the engine here
         // and triggering them would mis-align the cursor.
-        if matches!(parsed_script.get(i), Some(Expr::Token(ExprToken::ObjectConst))) {
-            if let Some(Expr::Object(obj_idx)) = parsed_script.get(i + 1).cloned() {
-                if let Some(class) = resolve_referent_class(obj_idx, func_linker, runtime) {
-                    if is_asset_class(&class) {
+        if matches!(
+            parsed_script.get(i),
+            Some(Expr::Token(ExprToken::ObjectConst))
+        ) {
+            if let Some(Expr::Object(obj_idx)) = parsed_script.get(i + 1).cloned()
+                && let Some(class) = resolve_referent_class(obj_idx, func_linker, runtime)
+                    && is_asset_class(&class) {
                         let name = resolve_referent_full_name(obj_idx, func_linker, runtime);
                         if let Some(name) = name.as_deref() {
                             runtime.begin_load();
@@ -528,13 +550,14 @@ where
                             let _ = runtime.end_load::<E, _>(reader);
                         }
                     }
-                }
-            }
             i += 2;
             continue;
         }
 
-        let is_final_call = matches!(parsed_script.get(i), Some(Expr::Token(ExprToken::FinalFunction)));
+        let is_final_call = matches!(
+            parsed_script.get(i),
+            Some(Expr::Token(ExprToken::FinalFunction))
+        );
         if !is_final_call {
             i += 1;
             continue;
@@ -582,9 +605,7 @@ where
         // out of disk order, and the cascade misaligns by hundreds of KB
         // (verified on `4_3_0ChineseEmbassy`).
         let class_info = class_arg_idx.and_then(|idx| resolve_class_arg(idx, func_linker));
-        let class_info_pair = class_info
-            .as_ref()
-            .map(|(n, p)| (n.as_str(), p.as_str()));
+        let class_info_pair = class_info.as_ref().map(|(n, p)| (n.as_str(), p.as_str()));
 
         runtime.begin_load();
         let result = if let Some(ci) = class_info_pair {
@@ -604,9 +625,7 @@ where
         match drain {
             Ok(()) => {}
             Err(e) => {
-                tracing::warn!(
-                    "post_cascade: drain after {name} failed ({e}); aborting walk"
-                );
+                tracing::warn!("post_cascade: drain after {name} failed ({e}); aborting walk");
                 return Ok(WalkOutcome::Aborted);
             }
         }
@@ -716,15 +735,11 @@ where
     walk_parsed_script::<E, _>(&parsed_script, &func_linker, leaf_class, runtime, reader)
 }
 
-
 /// Resolve the class object for an actor instance via the runtime's
 /// class lookup. Each actor's `concrete_obj` was constructed with a
 /// `class_index` whose Object lives in some loaded linker; we follow
 /// the same `IndexToObject` path the engine would.
-fn class_of_actor(
-    actor: &RcUnrealObject,
-    runtime: &UnrealRuntime,
-) -> Option<RcUnrealObject> {
+fn class_of_actor(actor: &RcUnrealObject, runtime: &UnrealRuntime) -> Option<RcUnrealObject> {
     let inner = actor.try_borrow().ok()?;
     let base = inner.base_object();
     let linker = base.linker();
@@ -777,9 +792,7 @@ where
         let Some((level_idx, _)) =
             linker.find_export_by_name_and_class("MyLevel", "Level", "Engine")
         else {
-            tracing::debug!(
-                "post_cascade: MyLevel export with class=Engine.Level not found"
-            );
+            tracing::debug!("post_cascade: MyLevel export with class=Engine.Level not found");
             return Ok(());
         };
         linker.objects.get(&level_idx).cloned()
@@ -830,14 +843,18 @@ where
     // Loads are idempotent via `runtime.loaded_objects`, so duplicate
     // walks of the same class chain are no-ops on the second pass
     // through.
-    let init_fns = ["PreBeginPlay", "BeginPlay", "PostBeginPlay", "SetInitialState"];
+    let init_fns = [
+        "PreBeginPlay",
+        "BeginPlay",
+        "PostBeginPlay",
+        "SetInitialState",
+    ];
     'phases: for fn_name in &init_fns {
         for actor in &actors {
             let Some(class_obj) = class_of_actor(actor, runtime) else {
                 continue;
             };
-            if dispatch_event::<E, _>(&class_obj, fn_name, runtime, reader)?
-                == WalkOutcome::Aborted
+            if dispatch_event::<E, _>(&class_obj, fn_name, runtime, reader)? == WalkOutcome::Aborted
             {
                 tracing::info!("post_cascade: aborted (cursor diverged from engine call sequence)");
                 break 'phases;
@@ -876,11 +893,7 @@ where
             let v_level = format!("EchelonPattern.V{}", secondary_package);
             runtime.begin_load();
             let v_class_opt = runtime
-                .load_object_by_full_name::<E, _>(
-                    &v_level,
-                    crate::runtime::LoadKind::Load,
-                    reader,
-                )
+                .load_object_by_full_name::<E, _>(&v_level, crate::runtime::LoadKind::Load, reader)
                 .ok()
                 .flatten();
             let _ = runtime.end_load::<E, _>(reader);
@@ -896,11 +909,7 @@ where
 /// subclasses. Walks `Field.super_field` to climb the chain. Mirrors
 /// UE2's `UClass::IsChildOf` traversal that the engine's per-actor type
 /// tests do (e.g. `sub_23a00` = IsA `Echelon.EPawn`).
-fn class_is_child_of(
-    class_obj: &RcUnrealObject,
-    package_name: &str,
-    class_name: &str,
-) -> bool {
+fn class_is_child_of(class_obj: &RcUnrealObject, package_name: &str, class_name: &str) -> bool {
     let mut current = Some(Rc::clone(class_obj));
     while let Some(cls) = current {
         let next = {
@@ -1163,4 +1172,3 @@ mod tests {
         let _f: Sig = dispatch_event::<byteorder::LittleEndian, _>;
     }
 }
-

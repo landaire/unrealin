@@ -1,10 +1,10 @@
 use byteorder::ReadBytesExt;
-use tracing::{Level, span};
+use tracing::Level;
+use tracing::span;
 
-use crate::{
-    object::{DeserializeUnrealObject, RcUnrealObject},
-    reader::UnrealReadExt,
-};
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::reader::UnrealReadExt;
 
 #[derive(Clone, Debug, Default)]
 pub struct FDependency {

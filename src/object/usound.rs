@@ -1,14 +1,17 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `USound::Serialize` (`splintercell.xbe sub_71c80`,
 /// equivalent to Engine_demo `0x1030273e -> 0x103ce3e0` plus an SC-specific
@@ -81,8 +84,8 @@ impl DeserializeUnrealObject for Sound {
             // single Read of `TotalSize` bytes immediately after the FString
             // bytes; mirroring it keeps the source cursor aligned with the
             // engine without resorting to draining trace ops.
-            if self.lipsynch_flag != 0 && !self.lipsynch_filename.is_empty() {
-                if let Some(file_size) = runtime.find_file_by_suffix(&self.lipsynch_filename) {
+            if self.lipsynch_flag != 0 && !self.lipsynch_filename.is_empty()
+                && let Some(file_size) = runtime.find_file_by_suffix(&self.lipsynch_filename) {
                     let mut buf = vec![0u8; file_size as usize];
                     // The engine reads via a SEPARATE FArchive (the lipsynch
                     // loader) sharing the same FFile, so the source cursor
@@ -96,7 +99,6 @@ impl DeserializeUnrealObject for Sound {
                         self.lipsynch_filename, file_size
                     );
                 }
-            }
         }
 
         debug!(

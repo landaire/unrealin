@@ -1,13 +1,14 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uprimitive::Primitive},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uprimitive::Primitive;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of `UConvexVolume::Serialize` (Engine_demo `0x10304818`
 /// tail-calling `sub_103e3a40`). The shape:
@@ -75,9 +76,7 @@ impl DeserializeUnrealObject for ConvexVolume {
         if face_count < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "UConvexVolume face TArray (+0x58) count negative ({face_count})"
-                ),
+                format!("UConvexVolume face TArray (+0x58) count negative ({face_count})"),
             ));
         }
         for _ in 0..face_count {

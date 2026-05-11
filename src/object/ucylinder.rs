@@ -1,9 +1,11 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
 use crate::de::RcLinker;
-use crate::object::{DeserializeUnrealObject, uprimitive::Primitive};
+use crate::object::DeserializeUnrealObject;
+use crate::object::uprimitive::Primitive;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -25,12 +27,13 @@ impl DeserializeUnrealObject for Cylinder {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, R>(runtime, linker, reader)?;
-        
-        // Read cylinder-specific properties  
+        self.parent_object
+            .deserialize::<E, R>(runtime, linker, reader)?;
+
+        // Read cylinder-specific properties
         self.radius = reader.read_f32::<E>()?;
         self.height = reader.read_f32::<E>()?;
-        
+
         Ok(())
     }
 }

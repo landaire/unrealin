@@ -1,8 +1,10 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::reader::{LinRead, UnrealReadExt};
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
 
 /// `GEPartitioner` is a SC-specific spatial structure for "Geometric
 /// Events" (gore decals, footprints, etc.) and is serialized at
@@ -63,15 +65,9 @@ pub enum GEObjectBody {
     /// No body bytes follow the tag.
     Empty,
     /// Tags 1, 2, 4, 8, 64. Body: u32 at +8 + 6× u32 at +0xc..+0x20.
-    Small {
-        field_8: u32,
-        body: [u32; 6],
-    },
+    Small { field_8: u32, body: [u32; 6] },
     /// Tags 16, 32. Body: u32 at +8 + 9× u32 at +0xc..+0x2c.
-    Large {
-        field_8: u32,
-        body: [u32; 9],
-    },
+    Large { field_8: u32, body: [u32; 9] },
 }
 
 /// One node of the `GEPartitioner.root` BSP-style tree. The tag is
@@ -130,9 +126,7 @@ where
     if object_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "GEPartitioner object count negative ({object_count}) — body is misaligned"
-            ),
+            format!("GEPartitioner object count negative ({object_count}) — body is misaligned"),
         ));
     }
     let mut objects = Vec::with_capacity(object_count as usize);
@@ -144,9 +138,7 @@ where
     if index_count < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "GEPartitioner index count negative ({index_count}) — body is misaligned"
-            ),
+            format!("GEPartitioner index count negative ({index_count}) — body is misaligned"),
         ));
     }
     let mut indices = Vec::with_capacity(index_count as usize);

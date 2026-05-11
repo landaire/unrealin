@@ -37,25 +37,18 @@ pub const SAMPLES_PER_BLOCK: usize = 64;
 /// IMA-ADPCM variant including XbA — the table has been frozen since
 /// the original IMA spec.
 const STEP_TABLE: [i32; 89] = [
-    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
-    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
-    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
-    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
-    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
-    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
-    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
-    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
-    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
+    73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
+    494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272,
+    2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
+    10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
 ];
 
 /// Standard MS IMA-ADPCM step-index adjustment table. Indexed by the
 /// 4-bit nibble. Note that the magnitude bits (0..3) of the nibble
 /// share the same adjustment for the sign-positive (0..7) and
 /// sign-negative (8..15) halves.
-const INDEX_TABLE: [i8; 16] = [
-    -1, -1, -1, -1, 2, 4, 6, 8,
-    -1, -1, -1, -1, 2, 4, 6, 8,
-];
+const INDEX_TABLE: [i8; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 
 #[derive(Copy, Clone, Debug)]
 struct ChannelState {
@@ -67,7 +60,10 @@ impl ChannelState {
     fn from_header(header: [u8; 4]) -> Self {
         let predictor = i16::from_le_bytes([header[0], header[1]]) as i32;
         let step_index = (header[2] as i32).clamp(0, 88);
-        Self { predictor, step_index }
+        Self {
+            predictor,
+            step_index,
+        }
     }
 
     /// Decode one 4-bit nibble into a sample, advancing predictor and
@@ -90,9 +86,7 @@ impl ChannelState {
             self.predictor += diff;
         }
         self.predictor = self.predictor.clamp(-32768, 32767);
-        self.step_index = (self.step_index
-            + INDEX_TABLE[nibble as usize] as i32)
-            .clamp(0, 88);
+        self.step_index = (self.step_index + INDEX_TABLE[nibble as usize] as i32).clamp(0, 88);
         self.predictor as i16
     }
 }
@@ -115,7 +109,7 @@ fn decode_block_mono(block: &[u8; BLOCK_BYTES_PER_CHANNEL]) -> [i16; SAMPLES_PER
 /// Decode mono XbA. `data.len()` must be a multiple of 36.
 pub fn decode_mono(data: &[u8]) -> Vec<i16> {
     assert!(
-        data.len() % BLOCK_BYTES_PER_CHANNEL == 0,
+        data.len().is_multiple_of(BLOCK_BYTES_PER_CHANNEL),
         "mono XbA stream length {} is not a multiple of block size {}",
         data.len(),
         BLOCK_BYTES_PER_CHANNEL,
@@ -146,7 +140,7 @@ pub fn decode_mono(data: &[u8]) -> Vec<i16> {
 pub fn decode_stereo(data: &[u8]) -> Vec<i16> {
     const STEREO_BLOCK: usize = BLOCK_BYTES_PER_CHANNEL * 2;
     assert!(
-        data.len() % STEREO_BLOCK == 0,
+        data.len().is_multiple_of(STEREO_BLOCK),
         "stereo XbA stream length {} is not a multiple of {}",
         data.len(),
         STEREO_BLOCK,
@@ -314,7 +308,8 @@ pub mod units {
 /// for incremental Decode-call boundaries and isn't needed when
 /// decoding a stream end-to-end.
 pub mod codec3 {
-    use super::{INDEX_TABLE, STEP_TABLE};
+    use super::INDEX_TABLE;
+    use super::STEP_TABLE;
 
     /// Per-channel running state. `step_index` is stored as `i32` for
     /// arithmetic convenience; on disk and in the engine's struct
@@ -349,8 +344,8 @@ pub mod codec3 {
             state.predictor += delta;
         }
         state.predictor = state.predictor.clamp(-32768, 32767);
-        state.step_index = (state.step_index + INDEX_TABLE[(nibble & 0xf) as usize] as i32)
-            .clamp(0, 88);
+        state.step_index =
+            (state.step_index + INDEX_TABLE[(nibble & 0xf) as usize] as i32).clamp(0, 88);
         state.predictor as i16
     }
 
@@ -562,12 +557,8 @@ pub mod codec3 {
         if file_bytes[0] != 3 {
             return Err("not a codec_id=3 file (first byte != 0x03)");
         }
-        let track_count = u32::from_le_bytes([
-            file_bytes[8],
-            file_bytes[9],
-            file_bytes[10],
-            file_bytes[11],
-        ]);
+        let track_count =
+            u32::from_le_bytes([file_bytes[8], file_bytes[9], file_bytes[10], file_bytes[11]]);
         // track_count = 0 is observed on most files (dialogue
         // and the Music_*.SS2 stereo set). The handful with
         // non-zero values (`0_0=1, 0_0_2=2, 1_1_0=3,
@@ -579,14 +570,9 @@ pub mod codec3 {
         if track_count > 256 {
             return Err("track_count out of range");
         }
-        let mode = Mode::from_u8(file_bytes[12])
-            .ok_or("unsupported mode (must be 0 or 1)")?;
-        let block_period = f32::from_le_bytes([
-            file_bytes[4],
-            file_bytes[5],
-            file_bytes[6],
-            file_bytes[7],
-        ]);
+        let mode = Mode::from_u8(file_bytes[12]).ok_or("unsupported mode (must be 0 or 1)")?;
+        let block_period =
+            f32::from_le_bytes([file_bytes[4], file_bytes[5], file_bytes[6], file_bytes[7]]);
         // Initial ADPCM state. A QEMU plugin trace hooking
         // `sub_198600` (the per-block kernel) showed the engine
         // enters every block with state seeded to (0, 0, 0, 0)
@@ -599,8 +585,14 @@ pub mod codec3 {
         // of trace captures with state == (0, 0, 0, 0) line up
         // with natural quiet passages where step_index decays to
         // 0 and predictor returns near zero, not periodic resets.
-        let init_l = ChannelState { predictor: 0, step_index: 0 };
-        let init_r = ChannelState { predictor: 0, step_index: 0 };
+        let init_l = ChannelState {
+            predictor: 0,
+            step_index: 0,
+        };
+        let init_r = ChannelState {
+            predictor: 0,
+            step_index: 0,
+        };
         Ok(Header {
             version: 3,
             track_count,
@@ -867,7 +859,8 @@ pub mod codec3 {
 ///   0x2af000..0x2af030  MMX qword constants for the state update
 ///   0x2aefe0..0x2af000  Auxiliary MMX qword constants
 pub mod codec8 {
-    use super::units::{Nibble, SampleRate};
+    use super::units::Nibble;
+    use super::units::SampleRate;
     use std::io;
     use std::marker::PhantomData;
 
@@ -894,9 +887,7 @@ pub mod codec8 {
                 6 => Ok(Self::Six),
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "channels = {v}; engine accepts only 1, 2, 4, or 6"
-                    ),
+                    format!("channels = {v}; engine accepts only 1, 2, 4, or 6"),
                 )),
             }
         }
@@ -920,11 +911,7 @@ pub mod codec8 {
 
     impl KernelKind {
         pub const fn from_u32(v: u32) -> Self {
-            if v == 1 {
-                Self::FourBit
-            } else {
-                Self::SixBit
-            }
+            if v == 1 { Self::FourBit } else { Self::SixBit }
         }
     }
 
@@ -1063,10 +1050,7 @@ pub mod codec8 {
         }
     }
 
-    fn parse_common<S: SubtypeMarker>(
-        data: &[u8],
-        channels: Channels,
-    ) -> io::Result<Header<S>> {
+    fn parse_common<S: SubtypeMarker>(data: &[u8], channels: Channels) -> io::Result<Header<S>> {
         let read_u32 = |off: usize| u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         Ok(Header {
             total_size: read_u32(0x04),
@@ -1087,7 +1071,10 @@ pub mod codec8 {
         if data.len() < HEADER_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("codec_id=8 header needs {HEADER_BYTES} bytes, got {}", data.len()),
+                format!(
+                    "codec_id=8 header needs {HEADER_BYTES} bytes, got {}",
+                    data.len()
+                ),
             ));
         }
         let codec = u32::from_le_bytes(data[0..4].try_into().unwrap());
@@ -1112,8 +1099,7 @@ pub mod codec8 {
     /// it from codec_id=3 (`first byte == 0x03`) and the multi-bank
     /// `02 00 00 00 03 00 00 00` STREAM.SS2 variant.
     pub fn is_codec8(data: &[u8]) -> bool {
-        data.len() >= 4
-            && u32::from_le_bytes(data[0..4].try_into().unwrap()) == CODEC_ID
+        data.len() >= 4 && u32::from_le_bytes(data[0..4].try_into().unwrap()) == CODEC_ID
     }
 
     /// 4-bit step-magnitude table at proto VA 0x2aebc8. Indexed by
@@ -1123,29 +1109,20 @@ pub mod codec8 {
     /// before the table), and is needed for byte-perfect state
     /// updates even though the downstream sign check zeroes the
     /// emitted delta.
-    pub const STEP_MAG_4BIT: [i32; 8] = [
-        0xfa0a_1f00u32 as i32,
-        8,
-        269,
-        425,
-        545,
-        645,
-        745,
-        850,
-    ];
+    pub const STEP_MAG_4BIT: [i32; 8] = [0xfa0a_1f00u32 as i32, 8, 269, 425, 545, 645, 745, 850];
 
     /// 4-bit step-output table at proto VA 0x2aec08, indexed by the
     /// per-call magnitude `abs(nibble - 7)` (range 0..8 in practice;
     /// mag=8 reads past the array but never affects observed audio).
     pub const STEP_OUT_4BIT: [i32; 8] = [
-        -1536,         // 0xfffffa00
-        0x0000_090a,   // 2314
-        0x0000_147b,   // 5243
-        0x0000_2000,   // 8192
-        0x0000_3800,   // 14336
-        0x0000_630a,   // 25354
-        0x0000_b185,   // 45445
-        0x0002_310a,   // 143626
+        -1536,       // 0xfffffa00
+        0x0000_090a, // 2314
+        0x0000_147b, // 5243
+        0x0000_2000, // 8192
+        0x0000_3800, // 14336
+        0x0000_630a, // 25354
+        0x0000_b185, // 45445
+        0x0002_310a, // 143626
     ];
 
     /// Main 66-entry signed lookup at proto VA 0x2aeed8. Values run
@@ -1153,16 +1130,11 @@ pub mod codec8 {
     /// 33..65), so `(eax & 0x84)` selects the sign half (0 vs 0x84
     /// = 33×4 in dword-indexed bytes, indexing the second half).
     pub const MAIN_LOOKUP: [i32; 66] = [
-        1024, 1031, 1053, 1076, 1099, 1123, 1148, 1172,
-        1198, 1224, 1251, 1278, 1306, 1334, 1363, 1393,
-        1423, 1454, 1485, 1518, 1551, 1584, 1619, 1654,
-        1690, 1726, 1764, 1802, 1841, 1881, 1922, 1964,
-        2007,
-        -1024, -1031, -1053, -1076, -1099, -1123, -1148, -1172,
-        -1198, -1224, -1251, -1278, -1306, -1334, -1363, -1393,
-        -1423, -1454, -1485, -1518, -1551, -1584, -1619, -1654,
-        -1690, -1726, -1764, -1802, -1841, -1881, -1922, -1964,
-        -2007,
+        1024, 1031, 1053, 1076, 1099, 1123, 1148, 1172, 1198, 1224, 1251, 1278, 1306, 1334, 1363,
+        1393, 1423, 1454, 1485, 1518, 1551, 1584, 1619, 1654, 1690, 1726, 1764, 1802, 1841, 1881,
+        1922, 1964, 2007, -1024, -1031, -1053, -1076, -1099, -1123, -1148, -1172, -1198, -1224,
+        -1251, -1278, -1306, -1334, -1363, -1393, -1423, -1454, -1485, -1518, -1551, -1584, -1619,
+        -1654, -1690, -1726, -1764, -1802, -1841, -1881, -1922, -1964, -2007,
     ];
 
     /// MMX memory constants at proto VA 0x2af000..0x2af030. Each
@@ -1242,37 +1214,48 @@ pub mod codec8 {
         const M16: u64 = 0xFFFF;
         const M32: u64 = 0xFFFF_FFFF;
 
-        #[inline] fn sat_i16_scalar(v: i32) -> i16 {
+        #[inline]
+        fn sat_i16_scalar(v: i32) -> i16 {
             v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
         }
-        #[inline] fn s16(q: u64, i: u32) -> i16 {
+        #[inline]
+        fn s16(q: u64, i: u32) -> i16 {
             ((q >> (16 * i)) & M16) as u16 as i16
         }
-        #[inline] fn s32(q: u64, i: u32) -> i32 {
+        #[inline]
+        fn s32(q: u64, i: u32) -> i32 {
             ((q >> (32 * i)) & M32) as u32 as i32
         }
-        #[inline] pub fn pack_i16(a: i16, b: i16, c: i16, d: i16) -> u64 {
+        #[inline]
+        pub fn pack_i16(a: i16, b: i16, c: i16, d: i16) -> u64 {
             (a as u16 as u64)
                 | ((b as u16 as u64) << 16)
                 | ((c as u16 as u64) << 32)
                 | ((d as u16 as u64) << 48)
         }
-        #[inline] pub fn pack_i32(a: i32, b: i32) -> u64 {
+        #[inline]
+        pub fn pack_i32(a: i32, b: i32) -> u64 {
             (a as u32 as u64) | ((b as u32 as u64) << 32)
         }
-        #[inline] pub fn lanes_i16(q: u64) -> [i16; 4] {
+        #[inline]
+        pub fn lanes_i16(q: u64) -> [i16; 4] {
             [s16(q, 0), s16(q, 1), s16(q, 2), s16(q, 3)]
         }
-        #[inline] pub fn lo32(q: u64) -> i32 { s32(q, 0) }
+        #[inline]
+        pub fn lo32(q: u64) -> i32 {
+            s32(q, 0)
+        }
 
-        #[inline] pub fn pmaddwd(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn pmaddwd(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             let p0 = la[0] as i32 * lb[0] as i32 + la[1] as i32 * lb[1] as i32;
             let p1 = la[2] as i32 * lb[2] as i32 + la[3] as i32 * lb[3] as i32;
             pack_i32(p0, p1)
         }
-        #[inline] pub fn paddsw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn paddsw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1282,7 +1265,8 @@ pub mod codec8 {
                 sat_i16_scalar(la[3] as i32 + lb[3] as i32),
             )
         }
-        #[inline] pub fn psubsw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn psubsw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1292,7 +1276,8 @@ pub mod codec8 {
                 sat_i16_scalar(la[3] as i32 - lb[3] as i32),
             )
         }
-        #[inline] pub fn paddw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn paddw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1302,7 +1287,8 @@ pub mod codec8 {
                 la[3].wrapping_add(lb[3]),
             )
         }
-        #[inline] pub fn psubw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn psubw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1312,34 +1298,45 @@ pub mod codec8 {
                 la[3].wrapping_sub(lb[3]),
             )
         }
-        #[inline] pub fn psrawi(a: u64, n: u32) -> u64 {
+        #[inline]
+        pub fn psrawi(a: u64, n: u32) -> u64 {
             let s = n.min(15);
             let la = lanes_i16(a);
             pack_i16(la[0] >> s, la[1] >> s, la[2] >> s, la[3] >> s)
         }
-        #[inline] pub fn psradi(a: u64, n: u32) -> u64 {
+        #[inline]
+        pub fn psradi(a: u64, n: u32) -> u64 {
             let s = n.min(31);
             pack_i32(s32(a, 0) >> s, s32(a, 1) >> s)
         }
-        #[inline] pub fn pslldi(a: u64, n: u32) -> u64 {
-            if n >= 32 { return 0; }
+        #[inline]
+        pub fn pslldi(a: u64, n: u32) -> u64 {
+            if n >= 32 {
+                return 0;
+            }
             let l0 = (s32(a, 0) as u32).wrapping_shl(n) as i32;
             let l1 = (s32(a, 1) as u32).wrapping_shl(n) as i32;
             pack_i32(l0, l1)
         }
-        #[inline] pub fn psrldi(a: u64, n: u32) -> u64 {
-            if n >= 32 { return 0; }
+        #[inline]
+        pub fn psrldi(a: u64, n: u32) -> u64 {
+            if n >= 32 {
+                return 0;
+            }
             let l0 = ((s32(a, 0) as u32) >> n) as i32;
             let l1 = ((s32(a, 1) as u32) >> n) as i32;
             pack_i32(l0, l1)
         }
-        #[inline] pub fn psllqi(a: u64, n: u32) -> u64 {
+        #[inline]
+        pub fn psllqi(a: u64, n: u32) -> u64 {
             if n >= 64 { 0 } else { a << n }
         }
-        #[inline] pub fn psrlqi(a: u64, n: u32) -> u64 {
+        #[inline]
+        pub fn psrlqi(a: u64, n: u32) -> u64 {
             if n >= 64 { 0 } else { a >> n }
         }
-        #[inline] pub fn pmullw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn pmullw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1349,7 +1346,8 @@ pub mod codec8 {
                 (la[3] as i32 * lb[3] as i32) as i16,
             )
         }
-        #[inline] pub fn pmulhw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn pmulhw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1359,21 +1357,25 @@ pub mod codec8 {
                 ((la[3] as i32 * lb[3] as i32) >> 16) as i16,
             )
         }
-        #[inline] pub fn punpcklwd(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn punpcklwd(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(la[0], lb[0], la[1], lb[1])
         }
-        #[inline] pub fn punpckhdq(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn punpckhdq(a: u64, b: u64) -> u64 {
             pack_i32(s32(a, 1), s32(b, 1))
         }
-        #[inline] pub fn paddd(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn paddd(a: u64, b: u64) -> u64 {
             pack_i32(
                 s32(a, 0).wrapping_add(s32(b, 0)),
                 s32(a, 1).wrapping_add(s32(b, 1)),
             )
         }
-        #[inline] pub fn packssdw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn packssdw(a: u64, b: u64) -> u64 {
             pack_i16(
                 sat_i16_scalar(s32(a, 0)),
                 sat_i16_scalar(s32(a, 1)),
@@ -1381,7 +1383,8 @@ pub mod codec8 {
                 sat_i16_scalar(s32(b, 1)),
             )
         }
-        #[inline] pub fn pcmpgtw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn pcmpgtw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
             pack_i16(
@@ -1394,15 +1397,15 @@ pub mod codec8 {
         /// `pandn dst, src` = `(!dst) & src`. Intel semantics, not the
         /// "AND with NOT of memory operand" that Binary Ninja's LLIL
         /// view shows.
-        #[inline] pub fn pandn(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn pandn(a: u64, b: u64) -> u64 {
             (!a) & b
         }
-        #[inline] pub fn paddusw(a: u64, b: u64) -> u64 {
+        #[inline]
+        pub fn paddusw(a: u64, b: u64) -> u64 {
             let la = lanes_i16(a);
             let lb = lanes_i16(b);
-            let sat = |x: u32, y: u32| -> i16 {
-                ((x + y).min(0xFFFF)) as u16 as i16
-            };
+            let sat = |x: u32, y: u32| -> i16 { ((x + y).min(0xFFFF)) as u16 as i16 };
             pack_i16(
                 sat(la[0] as u16 as u32, lb[0] as u16 as u32),
                 sat(la[1] as u16 as u32, lb[1] as u16 as u32),
@@ -1435,10 +1438,10 @@ pub mod codec8 {
 
         // The kernel views per-channel state as a 128-byte memory
         // region. Materialise the qword/dword views the kernel reads.
-        let cl_lo_dword: u32 = (state.coef_lo[0] as u16 as u32)
-            | ((state.coef_lo[1] as u16 as u32) << 16);
-        let hp_dword: u32 = (state.hist_pred[0] as u16 as u32)
-            | ((state.hist_pred[1] as u16 as u32) << 16);
+        let cl_lo_dword: u32 =
+            (state.coef_lo[0] as u16 as u32) | ((state.coef_lo[1] as u16 as u32) << 16);
+        let hp_dword: u32 =
+            (state.hist_pred[0] as u16 as u32) | ((state.hist_pred[1] as u16 as u32) << 16);
         let slow_qword: u64 = pack_i16(
             state.coef_hi[0],
             state.coef_hi[1],
@@ -1451,74 +1454,70 @@ pub mod codec8 {
             state.hist_delta[2],
             state.hist_delta[3],
         );
-        let prev_dot_qword: u64 = (state.prev_hi_dot as u32 as u64)
-            | ((state.prev_prev_hi_dot as u32 as u64) << 32);
+        let prev_dot_qword: u64 =
+            (state.prev_hi_dot as u32 as u64) | ((state.prev_prev_hi_dot as u32 as u64) << 32);
         let entry_step_mag = state.step_magnitude;
 
         // Dispatcher (0x1999d0..0x199ad9)
-        let mut mm0 = cl_lo_dword as u64;                              // 0x1999e6 mm0 = zx.q([eax+0x10].d)
-        let mut mm6 = hp_dword as u64;                                 // 0x1999ea mm6 = zx.q([eax+0x20].d)
-        let mut mm2 = slow_qword;                                      // 0x1999ee mm2 = [eax+0x18].q
-        let mut mm4 = hd_qword;                                        // 0x1999f2 mm4 = [eax+0x28].q
-        mm0 = pmaddwd(mm0, mm6);                                       // 0x1999f6
-        let centered: i32 = (nibble & 0xF) as i32 - 7;                 // 0x1999f9 ebx -= 7
-        let si_save: i16 = state.hist_delta[3];                        // 0x199a07 si = [eax+0x2e].w
-        let mut mm3 = hd_qword;                                        // 0x199a0d
-        mm0 = psradi(mm0, 0xa);                                        // 0x199a11 (dot_lo >>= 10)
-        let mag = centered.unsigned_abs() as i32;                      // 0x199a15 ebx = abs(centered)
-        mm2 = pmaddwd(mm2, mm3);                                       // 0x199a17
-        let dot_lo_lo32: i32 = lo32(mm0);                              // 0x199a29 [ebp-0x10] = mm0.d
-        let mut mm1 = mm2;                                             // 0x199a2d
+        let mut mm0 = cl_lo_dword as u64; // 0x1999e6 mm0 = zx.q([eax+0x10].d)
+        let mut mm6 = hp_dword as u64; // 0x1999ea mm6 = zx.q([eax+0x20].d)
+        let mut mm2 = slow_qword; // 0x1999ee mm2 = [eax+0x18].q
+        let mut mm4 = hd_qword; // 0x1999f2 mm4 = [eax+0x28].q
+        mm0 = pmaddwd(mm0, mm6); // 0x1999f6
+        let centered: i32 = (nibble & 0xF) as i32 - 7; // 0x1999f9 ebx -= 7
+        let si_save: i16 = state.hist_delta[3]; // 0x199a07 si = [eax+0x2e].w
+        let mut mm3 = hd_qword; // 0x199a0d
+        mm0 = psradi(mm0, 0xa); // 0x199a11 (dot_lo >>= 10)
+        let mag = centered.unsigned_abs() as i32; // 0x199a15 ebx = abs(centered)
+        mm2 = pmaddwd(mm2, mm3); // 0x199a17
+        let dot_lo_lo32: i32 = lo32(mm0); // 0x199a29 [ebp-0x10] = mm0.d
+        let mut mm1 = mm2; // 0x199a2d
         // `mag` ranges 0..=7 for nibbles 0..=14; nibble == 15 would
         // produce mag == 8 (an OOB read in the engine). No real audio
         // ever produces that input (verified across the entire music
         // and dialog trace, 96k+ nibbles), so we clamp here rather
         // than carry the OOB value as a guard entry.
-        let step_full = STEP_MAG_4BIT[(mag as usize).min(7)]
-            .wrapping_add(entry_step_mag);                             // 0x199a30 ebx += ecx
-        mm1 = punpckhdq(mm1, mm2);                                     // 0x199a32
+        let step_full = STEP_MAG_4BIT[(mag as usize).min(7)].wrapping_add(entry_step_mag); // 0x199a30 ebx += ecx
+        mm1 = punpckhdq(mm1, mm2); // 0x199a32
         let step_aligned: i32 = (step_full as u32 & 0xFFFF_FF00) as i32; // 0x199a3a ebx &= 0xffffff00
-        mm1 = paddd(mm1, mm2);                                         // 0x199a37
-        mm1 = psradi(mm1, 0xa);                                        // 0x199a40
-        let sign_half: usize = if centered < 0 { 33 } else { 0 };      // 0x199a4f eax &= 0x84
+        mm1 = paddd(mm1, mm2); // 0x199a37
+        mm1 = psradi(mm1, 0xa); // 0x199a40
+        let sign_half: usize = if centered < 0 { 33 } else { 0 }; // 0x199a4f eax &= 0x84
         let step_lo_idx: usize = (((step_full - step_aligned) >> 3) & 0xFF) as usize; // 0x199a47 + 0x199a54
         let main_val: i32 = MAIN_LOOKUP
             .get(sign_half + step_lo_idx)
             .copied()
-            .unwrap_or(0);                                             // 0x199a67
-        let cl_shift: u32 = ((step_aligned as u32) >> 8) & 0x1F;       // 0x199a64 (signed >> 8, then low 5 bits)
-        let dot_hi_lo32: i32 = lo32(mm1);                              // 0x199a59 [ebp-4] = mm1.d
-        mm4 = psllqi(mm4, 0x10);                                       // 0x199a5d
-        let shifted: i32 = (main_val as u32)
-            .wrapping_shl(cl_shift) as i32;                            // 0x199a70 edx <<= cl
-        let shifted: i32 = shifted >> 0xa;                             // 0x199a72 edx >>= 10 (signed)
-        let mask: i32 = if step_aligned >= 1 { -1 } else { 0 };        // 0x199a6a + 0x199a75
-        let delta: i32 = if mask == -1 { shifted } else { 0 };         // 0x199a7b
-        let result_i32: i32 = dot_hi_lo32
-            .wrapping_add(delta)
-            .wrapping_add(dot_lo_lo32);                                // 0x199a80 + 0x199a82
-        let var_8_dot_hi: i32 = dot_hi_lo32;                           // saved as var_8 = mm1.d (pre-paddw)
+            .unwrap_or(0); // 0x199a67
+        let cl_shift: u32 = ((step_aligned as u32) >> 8) & 0x1F; // 0x199a64 (signed >> 8, then low 5 bits)
+        let dot_hi_lo32: i32 = lo32(mm1); // 0x199a59 [ebp-4] = mm1.d
+        mm4 = psllqi(mm4, 0x10); // 0x199a5d
+        let shifted: i32 = (main_val as u32).wrapping_shl(cl_shift) as i32; // 0x199a70 edx <<= cl
+        let shifted: i32 = shifted >> 0xa; // 0x199a72 edx >>= 10 (signed)
+        let mask: i32 = if step_aligned >= 1 { -1 } else { 0 }; // 0x199a6a + 0x199a75
+        let delta: i32 = if mask == -1 { shifted } else { 0 }; // 0x199a7b
+        let result_i32: i32 = dot_hi_lo32.wrapping_add(delta).wrapping_add(dot_lo_lo32); // 0x199a80 + 0x199a82
+        let var_8_dot_hi: i32 = dot_hi_lo32; // saved as var_8 = mm1.d (pre-paddw)
 
-        let mut mm5: u64 = result_i32 as u32 as u64;                   // 0x199a87 mm5 = zx.q(result)
-        mm6 = psllqi(mm6, 0x10);                                       // 0x199a8a
-        mm0 = delta as u32 as u64;                                     // 0x199a8e mm0 = zx.q(delta)
-        mm5 = pslldi(mm5, 0x10);                                       // 0x199a92
-        mm2 = prev_dot_qword;                                          // 0x199a96 mm2 = [eax+8].q
-        mm0 = pslldi(mm0, 0x10);                                       // 0x199a9a
-        mm3 = MC_2AF028;                                               // 0x199a9e
-        mm5 = psrldi(mm5, 0x10);                                       // 0x199aa5
-        mm0 = psrldi(mm0, 0x10);                                       // 0x199aa9
-        mm5 |= mm6;                                                    // 0x199aad
-        mm4 |= mm0;                                                    // 0x199ab0
-        mm1 = paddw(mm1, mm0);                                         // 0x199ab3
-        let new_hp_dword: u32 = lo32(mm5) as u32;                      // 0x199ab6 [eax+0x20].d = mm5.d
-        mm2 = packssdw(mm2, mm5);                                      // 0x199aba
-        let new_hd_qword: u64 = mm4;                                   // 0x199abd [eax+0x28].q = mm4
-        mm2 = psllqi(mm2, 0x10);                                       // 0x199ac1
-        let new_delta_save: i16 = si_save;                             // 0x199ac5 [eax+0x30].w = si
-        let branch_test: u32 = lo32(mm1) as u32 & 0xFFFF;              // 0x199ad3 ebx &= 0xffff
-        mm1 = pslldi(mm1, 0x10);                                       // 0x199acf
-        let is_silence = branch_test == 0;                             // 0x199ad9
+        let mut mm5: u64 = result_i32 as u32 as u64; // 0x199a87 mm5 = zx.q(result)
+        mm6 = psllqi(mm6, 0x10); // 0x199a8a
+        mm0 = delta as u32 as u64; // 0x199a8e mm0 = zx.q(delta)
+        mm5 = pslldi(mm5, 0x10); // 0x199a92
+        mm2 = prev_dot_qword; // 0x199a96 mm2 = [eax+8].q
+        mm0 = pslldi(mm0, 0x10); // 0x199a9a
+        mm3 = MC_2AF028; // 0x199a9e
+        mm5 = psrldi(mm5, 0x10); // 0x199aa5
+        mm0 = psrldi(mm0, 0x10); // 0x199aa9
+        mm5 |= mm6; // 0x199aad
+        mm4 |= mm0; // 0x199ab0
+        mm1 = paddw(mm1, mm0); // 0x199ab3
+        let new_hp_dword: u32 = lo32(mm5) as u32; // 0x199ab6 [eax+0x20].d = mm5.d
+        mm2 = packssdw(mm2, mm5); // 0x199aba
+        let new_hd_qword: u64 = mm4; // 0x199abd [eax+0x28].q = mm4
+        mm2 = psllqi(mm2, 0x10); // 0x199ac1
+        let new_delta_save: i16 = si_save; // 0x199ac5 [eax+0x30].w = si
+        let branch_test: u32 = lo32(mm1) as u32 & 0xFFFF; // 0x199ad3 ebx &= 0xffff
+        mm1 = pslldi(mm1, 0x10); // 0x199acf
+        let is_silence = branch_test == 0; // 0x199ad9
 
         // Both branches converge at 0x199cf1 with mm1 (going into the
         // saturation ladder), mm2 (new slow_filter), and a new
@@ -1527,137 +1526,137 @@ pub mod codec8 {
         if is_silence {
             // Branch A (silence path, 0x199c2e..0x199cee).
             mm1 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199c2e mm1 = [eax+0x10].q
-            mm3 = MC_2AEFE0;                                          // 0x199c32 (255, 254, 0, 0)
-            mm2 = mm1;                                                // 0x199c39
-            mm1 = pmullw(mm1, mm3);                                   // 0x199c3c
-            mm2 = pmulhw(mm2, mm3);                                   // 0x199c47
-            mm1 = punpcklwd(mm1, mm2);                                // 0x199c4a
-            mm1 = psradi(mm1, 8);                                     // 0x199c4d
-            mm1 = packssdw(mm1, mm3);                                 // 0x199c51
-            let mut mm0a: u64 = new_hd_qword;                         // 0x199c54 mm0 = [esi+0x28].q
-            let mut mm7a: u64 = entry_step_mag as u32 as u64;         // 0x199c58 mm7 = zx.q([esi+4].d)
-            mm0a = psllqi(mm0a, 0x30);                                // 0x199c5c
-            let mut mm4a: u64 = 0xf6;                                 // 0x199c68 mm4 = ecx (ecx=0xf6)
-            let mm6a_save: u64 = mm0a;                                // 0x199c6b mm6 = mm0
-            mm0a = psrlqi(mm0a, 0x20);                                // 0x199c6e
+            mm3 = MC_2AEFE0; // 0x199c32 (255, 254, 0, 0)
+            mm2 = mm1; // 0x199c39
+            mm1 = pmullw(mm1, mm3); // 0x199c3c
+            mm2 = pmulhw(mm2, mm3); // 0x199c47
+            mm1 = punpcklwd(mm1, mm2); // 0x199c4a
+            mm1 = psradi(mm1, 8); // 0x199c4d
+            mm1 = packssdw(mm1, mm3); // 0x199c51
+            let mut mm0a: u64 = new_hd_qword; // 0x199c54 mm0 = [esi+0x28].q
+            let mut mm7a: u64 = entry_step_mag as u32 as u64; // 0x199c58 mm7 = zx.q([esi+4].d)
+            mm0a = psllqi(mm0a, 0x30); // 0x199c5c
+            let mm4a: u64 = 0xf6; // 0x199c68 mm4 = ecx (ecx=0xf6)
+            let mm6a_save: u64 = mm0a; // 0x199c6b mm6 = mm0
+            mm0a = psrlqi(mm0a, 0x20); // 0x199c6e
             let stepout = STEP_OUT_4BIT[mag.min(7) as usize];
-            mm0a |= mm6a_save;                                        // 0x199c79
+            mm0a |= mm6a_save; // 0x199c79
             // Post-write read of state+0x2a..0x31 (new hd + delta_save).
             let post_hd = lanes_i16(new_hd_qword);
             let mm6a_2a = pack_i16(post_hd[1], post_hd[2], post_hd[3], new_delta_save);
-            mm0a = psradi(mm0a, 0x20);                                // 0x199c80
-            mm0a &= MC_2AF000;                                        // 0x199c84
-            mm7a = pmaddwd(mm7a, mm4a);                               // 0x199c8b (step_mag.lo16 * 0xf6)
-            mm2 = MC_2AEFF0;                                          // 0x199c8e (255, 255, 255, 255)
-            let mm6a_cmp = pcmpgtw(mm6a_2a, MC_2AEFF8);                // 0x199c95
-            let mm6a_cmp = pandn(mm6a_cmp, MC_2AEFF8);                // 0x199c9c
-            mm2 = pmullw(mm2, slow_qword);                            // 0x199ca3
-            mm0a |= MC_2AEFE8;                                        // 0x199ca7
-            let mm6a_cmp = paddusw(mm6a_cmp, MC_2AF020);              // 0x199cae
-            let edi_step: i32 = lo32(mm7a);                           // 0x199cb5
-            mm0a = pmullw(mm0a, mm6a_cmp);                            // 0x199cb8
-            new_step_mag = stepout.wrapping_add(edi_step) >> 8;       // 0x199cbd
-            mm2 = paddsw(mm2, mm0a);                                  // 0x199ccd
-            new_step_mag = new_step_mag.clamp(0x10F, 0xA00);          // 0x199cc6..0x199cdc
-            mm2 = psrawi(mm2, 8);                                     // 0x199cd6
-            mm6 = 0;                                                  // 0x199cee
+            mm0a = psradi(mm0a, 0x20); // 0x199c80
+            mm0a &= MC_2AF000; // 0x199c84
+            mm7a = pmaddwd(mm7a, mm4a); // 0x199c8b (step_mag.lo16 * 0xf6)
+            mm2 = MC_2AEFF0; // 0x199c8e (255, 255, 255, 255)
+            let mm6a_cmp = pcmpgtw(mm6a_2a, MC_2AEFF8); // 0x199c95
+            let mm6a_cmp = pandn(mm6a_cmp, MC_2AEFF8); // 0x199c9c
+            mm2 = pmullw(mm2, slow_qword); // 0x199ca3
+            mm0a |= MC_2AEFE8; // 0x199ca7
+            let mm6a_cmp = paddusw(mm6a_cmp, MC_2AF020); // 0x199cae
+            let edi_step: i32 = lo32(mm7a); // 0x199cb5
+            mm0a = pmullw(mm0a, mm6a_cmp); // 0x199cb8
+            new_step_mag = stepout.wrapping_add(edi_step) >> 8; // 0x199cbd
+            mm2 = paddsw(mm2, mm0a); // 0x199ccd
+            new_step_mag = new_step_mag.clamp(0x10F, 0xA00); // 0x199cc6..0x199cdc
+            mm2 = psrawi(mm2, 8); // 0x199cd6
+            mm6 = 0; // 0x199cee
         } else {
             // Branch B (LMS path, 0x199adf..0x199c29).
             let mut mm0b: u64 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199adf
-            mm1 = psradi(mm1, 0x1f);                                  // 0x199ae3
-            mm1 |= MC_2AF020;                                         // 0x199ae7
-            mm4 = paddsw(new_hd_qword, mm2);                          // 0x199aee (mm4 = new_hd; mm2 = packssdw output)
-            mm4 = psrawi(mm4, 0xf);                                   // 0x199af1
-            mm5 = mm3;                                                // 0x199af5 (mm3 was MC_2AF028)
-            mm4 |= MC_2AF020;                                         // 0x199af8
-            mm0b = pslldi(mm0b, 0x10);                                // 0x199aff (Binary Ninja's LLIL view missed this; verified via raw bytes)
-            let mut mm7b: u64 = MC_2AF018;                            // 0x199b03
-            mm4 = psrlqi(mm4, 0x10);                                  // 0x199b0a
-            mm4 = pmullw(mm4, mm1);                                   // 0x199b0e
+            mm1 = psradi(mm1, 0x1f); // 0x199ae3
+            mm1 |= MC_2AF020; // 0x199ae7
+            mm4 = paddsw(new_hd_qword, mm2); // 0x199aee (mm4 = new_hd; mm2 = packssdw output)
+            mm4 = psrawi(mm4, 0xf); // 0x199af1
+            mm5 = mm3; // 0x199af5 (mm3 was MC_2AF028)
+            mm4 |= MC_2AF020; // 0x199af8
+            mm0b = pslldi(mm0b, 0x10); // 0x199aff (Binary Ninja's LLIL view missed this; verified via raw bytes)
+            let mut mm7b: u64 = MC_2AF018; // 0x199b03
+            mm4 = psrlqi(mm4, 0x10); // 0x199b0a
+            mm4 = pmullw(mm4, mm1); // 0x199b0e
             mm1 = pack_i16(state.coef_lo[0], state.coef_lo[1], 0, 0); // 0x199b14 mm1 = [eax+0x10].q
-            mm5 = psrlqi(mm5, 0x20);                                  // 0x199b18
-            mm1 = psllqi(mm1, 0x20);                                  // 0x199b1c
-            mm2 = mm4;                                                // 0x199b25
-            mm1 = psrlqi(mm1, 0x30);                                  // 0x199b28
-            mm4 &= MC_2AF010;                                         // 0x199b2c
-            mm4 |= mm0b;                                              // 0x199b33
-            let mut mm6b: u64 = entry_step_mag as u32 as u64;         // 0x199b39 mm6 = zx.q([esi+4].d)
-            mm3 = pmaddwd(mm3, mm4);                                  // 0x199b3d
-            let mm4_ecx: u64 = 0xf6;                                  // 0x199b4c mm4 = ecx (ecx=0xf6)
-            mm6b = pmaddwd(mm6b, mm4_ecx);                            // 0x199b4f
-            mm3 = psrldi(mm3, 8);                                     // 0x199b52
-            mm4 = mm3;                                                // 0x199b56
-            mm3 = pslldi(mm3, 2);                                     // 0x199b59
-            let edi_step: i32 = lo32(mm6b);                           // 0x199b5d
-            mm3 = paddsw(mm3, mm7b);                                  // 0x199b60
-            mm3 = psubsw(mm3, mm7b);                                  // 0x199b63
-            mm7b = psrlqi(mm7b, 0x20);                                // 0x199b66
-            let mut mm0c: u64 = new_hd_qword;                         // 0x199b6a
-            mm3 = psubsw(mm3, mm7b);                                  // 0x199b6e
-            mm0c = psllqi(mm0c, 0x30);                                // 0x199b71
-            mm3 = paddsw(mm3, mm7b);                                  // 0x199b75
-            let mm6c_save: u64 = mm0c;                                // 0x199b78
-            mm3 &= MC_2AF010;                                         // 0x199b7b
-            mm0c = psrlqi(mm0c, 0x20);                                // 0x199b82
-            mm3 |= MC_2AF008;                                         // 0x199b86
-            mm0c |= mm6c_save;                                        // 0x199b8d
-            mm3 = pmullw(mm3, mm2);                                   // 0x199b90
-            mm2 = mm3;                                                // 0x199b9c
-            mm0c = psradi(mm0c, 0x20);                                // 0x199b95
-            mm0c &= MC_2AF000;                                        // 0x199b9f
-            mm2 = psrlqi(mm2, 0x10);                                  // 0x199ba6
+            mm5 = psrlqi(mm5, 0x20); // 0x199b18
+            mm1 = psllqi(mm1, 0x20); // 0x199b1c
+            mm2 = mm4; // 0x199b25
+            mm1 = psrlqi(mm1, 0x30); // 0x199b28
+            mm4 &= MC_2AF010; // 0x199b2c
+            mm4 |= mm0b; // 0x199b33
+            let mut mm6b: u64 = entry_step_mag as u32 as u64; // 0x199b39 mm6 = zx.q([esi+4].d)
+            mm3 = pmaddwd(mm3, mm4); // 0x199b3d
+            let mm4_ecx: u64 = 0xf6; // 0x199b4c mm4 = ecx (ecx=0xf6)
+            mm6b = pmaddwd(mm6b, mm4_ecx); // 0x199b4f
+            mm3 = psrldi(mm3, 8); // 0x199b52
+            mm4 = mm3; // 0x199b56
+            mm3 = pslldi(mm3, 2); // 0x199b59
+            let edi_step: i32 = lo32(mm6b); // 0x199b5d
+            mm3 = paddsw(mm3, mm7b); // 0x199b60
+            mm3 = psubsw(mm3, mm7b); // 0x199b63
+            mm7b = psrlqi(mm7b, 0x20); // 0x199b66
+            let mut mm0c: u64 = new_hd_qword; // 0x199b6a
+            mm3 = psubsw(mm3, mm7b); // 0x199b6e
+            mm0c = psllqi(mm0c, 0x30); // 0x199b71
+            mm3 = paddsw(mm3, mm7b); // 0x199b75
+            let mm6c_save: u64 = mm0c; // 0x199b78
+            mm3 &= MC_2AF010; // 0x199b7b
+            mm0c = psrlqi(mm0c, 0x20); // 0x199b82
+            mm3 |= MC_2AF008; // 0x199b86
+            mm0c |= mm6c_save; // 0x199b8d
+            mm3 = pmullw(mm3, mm2); // 0x199b90
+            mm2 = mm3; // 0x199b9c
+            mm0c = psradi(mm0c, 0x20); // 0x199b95
+            mm0c &= MC_2AF000; // 0x199b9f
+            mm2 = psrlqi(mm2, 0x10); // 0x199ba6
             let post_hd = lanes_i16(new_hd_qword);
             let mm6c_2a = pack_i16(post_hd[1], post_hd[2], post_hd[3], new_delta_save); // 0x199baa [esi+0x2a].q
-            mm2 = psubw(mm2, mm3);                                    // 0x199bae
-            let mm6c_cmp = pcmpgtw(mm6c_2a, MC_2AEFF8);                // 0x199bb1
-            mm2 = pslldi(mm2, 0x10);                                  // 0x199bb8
-            let mm6c_cmp = pandn(mm6c_cmp, MC_2AEFF8);                // 0x199bbc
-            mm1 |= mm2;                                               // 0x199bc3
-            let mm6c_cmp = paddusw(mm6c_cmp, MC_2AF020);              // 0x199bc6
-            mm1 = pmaddwd(mm1, mm5);                                  // 0x199bcd
+            mm2 = psubw(mm2, mm3); // 0x199bae
+            let mm6c_cmp = pcmpgtw(mm6c_2a, MC_2AEFF8); // 0x199bb1
+            mm2 = pslldi(mm2, 0x10); // 0x199bb8
+            let mm6c_cmp = pandn(mm6c_cmp, MC_2AEFF8); // 0x199bbc
+            mm1 |= mm2; // 0x199bc3
+            let mm6c_cmp = paddusw(mm6c_cmp, MC_2AF020); // 0x199bc6
+            mm1 = pmaddwd(mm1, mm5); // 0x199bcd
             let stepout = STEP_OUT_4BIT[mag.min(7) as usize];
-            new_step_mag = stepout.wrapping_add(edi_step) >> 8;       // 0x199bcd..0x199bd6 ebx s>>= 8
-            new_step_mag = new_step_mag.clamp(0x10F, 0xA00);          // 0x199bd6..0x199be5
-            mm2 = MC_2AEFF0;                                          // 0x199bed
-            mm1 = psradi(mm1, 8);                                     // 0x199bf4
-            mm0c |= MC_2AEFE8;                                        // 0x199bf8
-            mm1 = pslldi(mm1, 0x10);                                  // 0x199bff
-            mm2 = pmullw(mm2, slow_qword);                            // 0x199c03 [esi+0x18] = old slow_filter
-            mm4 = pslldi(mm4, 0x10);                                  // 0x199c07
-            mm0c = pmullw(mm0c, mm6c_cmp);                            // 0x199c15
-            mm6 = 0;                                                  // 0x199c18
-            mm4 = psrldi(mm4, 0x10);                                  // 0x199c1b
-            mm2 = paddsw(mm2, mm0c);                                  // 0x199c1f
-            mm1 |= mm4;                                               // 0x199c22
-            mm2 = psrawi(mm2, 8);                                     // 0x199c25
+            new_step_mag = stepout.wrapping_add(edi_step) >> 8; // 0x199bcd..0x199bd6 ebx s>>= 8
+            new_step_mag = new_step_mag.clamp(0x10F, 0xA00); // 0x199bd6..0x199be5
+            mm2 = MC_2AEFF0; // 0x199bed
+            mm1 = psradi(mm1, 8); // 0x199bf4
+            mm0c |= MC_2AEFE8; // 0x199bf8
+            mm1 = pslldi(mm1, 0x10); // 0x199bff
+            mm2 = pmullw(mm2, slow_qword); // 0x199c03 [esi+0x18] = old slow_filter
+            mm4 = pslldi(mm4, 0x10); // 0x199c07
+            mm0c = pmullw(mm0c, mm6c_cmp); // 0x199c15
+            mm6 = 0; // 0x199c18
+            mm4 = psrldi(mm4, 0x10); // 0x199c1b
+            mm2 = paddsw(mm2, mm0c); // 0x199c1f
+            mm1 |= mm4; // 0x199c22
+            mm2 = psrawi(mm2, 8); // 0x199c25
         }
 
         // Saturation ladder (0x199cf1..0x199d3e), shared by both
         // branches. mm2 ends up written to coef_lo; mm1 going in is
         // the per-branch LMS chain output.
         let new_slow_qword = mm2;
-        let mm4_lad: u64 = 0x7cff_0000u32 as u64;                     // 0x199cf5 mm4 = zx.q(eax)
-        let mut mm2l = mm1;                                           // 0x199cf8
-        let mut mm1l = punpcklwd(mm1, mm6);                           // 0x199cfb
-        mm2l = paddsw(mm2l, mm4_lad);                                 // 0x199cfe
-        let mm5_lad: u64 = 0x8300_0000u32 as u64;                     // 0x199d01 mm5 = zx.q(ebx)
-        mm1l = psrlqi(mm1l, 0x20);                                    // 0x199d09
-        mm2l = psubsw(mm2l, mm4_lad);                                 // 0x199d0d
-        mm2l = paddsw(mm2l, mm5_lad);                                 // 0x199d13
-        let mm1d: i32 = lo32(mm1l);                                   // 0x199d16 ebx = mm1.d
-        mm2l = psubsw(mm2l, mm5_lad);                                 // 0x199d19
-        let ecx_clamp: i32 = 0x3c0i32.wrapping_sub(mm1d);             // 0x199d1c
-        let edx_clamp: i32 = 0x7fffi32.wrapping_sub(ecx_clamp);       // 0x199d23
-        let mm5_lad2: u64 = edx_clamp as u32 as u64;                  // 0x199d27 mm5 = zx.q(edx)
-        let prev_dot1 = state.prev_hi_dot;                            // 0x199d2a eax = [esi+8].d
-        mm2l = paddsw(mm2l, mm5_lad2);                                // 0x199d2d
-        mm2l = psubsw(mm2l, mm5_lad2);                                // 0x199d33
+        let mm4_lad: u64 = 0x7cff_0000u32 as u64; // 0x199cf5 mm4 = zx.q(eax)
+        let mut mm2l = mm1; // 0x199cf8
+        let mut mm1l = punpcklwd(mm1, mm6); // 0x199cfb
+        mm2l = paddsw(mm2l, mm4_lad); // 0x199cfe
+        let mm5_lad: u64 = 0x8300_0000u32 as u64; // 0x199d01 mm5 = zx.q(ebx)
+        mm1l = psrlqi(mm1l, 0x20); // 0x199d09
+        mm2l = psubsw(mm2l, mm4_lad); // 0x199d0d
+        mm2l = paddsw(mm2l, mm5_lad); // 0x199d13
+        let mm1d: i32 = lo32(mm1l); // 0x199d16 ebx = mm1.d
+        mm2l = psubsw(mm2l, mm5_lad); // 0x199d19
+        let ecx_clamp: i32 = 0x3c0i32.wrapping_sub(mm1d); // 0x199d1c
+        let edx_clamp: i32 = 0x7fffi32.wrapping_sub(ecx_clamp); // 0x199d23
+        let mm5_lad2: u64 = edx_clamp as u32 as u64; // 0x199d27 mm5 = zx.q(edx)
+        let prev_dot1 = state.prev_hi_dot; // 0x199d2a eax = [esi+8].d
+        mm2l = paddsw(mm2l, mm5_lad2); // 0x199d2d
+        mm2l = psubsw(mm2l, mm5_lad2); // 0x199d33
 
         // Commit final state writes (0x199ce1 / 0x199bea / 0x199d36..).
         state.step_magnitude = new_step_mag;
-        state.prev_prev_hi_dot = prev_dot1;                           // 0x199d36 [esi+0xc] = old [esi+8]
-        state.prev_hi_dot = var_8_dot_hi;                             // 0x199d3a [esi+8] = var_8_1
-        let cl_lo_new = lo32(mm2l) as u32;                            // 0x199d3e [esi+0x10].d = mm2.d
+        state.prev_prev_hi_dot = prev_dot1; // 0x199d36 [esi+0xc] = old [esi+8]
+        state.prev_hi_dot = var_8_dot_hi; // 0x199d3a [esi+8] = var_8_1
+        let cl_lo_new = lo32(mm2l) as u32; // 0x199d3e [esi+0x10].d = mm2.d
         state.coef_lo = [cl_lo_new as i16, (cl_lo_new >> 16) as i16];
         state.coef_hi = lanes_i16(new_slow_qword);
         let hp_lanes = lanes_i16(new_hp_dword as u64);
@@ -1698,7 +1697,10 @@ pub mod codec8 {
         let mut written = 0usize;
         let mut src = 0usize;
         while written < count {
-            assert!(src + 8 <= input.len(), "unpack_nibbles_4bit: input exhausted");
+            assert!(
+                src + 8 <= input.len(),
+                "unpack_nibbles_4bit: input exhausted"
+            );
             let lo = u32::from_le_bytes(input[src..src + 4].try_into().unwrap()) as u64;
             let hi = u32::from_le_bytes(input[src + 4..src + 8].try_into().unwrap()) as u64;
             let qword = (lo << 32) | hi;
@@ -1762,9 +1764,7 @@ pub mod codec8 {
         if at + HEADER_BYTES > bytes.len() {
             return false;
         }
-        let read = |o: usize| u32::from_le_bytes(
-            bytes[at + o..at + o + 4].try_into().unwrap(),
-        );
+        let read = |o: usize| u32::from_le_bytes(bytes[at + o..at + o + 4].try_into().unwrap());
         let codec = read(0x00);
         let block = read(0x10);
         let channels = read(0x14);
@@ -1773,7 +1773,10 @@ pub mod codec8 {
         codec == CODEC_ID
             && block == 0x600
             && (channels == 1 || channels == 2)
-            && matches!(rate, 8000 | 11025 | 16000 | 22050 | 32000 | 36000 | 44100 | 48000)
+            && matches!(
+                rate,
+                8000 | 11025 | 16000 | 22050 | 32000 | 36000 | 44100 | 48000
+            )
             && init == 1280
     }
 
@@ -1842,9 +1845,7 @@ pub mod codec8 {
         let mut banks = Vec::new();
         let mut offset = 0usize;
         while offset + HEADER_BYTES <= file_bytes.len() {
-            let codec_id = u32::from_le_bytes(
-                file_bytes[offset..offset + 4].try_into().unwrap(),
-            );
+            let codec_id = u32::from_le_bytes(file_bytes[offset..offset + 4].try_into().unwrap());
             if codec_id != CODEC_ID {
                 break;
             }
@@ -2071,16 +2072,18 @@ pub mod codec8 {
         #[test]
         #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
         fn whole_file_matches_engine() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
-                .expect("trace file");
-            let trace: serde_json::Value =
-                serde_json::from_slice(&raw).expect("parse");
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
+            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
             let calls = trace["calls"].as_array().expect("calls");
             if calls.is_empty() {
                 return;
             }
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
-                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
             let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
             if subtype != 1 {
                 eprintln!("trace is not mono LS2 (subtype={subtype}); skipping whole-file test");
@@ -2090,15 +2093,22 @@ pub mod codec8 {
             // matching the first call's block_buffer head against
             // the candidate file on disc.
             let first_bb: Vec<u8> = calls[0]["block_buffer"]
-                .as_array().unwrap()
+                .as_array()
+                .unwrap()
                 .iter()
                 .map(|v| v.as_u64().unwrap() as u8)
                 .collect();
             let head_size = 256.min(first_bb.len());
             let candidate = "/Users/lander/Downloads/Tom Clancy's Splinter Cell \
                              (Sep 13, 2002 prototype)/dumped/Sounds/ENGLISH/1_1_0.LS2";
-            let Ok(file_bytes) = std::fs::read(candidate) else { return };
-            if file_bytes.windows(head_size).position(|w| w == &first_bb[..head_size]).is_none() {
+            let Ok(file_bytes) = std::fs::read(candidate) else {
+                return;
+            };
+            if file_bytes
+                .windows(head_size)
+                .position(|w| w == &first_bb[..head_size])
+                .is_none()
+            {
                 return;
             }
             // Build the engine-expected PCM from the captures'
@@ -2106,12 +2116,14 @@ pub mod codec8 {
             const VALID_PER_CALL: usize = 1536;
             let mut expected = Vec::new();
             for c in calls {
-                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let pcm_b: Vec<u8> = c["pcm_output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
                 for i in 0..VALID_PER_CALL {
-                    expected.push(i16::from_le_bytes([
-                        pcm_b[2*i], pcm_b[2*i + 1],
-                    ]));
+                    expected.push(i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]));
                 }
             }
             // Decode the on-disc file via the real decoder. Patch
@@ -2121,9 +2133,13 @@ pub mod codec8 {
             let mut patched = file_bytes.clone();
             patched[0x04..0x08].copy_from_slice(&(expected.len() as u32).to_le_bytes());
             let got = decode_bank(&patched).expect("decode");
-            assert_eq!(got.len(), expected.len(),
+            assert_eq!(
+                got.len(),
+                expected.len(),
                 "decoded len {} != expected len {}",
-                got.len(), expected.len());
+                got.len(),
+                expected.len()
+            );
             let mut diffs = Vec::new();
             for i in 0..expected.len() {
                 if got[i] != expected[i] {
@@ -2132,8 +2148,10 @@ pub mod codec8 {
                     }
                 }
             }
-            assert!(diffs.is_empty(),
-                "whole-file pcm mismatches at sample indices: first 8 = {diffs:?}");
+            assert!(
+                diffs.is_empty(),
+                "whole-file pcm mismatches at sample indices: first 8 = {diffs:?}"
+            );
         }
 
         /// Validate the full decoder pipeline (unpack + per-nibble
@@ -2148,14 +2166,16 @@ pub mod codec8 {
         #[test]
         #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
         fn pcm_matches_engine_output() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
-                .expect("trace file");
-            let trace: serde_json::Value =
-                serde_json::from_slice(&raw).expect("parse");
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
+            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
             let calls = trace["calls"].as_array().expect("calls");
             assert!(!calls.is_empty());
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
-                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
             let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
             if subtype != 1 {
                 eprintln!("trace is not mono LS2 (subtype={subtype}); skipping mono pcm test");
@@ -2173,15 +2193,27 @@ pub mod codec8 {
             const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
             let mut total_mismatch_calls = 0usize;
             for (call_idx, c) in calls.iter().enumerate() {
-                let block: Vec<u8> = c["block_buffer"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
-                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
-                let csentry: Vec<u8> = c["channel_state_entry"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let block: Vec<u8> = c["block_buffer"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let pcm_b: Vec<u8> = c["pcm_output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let csentry: Vec<u8> = c["channel_state_entry"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
                 let mut expected_pcm = vec![0i16; pcm_b.len() / 2];
                 for i in 0..expected_pcm.len() {
-                    expected_pcm[i] = i16::from_le_bytes([pcm_b[2*i], pcm_b[2*i + 1]]);
+                    expected_pcm[i] = i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]);
                 }
                 let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
                 unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
@@ -2202,13 +2234,19 @@ pub mod codec8 {
                 }
                 if !diffs.is_empty() {
                     total_mismatch_calls += 1;
-                    eprintln!("call {call_idx}: {} mismatches; first 5 = {:?}",
-                        diffs.len(), diffs);
+                    eprintln!(
+                        "call {call_idx}: {} mismatches; first 5 = {:?}",
+                        diffs.len(),
+                        diffs
+                    );
                 }
             }
-            assert_eq!(total_mismatch_calls, 0,
+            assert_eq!(
+                total_mismatch_calls,
+                0,
                 "outer-call pcm mismatches: {total_mismatch_calls} / {}",
-                calls.len());
+                calls.len()
+            );
         }
 
         /// Hypothesis test for codec_id=8 subtype-2 stereo music
@@ -2224,15 +2262,17 @@ pub mod codec8 {
         #[test]
         #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json with stereo music captures"]
         fn stereo_pcm_matches_engine_output() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json")
-                .expect("trace file");
-            let trace: serde_json::Value =
-                serde_json::from_slice(&raw).expect("parse");
+            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
+            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
             let calls = trace["calls"].as_array().expect("calls");
             assert!(!calls.is_empty());
             // Skip if these aren't stereo music captures (codec_state[+0x4c] != 2).
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"].as_array().unwrap()
-                .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
             let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
             if subtype != 2 {
                 eprintln!("trace is not stereo music (subtype={subtype}); skipping");
@@ -2243,15 +2283,27 @@ pub mod codec8 {
             const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
             let mut total_mismatch_calls = 0usize;
             for (call_idx, c) in calls.iter().enumerate() {
-                let block: Vec<u8> = c["block_buffer"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
-                let pcm_b: Vec<u8> = c["pcm_output"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
-                let csentry: Vec<u8> = c["channel_state_entry"].as_array().unwrap()
-                    .iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                let block: Vec<u8> = c["block_buffer"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let pcm_b: Vec<u8> = c["pcm_output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
+                let csentry: Vec<u8> = c["channel_state_entry"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8)
+                    .collect();
                 let mut expected = vec![0i16; VALID_PCM];
                 for i in 0..VALID_PCM {
-                    expected[i] = i16::from_le_bytes([pcm_b[2*i], pcm_b[2*i + 1]]);
+                    expected[i] = i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]);
                 }
                 let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
                 unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
@@ -2275,9 +2327,12 @@ pub mod codec8 {
                     eprintln!("call {call_idx}: first 5 = {:?}", diffs);
                 }
             }
-            assert_eq!(total_mismatch_calls, 0,
+            assert_eq!(
+                total_mismatch_calls,
+                0,
                 "stereo pcm mismatches: {total_mismatch_calls} / {}",
-                calls.len());
+                calls.len()
+            );
         }
 
         /// Replay the captured QEMU trace through the Rust kernel and
@@ -2290,20 +2345,21 @@ pub mod codec8 {
         fn byte_perfect_against_qemu_trace() {
             let path = "/var/tmp/sc1_proto_audio_trace.json";
             let raw = std::fs::read(path).expect("trace file");
-            let trace: serde_json::Value =
-                serde_json::from_slice(&raw).expect("trace parse");
+            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("trace parse");
             let calls = trace["kernel_captures"].as_array().expect("calls");
             assert!(!calls.is_empty(), "trace has no calls");
             let mut mismatches: Vec<(usize, u8, [usize; 8])> = Vec::new();
             for (i, c) in calls.iter().enumerate() {
                 let nib = c["stack4"].as_u64().unwrap() as u8;
                 let entry: Vec<u8> = c["state_at_stack8"]
-                    .as_array().unwrap()
+                    .as_array()
+                    .unwrap()
                     .iter()
                     .map(|v| v.as_u64().unwrap() as u8)
                     .collect();
                 let truth: Vec<u8> = c["state_at_stack8_post"]
-                    .as_array().unwrap()
+                    .as_array()
+                    .unwrap()
                     .iter()
                     .map(|v| v.as_u64().unwrap() as u8)
                     .collect();
@@ -2355,16 +2411,32 @@ pub mod codec8 {
             let entry_hex = "00000000fe09000051fcffff3cfeffff6b0625fd000000007f00530000001100b79d66c600000000c4e9c4e914f3a1fc6700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
             let entry: Vec<u8> = (0..entry_hex.len())
                 .step_by(2)
-                .map(|i| u8::from_str_radix(&entry_hex[i..i+2], 16).unwrap())
+                .map(|i| u8::from_str_radix(&entry_hex[i..i + 2], 16).unwrap())
                 .collect();
             let mut state = state_from_bytes(&entry);
-            eprintln!("pre:  step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
-                state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
-                state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
+            eprintln!(
+                "pre:  step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
+                state.step_magnitude,
+                state.prev_hi_dot,
+                state.prev_prev_hi_dot,
+                state.coef_lo,
+                state.coef_hi,
+                state.hist_pred,
+                state.hist_delta,
+                state.delta_save
+            );
             let sample = decode_nibble_4bit(&mut state, Nibble::new(1));
-            eprintln!("post: step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
-                state.step_magnitude, state.prev_hi_dot, state.prev_prev_hi_dot,
-                state.coef_lo, state.coef_hi, state.hist_pred, state.hist_delta, state.delta_save);
+            eprintln!(
+                "post: step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
+                state.step_magnitude,
+                state.prev_hi_dot,
+                state.prev_prev_hi_dot,
+                state.coef_lo,
+                state.coef_hi,
+                state.hist_pred,
+                state.hist_delta,
+                state.delta_save
+            );
             eprintln!("sample returned: {sample}");
             eprintln!("python sim expected: sample=27146; step=2558, prev_hi=-943, cl=(1643,-731)");
         }
@@ -2421,8 +2493,7 @@ pub mod ss2 {
     /// Cycle-0 byte offset of each voice's header (and ADPCM start
     /// at +VOICE_HEADER_BYTES).
     fn cycle0_voice_header_offset(voice: usize) -> usize {
-        WRAPPER_BYTES
-            + CYCLE0_VOICE_REGION_SIZES.iter().take(voice).sum::<usize>()
+        WRAPPER_BYTES + CYCLE0_VOICE_REGION_SIZES.iter().take(voice).sum::<usize>()
     }
 
     /// One parsed bank. Holds a slice into the bank's bytes plus the
@@ -2471,8 +2542,7 @@ pub mod ss2 {
                 let bonus_voice = cycle_idx % VOICES_PER_BANK;
                 let mut sizes = [361usize; VOICES_PER_BANK];
                 sizes[bonus_voice] += 1;
-                let off_within_cycle: usize =
-                    sizes.iter().take(voice).sum();
+                let off_within_cycle: usize = sizes.iter().take(voice).sum();
                 let chunk_start = cycle_start + off_within_cycle;
                 let chunk_end = chunk_start + sizes[voice];
                 if chunk_end > self.bytes.len() {
@@ -2500,18 +2570,14 @@ pub mod ss2 {
             if file_bytes.len() - cursor < WRAPPER_BYTES {
                 return Err("trailing bytes shorter than a wrapper");
             }
-            let magic_a = u32::from_le_bytes(
-                file_bytes[cursor..cursor + 4].try_into().unwrap(),
-            );
-            let codec_id = u32::from_le_bytes(
-                file_bytes[cursor + 4..cursor + 8].try_into().unwrap(),
-            );
+            let magic_a = u32::from_le_bytes(file_bytes[cursor..cursor + 4].try_into().unwrap());
+            let codec_id =
+                u32::from_le_bytes(file_bytes[cursor + 4..cursor + 8].try_into().unwrap());
             if magic_a != 2 || codec_id != 3 {
                 return Err("bank wrapper signature mismatch");
             }
             let bank_size = u32::from_le_bytes(
-                file_bytes[cursor + BANK_SIZE_OFFSET
-                    ..cursor + BANK_SIZE_OFFSET + 4]
+                file_bytes[cursor + BANK_SIZE_OFFSET..cursor + BANK_SIZE_OFFSET + 4]
                     .try_into()
                     .unwrap(),
             ) as usize;
@@ -2627,7 +2693,12 @@ pub mod ss2 {
 /// itself a fixup-relative pointer-graph. See AUDIO.md for the next
 /// layer.
 pub mod sm2 {
-    use std::io::{self, Read, Seek, SeekFrom};
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
+    use std::io::{
+        self,
+    };
 
     pub const VERSION: u32 = 7;
     pub const RECORD_BYTES: usize = 0x30;
@@ -2748,18 +2819,12 @@ pub mod sm2 {
                 "descriptor too small for top header",
             ));
         }
-        let array_a_off =
-            u32::from_le_bytes(descriptor[0x04..0x08].try_into().unwrap()) as usize;
-        let array_a_cnt =
-            u32::from_le_bytes(descriptor[0x08..0x0c].try_into().unwrap()) as usize;
-        let array_b_off =
-            u32::from_le_bytes(descriptor[0x0c..0x10].try_into().unwrap()) as usize;
-        let array_b_cnt =
-            u32::from_le_bytes(descriptor[0x10..0x14].try_into().unwrap());
-        let array_c_off =
-            u32::from_le_bytes(descriptor[0x14..0x18].try_into().unwrap()) as usize;
-        let array_c_cnt =
-            u32::from_le_bytes(descriptor[0x18..0x1c].try_into().unwrap());
+        let array_a_off = u32::from_le_bytes(descriptor[0x04..0x08].try_into().unwrap()) as usize;
+        let array_a_cnt = u32::from_le_bytes(descriptor[0x08..0x0c].try_into().unwrap()) as usize;
+        let array_b_off = u32::from_le_bytes(descriptor[0x0c..0x10].try_into().unwrap()) as usize;
+        let array_b_cnt = u32::from_le_bytes(descriptor[0x10..0x14].try_into().unwrap());
+        let array_c_off = u32::from_le_bytes(descriptor[0x14..0x18].try_into().unwrap()) as usize;
+        let array_c_cnt = u32::from_le_bytes(descriptor[0x18..0x1c].try_into().unwrap());
 
         // Build a sorted (seq_id, rate_ratio) view of array_a so we can
         // binary-search for an LS2-tagged sub_a entry's nearest array_a
@@ -2786,7 +2851,8 @@ pub mod sm2 {
                         .unwrap(),
                 );
                 let r = u32::from_le_bytes(
-                    descriptor[off + ARRAY_A_OFFSET_RATE_RATIO..off + ARRAY_A_OFFSET_RATE_RATIO + 4]
+                    descriptor
+                        [off + ARRAY_A_OFFSET_RATE_RATIO..off + ARRAY_A_OFFSET_RATE_RATIO + 4]
                         .try_into()
                         .unwrap(),
                 );
@@ -2822,17 +2888,13 @@ pub mod sm2 {
         }
 
         let audio_base = record.data_offset as u64 + record.data_size as u64;
-        let audio_end = next_record_offset
-            .map(|n| n as u64)
-            .unwrap_or(u64::MAX);
+        let audio_end = next_record_offset.map(|n| n as u64).unwrap_or(u64::MAX);
 
         let mut entries: Vec<(u32, u32)> = Vec::with_capacity(sub_a_cnt);
         for i in 0..sub_a_cnt {
             let off = sub_a_off + i * 8;
-            let seq_id =
-                u32::from_le_bytes(descriptor[off..off + 4].try_into().unwrap());
-            let rel =
-                u32::from_le_bytes(descriptor[off + 4..off + 8].try_into().unwrap());
+            let seq_id = u32::from_le_bytes(descriptor[off..off + 4].try_into().unwrap());
+            let rel = u32::from_le_bytes(descriptor[off + 4..off + 8].try_into().unwrap());
             entries.push((seq_id, rel));
         }
 
@@ -2897,8 +2959,8 @@ pub mod sm2 {
                                 .unwrap(),
                         );
                         let ch = if ch == 1 || ch == 2 { ch } else { 1 };
-                        let name_bytes = &entry
-                            [ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
+                        let name_bytes =
+                            &entry[ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
                         let is_ls2 = &name_bytes[13..16] == b"LS2";
                         let name_end = name_bytes
                             .iter()
@@ -2931,10 +2993,20 @@ pub mod sm2 {
                         };
                         (sr, ch, name, is_ls2)
                     } else {
-                        (super::units::SampleRate::new(22050), 1u16, String::new(), false)
+                        (
+                            super::units::SampleRate::new(22050),
+                            1u16,
+                            String::new(),
+                            false,
+                        )
                     }
                 } else {
-                    (super::units::SampleRate::new(22050), 1u16, String::new(), false)
+                    (
+                        super::units::SampleRate::new(22050),
+                        1u16,
+                        String::new(),
+                        false,
+                    )
                 };
 
             out.push(SoundEntry {
@@ -2973,7 +3045,10 @@ pub mod sm2 {
             let data_offset = u32::from_le_bytes(buf[0x08..0x0c].try_into().unwrap());
             let data_size = u32::from_le_bytes(buf[0x0c..0x10].try_into().unwrap());
             let name_bytes = &buf[NAME_OFFSET_IN_RECORD..];
-            let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(NAME_BYTES);
+            let name_end = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(NAME_BYTES);
             let name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
             records.push(Record {
                 data_offset,

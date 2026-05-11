@@ -1,14 +1,22 @@
-use std::io::{self, SeekFrom, Write};
-
-use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
-use tracing::{Level, debug, span, trace};
-
-use crate::{
-    de::RcLinker,
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-    ser::write_packed_int,
+use std::io::SeekFrom;
+use std::io::Write;
+use std::io::{
+    self,
 };
+
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use byteorder::WriteBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
+
+use crate::de::RcLinker;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
+use crate::ser::write_packed_int;
 
 /// Mirrors SC's `UStruct::SerializeExpr` post-call peek-and-rewind
 /// (`Core_retail.dll` `0x1012f3c0`, peek block `0x1012f41a..0x1012f481`):
@@ -192,8 +200,7 @@ where
 
     macro_rules! sub_expr {
         () => {{
-            let sub =
-                deserialize_expr::<E, _>(runtime, linker, reader, bytes_read, script_size)?;
+            let sub = deserialize_expr::<E, _>(runtime, linker, reader, bytes_read, script_size)?;
             assert!(!sub.is_empty());
             sub
         }};
@@ -680,14 +687,18 @@ impl TryFrom<u8> for ExprToken {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::{HashMap, HashSet};
-    use std::io::{Cursor, Seek};
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::io::Cursor;
+    use std::io::Seek;
     use std::rc::Rc;
 
     use byteorder::LittleEndian;
 
     use super::*;
-    use crate::de::{Linker, PackageHeader, RawPackage};
+    use crate::de::Linker;
+    use crate::de::PackageHeader;
+    use crate::de::RawPackage;
     use crate::reader::LinReader;
     use crate::runtime::UnrealRuntime;
 
@@ -781,10 +792,7 @@ mod tests {
     #[test]
     fn serialize_expr_emits_canonical_bytes() {
         // [LocalVariable, Object(packed_int 0x10)]
-        let exprs = vec![
-            Expr::Token(ExprToken::LocalVariable),
-            Expr::Object(0x10),
-        ];
+        let exprs = vec![Expr::Token(ExprToken::LocalVariable), Expr::Object(0x10)];
         let mut out = Vec::new();
         serialize_expr::<_, LittleEndian>(&exprs, &mut out).unwrap();
         // Token 0x00, then packed_int 0x10:
@@ -792,10 +800,7 @@ mod tests {
         assert_eq!(out, vec![0x00, 0x10]);
 
         // IntConst 0x12345678
-        let exprs = vec![
-            Expr::Token(ExprToken::IntConst),
-            Expr::Int(0x12345678),
-        ];
+        let exprs = vec![Expr::Token(ExprToken::IntConst), Expr::Int(0x12345678)];
         let mut out = Vec::new();
         serialize_expr::<_, LittleEndian>(&exprs, &mut out).unwrap();
         assert_eq!(out, vec![0x1D, 0x78, 0x56, 0x34, 0x12]);
@@ -808,10 +813,7 @@ mod tests {
 
         // Native dispatch (single byte, FirstNative+) with no params
         // (just EndFunctionParms after the dispatch byte).
-        let exprs = vec![
-            Expr::Native(0x80),
-            Expr::Token(ExprToken::EndFunctionParms),
-        ];
+        let exprs = vec![Expr::Native(0x80), Expr::Token(ExprToken::EndFunctionParms)];
         let mut out = Vec::new();
         serialize_expr::<_, LittleEndian>(&exprs, &mut out).unwrap();
         assert_eq!(out, vec![0x80, 0x16]);

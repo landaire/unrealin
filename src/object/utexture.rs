@@ -1,18 +1,28 @@
-use std::io::{self, SeekFrom};
+use std::io::SeekFrom;
+use std::io::{
+    self,
+};
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span, trace};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
 use std::io::Seek;
 
-use crate::{
-    de::{ExportIndex, Linker, RcLinker},
-    object::{
-        BodyKind, BodyOffsetPatch, DeserializeUnrealObject, SerializeUnrealObject, uobject::Object,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::object::BodyKind;
+use crate::object::BodyOffsetPatch;
+use crate::object::DeserializeUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// SC's `UTexture::Serialize` (Engine_demo `0x103067b2` -> `0x104f9890`):
 ///   - `UMaterial::Serialize` -> `UObject::Serialize` (tagged-property loop).

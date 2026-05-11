@@ -21,22 +21,27 @@
 //!   2. The chain walker double-counts super-class properties.
 //!   3. A variable-length property kind is being treated as fixed-size.
 
-use std::{io, rc::Rc};
+use std::io;
+use std::rc::Rc;
 
 use byteorder::ByteOrder;
-use tracing::{debug, trace};
+use tracing::debug;
+use tracing::trace;
 
-use crate::{
-    de::RcLinker,
-    object::{
-        DeserializeUnrealObject, RcUnrealObject, UObjectKind,
-        builtins::{ArrayProperty, Field, Property, Struct, StructProperty},
-        internal::{fname::FName, property::PropertyTag},
-        uobject::read_tag_value,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::builtins::ArrayProperty;
+use crate::object::builtins::Field;
+use crate::object::builtins::Property;
+use crate::object::builtins::Struct;
+use crate::object::builtins::StructProperty;
+use crate::object::internal::property::PropertyTag;
+use crate::object::uobject::read_tag_value;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 const NAME_BYTE_PROPERTY: u8 = 1;
 const NAME_INT_PROPERTY: u8 = 2;
@@ -157,9 +162,7 @@ pub(crate) fn collect_struct_properties_from_parts(
 /// `try_borrow` to skip if `struct_obj` is currently mutably borrowed
 /// (rare; happens when a nested class load reaches back to an outer
 /// class on the deserialize stack).
-pub(crate) fn collect_struct_properties(
-    struct_obj: &RcUnrealObject,
-) -> Vec<RcUnrealObject> {
+pub(crate) fn collect_struct_properties(struct_obj: &RcUnrealObject) -> Vec<RcUnrealObject> {
     let Ok(inner) = struct_obj.try_borrow() else {
         tracing::debug!(
             "collect_struct_properties: struct at {:#x} is mutably borrowed; returning empty chain",

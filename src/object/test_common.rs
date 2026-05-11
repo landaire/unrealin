@@ -1,4 +1,5 @@
-use crate::object::{UObjectKind, UnrealObject};
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
 
 pub fn test_object_is_a(
     test_obj: &dyn UnrealObject,

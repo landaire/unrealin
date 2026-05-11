@@ -1,13 +1,15 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, umesh::Mesh},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::umesh::Mesh;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirrors `ULodMesh::Serialize` (Engine_demo `0x10417bf0`).
 /// Sequence per BinAssist decompile (the SC xbe analog has stripped
@@ -26,8 +28,8 @@ pub struct LodMesh {
 
     pub field_5c: u32,
     pub field_60: u32,
-    pub field_64_array: Vec<u8>,    // TArray<u32>, 4 B/elt (sub_10418260)
-    pub faces_38b: Vec<u8>,         // TArray<38B-on-disk> (sub_104183f0)
+    pub field_64_array: Vec<u8>, // TArray<u32>, 4 B/elt (sub_10418260)
+    pub faces_38b: Vec<u8>,      // TArray<38B-on-disk> (sub_104183f0)
     pub materials: Vec<Option<RcUnrealObject>>, // TArray<UObject*> (sub_104180e0)
     pub field_88: u32,
     pub field_8c: u32,
@@ -38,12 +40,12 @@ pub struct LodMesh {
     pub field_a0: u32,
     pub field_a4: u32,
     pub field_a8: u32,
-    pub field_ac_array: Vec<u8>,    // TArray<u16>
-    pub field_b8_array: Vec<u8>,    // TArray<u16>
-    pub field_c4_array: Vec<u8>,    // TArray<{4 u16}=8B>
-    pub field_d0_array: Vec<u8>,    // TArray<u16>
-    pub field_dc_array: Vec<u8>,    // TArray<10B-on-disk>
-    pub field_e8_array: Vec<u8>,    // TArray<{2 u32}=8B>
+    pub field_ac_array: Vec<u8>, // TArray<u16>
+    pub field_b8_array: Vec<u8>, // TArray<u16>
+    pub field_c4_array: Vec<u8>, // TArray<{4 u16}=8B>
+    pub field_d0_array: Vec<u8>, // TArray<u16>
+    pub field_dc_array: Vec<u8>, // TArray<10B-on-disk>
+    pub field_e8_array: Vec<u8>, // TArray<{2 u32}=8B>
     pub field_f4: u32,
     pub field_108: u32,
     pub field_f8: u32,
@@ -88,7 +90,8 @@ impl DeserializeUnrealObject for LodMesh {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, _>(runtime, linker, reader)?;
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)?;
 
         self.field_5c = reader.read_u32::<E>()?;
         self.field_60 = reader.read_u32::<E>()?;

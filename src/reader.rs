@@ -1,20 +1,26 @@
-use std::{
-    array,
-    cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
-    io::{self, Read, Seek},
-    rc::Rc,
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::io::Read;
+use std::io::Seek;
+use std::io::{
+    self,
 };
+use std::rc::Rc;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span, trace};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    common::IoOp,
-    de::{ExportIndex, ImportIndex, Linker, RcLinker},
-    object::{DeserializeUnrealObject, RcUnrealObject, UnrealObject},
-    runtime::{LoadKind, UnrealRuntime},
-};
+use crate::common::IoOp;
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::runtime::LoadKind;
+use crate::runtime::UnrealRuntime;
 
 pub trait UnrealReadExt: LinRead + Sized {
     fn read_object<E>(
@@ -581,7 +587,9 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                         .pop_front()
                         .expect("conducting an IO op but there are no more IO ops")
                     {
-                        IoOp::Seek { to, from, file_ptr, .. } => {
+                        IoOp::Seek {
+                            to, from, file_ptr, ..
+                        } => {
                             next_file_ptr = file_ptr;
                             // Not checking `from` because there's some weird nuance with EOF
                             if from != self.pos || to != pos {
@@ -605,7 +613,12 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                                         .map(|linker| {
                                             let linker = linker.borrow();
 
-                                            format!("{}: pos_saved={:#X} src_start={:#X}", linker.name, linker.reader_offset, linker.source_start)
+                                            format!(
+                                                "{}: pos_saved={:#X} src_start={:#X}",
+                                                linker.name,
+                                                linker.reader_offset,
+                                                linker.source_start
+                                            )
                                         })
                                         .collect::<Vec<_>>()
                                         .join(", "),
@@ -614,7 +627,8 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                             }
                             self.trace_ops_consumed += 1;
                             if let Some(expected) = self.expected_source_per_op.as_ref()
-                                && let Some(&exp) = expected.get(self.trace_ops_consumed as usize - 1)
+                                && let Some(&exp) =
+                                    expected.get(self.trace_ops_consumed as usize - 1)
                             {
                                 let drift = self.source_consumed as i64 - exp as i64;
                                 if drift != self.last_drift {
@@ -643,7 +657,10 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                                 });
                             panic!(
                                 "doing a seek from {:#X} to {:#X}. Bytes until next seek: {bytes_until_next_seek:#X}. Expected op: {other:#X?}. source_consumed_per_source: {:#X?}, current_source_idx: {}",
-                                self.pos, pos, self.source_consumed_per_source, self.current_source_idx
+                                self.pos,
+                                pos,
+                                self.source_consumed_per_source,
+                                self.current_source_idx
                             )
                         }
                     }
@@ -877,10 +894,9 @@ where
                 .checked_add(1)
                 .expect("linker_header_depth overflow");
         } else {
-            self.linker_header_depth = self
-                .linker_header_depth
-                .checked_sub(1)
-                .expect("linker_header_depth underflow: unbalanced set_reading_linker_header(false)");
+            self.linker_header_depth = self.linker_header_depth.checked_sub(1).expect(
+                "linker_header_depth underflow: unbalanced set_reading_linker_header(false)",
+            );
         }
     }
 
@@ -912,7 +928,9 @@ where
         let mut last_file_ptr: u32 = 0;
         while remove_len < buf.len() {
             match io_ops.pop_front().expect("no io op?") {
-                IoOp::Seek { from, to, file_ptr, .. } => {
+                IoOp::Seek {
+                    from, to, file_ptr, ..
+                } => {
                     let stack = self
                         .linker
                         .iter()
@@ -976,10 +994,7 @@ where
         }
         if self.linker_header_depth == 0 {
             let mut ops = self.io_ops.borrow_mut();
-            match ops
-                .pop_front()
-                .expect("read_aliased: no io op queued")
-            {
+            match ops.pop_front().expect("read_aliased: no io op queued") {
                 IoOp::Read { len, file_ptr, .. } => {
                     assert_eq!(
                         buf.len() as u64,

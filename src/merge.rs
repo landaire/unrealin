@@ -8,14 +8,22 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{self, BufWriter, Cursor, Write};
+use std::io::BufWriter;
+use std::io::Cursor;
+use std::io::Write;
+use std::io::{
+    self,
+};
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use byteorder::LittleEndian;
 
-use crate::de::{LinSource, Linker, LinearFileDecoder};
+use crate::de::LinSource;
+use crate::de::LinearFileDecoder;
+use crate::de::Linker;
 
 #[derive(Default)]
 pub struct MergedLinkers {
@@ -91,7 +99,10 @@ fn is_named(path: &Path, name: &str) -> bool {
 /// `(common.lin, session.lin)` for every `*.lin` entry that is not
 /// `common.lin`. Empty if `common.lin` is absent.
 pub fn pairs_from_map_dir_entries(entries: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
-    let common = match entries.iter().find(|p| is_lin(p) && is_named(p, "common.lin")) {
+    let common = match entries
+        .iter()
+        .find(|p| is_lin(p) && is_named(p, "common.lin"))
+    {
         Some(c) => c.clone(),
         None => return Vec::new(),
     };
@@ -184,8 +195,7 @@ fn index_traces(trace_dir: &Path) -> HashMap<String, PathBuf> {
             Some(n) => n,
             None => continue,
         };
-        if !(name == "reads.json"
-            || (name.starts_with("reads.json.") && !name.contains("unknown")))
+        if !(name == "reads.json" || (name.starts_with("reads.json.") && !name.contains("unknown")))
         {
             continue;
         }
@@ -235,7 +245,10 @@ fn level_basename_from_trace(path: &Path) -> Option<String> {
     None
 }
 
-fn locate_trace_for_pair(traces: &HashMap<String, PathBuf>, session_path: &Path) -> Option<PathBuf> {
+fn locate_trace_for_pair(
+    traces: &HashMap<String, PathBuf>,
+    session_path: &Path,
+) -> Option<PathBuf> {
     let session_stem = session_path
         .file_stem()
         .and_then(|s| s.to_str())?
@@ -396,10 +409,8 @@ fn run_pair(
             )
         })?;
         let reader = io::BufReader::new(f);
-        let mut metadata: crate::common::ExportedData =
-            serde_json::from_reader(reader).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("trace parse: {e}"))
-            })?;
+        let mut metadata: crate::common::ExportedData = serde_json::from_reader(reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("trace parse: {e}")))?;
         metadata
             .file_reads
             .iter_mut()
@@ -434,7 +445,8 @@ fn run_pair(
             || common_consumed * 2 < common_data_for_tail.len() as u64;
         if trace_mismatch {
             tracing::warn!(
-                ?session_path, ?trace_path,
+                ?session_path,
+                ?trace_path,
                 "trace replay incomplete (panicked={panicked} common={common_consumed}/{} session={session_consumed}/{}); falling back to --no-checked",
                 common_data_for_tail.len(),
                 session_data_for_tail.len(),
@@ -618,10 +630,16 @@ fn write_diagnostics(path: &Path, merged: &MergedLinkers) -> io::Result<()> {
     Ok(())
 }
 
-pub fn run_merge(game_dir: &Path, output_dir: &Path, trace_dir: Option<&Path>) -> io::Result<MergeReport> {
+pub fn run_merge(
+    game_dir: &Path,
+    output_dir: &Path,
+    trace_dir: Option<&Path>,
+) -> io::Result<MergeReport> {
     let pairs = discover_pairs(game_dir)?;
-    let mut report = MergeReport::default();
-    report.pairs_scheduled = pairs.len();
+    let mut report = MergeReport {
+        pairs_scheduled: pairs.len(),
+        ..MergeReport::default()
+    };
 
     let traces = trace_dir.map(index_traces).unwrap_or_default();
     if !traces.is_empty() {
@@ -881,9 +899,13 @@ pub fn fold_pair_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::de::{
-        CapturedBytes, GenerationInfo, Import, Name, ObjectExport, PackageHeader, RawPackage,
-    };
+    use crate::de::CapturedBytes;
+    use crate::de::GenerationInfo;
+    use crate::de::Import;
+    use crate::de::Name;
+    use crate::de::ObjectExport;
+    use crate::de::PackageHeader;
+    use crate::de::RawPackage;
 
     fn synth_header() -> PackageHeader {
         PackageHeader {
@@ -1020,7 +1042,10 @@ mod tests {
     fn fold_first_sighting_inserts_base() {
         let mut merged = MergedLinkers::new();
         let (linkers, fnames) = pair(
-            vec![("hud", synth_linker("HUD", 1, 0, 1, vec![(0, vec![0xAA, 0xBB])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 1, 0, 1, vec![(0, vec![0xAA, 0xBB])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &linkers, &fnames, "pair-A", "group-A");
@@ -1062,13 +1087,19 @@ mod tests {
     fn fold_first_wins_on_overlap_identical() {
         let mut merged = MergedLinkers::new();
         let (a_lns, a_fns) = pair(
-            vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
-            vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 4, 0, 4, vec![(0, vec![0xAA, 0xBB])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
@@ -1083,13 +1114,19 @@ mod tests {
     fn fold_records_mismatch_on_overlap_diverging() {
         let mut merged = MergedLinkers::new();
         let (a_lns, a_fns) = pair(
-            vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0x02, 0x03])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0x02, 0x03])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
-            vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0xFF, 0x03])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 4, 0, 4, vec![(1, vec![0x01, 0xFF, 0x03])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
@@ -1118,10 +1155,7 @@ mod tests {
         fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
-            vec![(
-                "hud",
-                synth_linker("HUD", 9, 0, 8, vec![(7, vec![0xFF])]),
-            )],
+            vec![("hud", synth_linker("HUD", 9, 0, 8, vec![(7, vec![0xFF])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
@@ -1135,7 +1169,10 @@ mod tests {
         assert!(l.captured.bodies.get(&0).is_none());
         assert_eq!(merged.table_skews.len(), 1);
         // origin_label moves to the promoted pair.
-        assert_eq!(merged.origin_labels.get("hud").map(String::as_str), Some("pair-B"));
+        assert_eq!(
+            merged.origin_labels.get("hud").map(String::as_str),
+            Some("pair-B")
+        );
     }
 
     #[test]
@@ -1144,10 +1181,7 @@ mod tests {
         // pair has a smaller stub. Keep the canonical, discard stub.
         let mut merged = MergedLinkers::new();
         let (a_lns, a_fns) = pair(
-            vec![(
-                "hud",
-                synth_linker("HUD", 9, 0, 8, vec![(7, vec![0xAA])]),
-            )],
+            vec![("hud", synth_linker("HUD", 9, 0, 8, vec![(7, vec![0xAA])]))],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
@@ -1164,7 +1198,10 @@ mod tests {
         // B's body at idx 0 is discarded.
         assert!(l.captured.bodies.get(&0).is_none());
         assert_eq!(merged.table_skews.len(), 1);
-        assert_eq!(merged.origin_labels.get("hud").map(String::as_str), Some("pair-A"));
+        assert_eq!(
+            merged.origin_labels.get("hud").map(String::as_str),
+            Some("pair-A")
+        );
     }
 
     #[test]
@@ -1182,10 +1219,7 @@ mod tests {
         let dummy: Rc<RefCell<dyn crate::object::UnrealObject>> =
             Rc::new(RefCell::new(crate::object::uobject::Object::default()));
         second.objects.insert(crate::de::ExportIndex(2), dummy);
-        let (b_lns, b_fns) = pair(
-            vec![("hud", second)],
-            vec![("hud", "Textures/HUD.utx")],
-        );
+        let (b_lns, b_fns) = pair(vec![("hud", second)], vec![("hud", "Textures/HUD.utx")]);
         fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");
 
         let l = merged.linkers["hud"].borrow();
@@ -1202,13 +1236,19 @@ mod tests {
         // label so write_variants emits a `<pkg>.012_PresidentialPalace.utx`.
         let mut merged = MergedLinkers::new();
         let (a_lns, a_fns) = pair(
-            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xBB])]))],
+            vec![(
+                "ESam",
+                synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xBB])]),
+            )],
             vec![("esam", "Animations/ESam.ukx")],
         );
         fold_pair_into(&mut merged, &a_lns, &a_fns, "menu.lin", "menu");
 
         let (b_lns, b_fns) = pair(
-            vec![("ESam", synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xCC])]))],
+            vec![(
+                "ESam",
+                synth_linker("ESam", 4, 0, 4, vec![(1, vec![0xAA, 0xCC])]),
+            )],
             vec![("esam", "Animations/ESam.ukx")],
         );
         fold_pair_into(
@@ -1270,7 +1310,10 @@ mod tests {
         fold_pair_into(&mut merged, &a_lns, &a_fns, "pair-A", "group-A");
 
         let (b_lns, b_fns) = pair(
-            vec![("hud", synth_linker("HUD", 4, 0, 4, vec![(2, vec![0xCC, 0xDD])]))],
+            vec![(
+                "hud",
+                synth_linker("HUD", 4, 0, 4, vec![(2, vec![0xCC, 0xDD])]),
+            )],
             vec![("hud", "Textures/HUD.utx")],
         );
         fold_pair_into(&mut merged, &b_lns, &b_fns, "pair-B", "group-B");

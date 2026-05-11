@@ -1,14 +1,16 @@
 use std::io;
 
 use byteorder::ByteOrder;
-use tracing::{Level, debug, span};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, ufield::Field},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::ufield::Field;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Debug, Default)]
 pub struct Const {

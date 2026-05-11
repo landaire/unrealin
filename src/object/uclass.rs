@@ -1,21 +1,27 @@
 use std::io;
 
-use crate::{
-    de::{ExportIndex, Linker, RcLinker},
-    object::{
-        BodyKind, DeserializeUnrealObject, RcUnrealObject, SerializeUnrealObject, UnrealObject,
-        internal::{
-            fdependency::FDependency, fname::FName, property::PropertyTag,
-            serialize_item::collect_struct_properties_from_parts,
-        },
-        uobject::read_tag_value,
-        ustate::State,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::object::BodyKind;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::UnrealObject;
+use crate::object::internal::fdependency::FDependency;
+use crate::object::internal::fname::FName;
+use crate::object::internal::property::PropertyTag;
+use crate::object::internal::serialize_item::collect_struct_properties_from_parts;
+use crate::object::uobject::read_tag_value;
+use crate::object::ustate::State;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span, trace};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
+use tracing::trace;
 
 #[derive(Default, Debug)]
 pub struct Class {
@@ -114,7 +120,11 @@ impl DeserializeUnrealObject for Class {
             "Class::deserialize: own+super property chain len={} (own_present={}, super_present={})",
             properties.len(),
             self.parent_object.parent_object.children.is_some(),
-            self.parent_object.parent_object.parent_object.super_field().is_some(),
+            self.parent_object
+                .parent_object
+                .parent_object
+                .super_field()
+                .is_some(),
         );
 
         debug!("default_tags");
@@ -125,10 +135,7 @@ impl DeserializeUnrealObject for Class {
             if tag.name.is_none(&linker.borrow()) {
                 break;
             }
-            trace!(
-                "tag value: type={} size={:#X}",
-                tag.property_type, tag.size
-            );
+            trace!("tag value: type={} size={:#X}", tag.property_type, tag.size);
             read_tag_value::<E, _>(&tag, &properties, runtime, linker, reader)?;
             self.default_tags.push(tag);
         }
@@ -139,7 +146,9 @@ impl DeserializeUnrealObject for Class {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

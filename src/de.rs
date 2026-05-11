@@ -1,29 +1,33 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, VecDeque},
-    io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom},
-    marker::PhantomData,
-    rc::{Rc, Weak},
-};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::io::Cursor;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::marker::PhantomData;
+use std::rc::Rc;
+use std::rc::Weak;
 
-use crate::{
-    object::{
-        DeserializeUnrealObject, ObjectFlags, RcUnrealObject, UObjectKind, UnrealObject,
-        builtins::*,
-    },
-    reader::{CheckedLinReader, LinRead, LinReader, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
-use byteorder::{ByteOrder, ReadBytesExt};
+use crate::object::RcUnrealObject;
+use crate::object::UnrealObject;
+use crate::reader::CheckedLinReader;
+use crate::reader::LinRead;
+use crate::reader::LinReader;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 use flate2::read::ZlibDecoder;
 use serde::Deserialize;
 use std::io;
 
+use crate::LIN_FILE_TABLE_TAG;
+use crate::PKG_TAG;
+use crate::common::ExportedData;
+use crate::common::IoOp;
 use crate::common::normalize_index;
-use crate::{
-    LIN_FILE_TABLE_TAG, PKG_TAG,
-    common::{ExportRead, ExportedData, IoOp},
-};
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct ImportIndex(usize);
@@ -111,9 +115,11 @@ impl Linker {
         // interns by lowercased key. Match that here so e.g.
         // `"ESam.SamAMesh"` from `object_load_order` resolves to the
         // `samAMesh` export when the on-disk capitalization differs.
-        let index = self.package.exports.iter().position(|export| {
-            export.object_name(self).eq_ignore_ascii_case(name)
-        })?;
+        let index = self
+            .package
+            .exports
+            .iter()
+            .position(|export| export.object_name(self).eq_ignore_ascii_case(name))?;
 
         Some((ExportIndex(index), &self.package.exports[index]))
     }
@@ -172,7 +178,10 @@ impl Linker {
             if !export.class_name(self).eq_ignore_ascii_case(class_name) {
                 continue;
             }
-            if !export.class_package(self).eq_ignore_ascii_case(class_package) {
+            if !export
+                .class_package(self)
+                .eq_ignore_ascii_case(class_package)
+            {
                 continue;
             }
             return Some((ExportIndex(i), export));
@@ -572,7 +581,7 @@ where
     let (unk, unknown_data) = if licensee_version >= 0xc {
         let unk = reader.read_u32::<E>()?;
         println!("Unknown value: {:#X}", unk);
-        let unknown_data = reader.read_array()?;
+        let unknown_data = crate::reader::UnrealReadExt::read_array(reader)?;
         (unk, unknown_data)
     } else {
         (0, Vec::new())
@@ -778,7 +787,6 @@ where
     Ok((out_data, uncompressed_data_size))
 }
 
-
 pub struct LinearFileDecoder<E, R> {
     sources: VecDeque<R>,
     metadata: ExportedData,
@@ -863,7 +871,10 @@ pub struct LinSource<R> {
 
 impl<R> LinSource<R> {
     pub fn new(reader: R, declared_size: u64) -> Self {
-        Self { reader, declared_size }
+        Self {
+            reader,
+            declared_size,
+        }
     }
 }
 
@@ -1110,9 +1121,7 @@ where
             match (load_res, drain_res) {
                 (Ok(_), Ok(())) => {}
                 (Err(e), _) | (_, Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    tracing::warn!(
-                        "Stage 1 warmup hit EOF at {object}: {e}; continuing"
-                    );
+                    tracing::warn!("Stage 1 warmup hit EOF at {object}: {e}; continuing");
                 }
                 (Err(e), _) => return Err(e),
                 (Ok(_), Err(e)) => return Err(e),
@@ -1198,9 +1207,7 @@ where
                     );
                 }
                 (Ok(_), Err(e)) => {
-                    tracing::warn!(
-                        "Stage 3 drain after {full_name} failed: {e}; continuing"
-                    );
+                    tracing::warn!("Stage 3 drain after {full_name} failed: {e}; continuing");
                 }
             }
         }
@@ -1326,7 +1333,6 @@ where
         self.file_table = file_table;
         Ok(())
     }
-
 }
 
 /// Try to parse a UE2 package header starting at `data[offset]`.
@@ -1474,7 +1480,11 @@ where
 fn package_name_from_path(path: &str) -> Option<String> {
     let leaf = path.rsplit('\\').next().unwrap_or(path);
     let stem = leaf.rsplit_once('.').map(|(s, _)| s).unwrap_or(leaf);
-    if stem.is_empty() { None } else { Some(stem.to_owned()) }
+    if stem.is_empty() {
+        None
+    } else {
+        Some(stem.to_owned())
+    }
 }
 
 #[cfg(test)]

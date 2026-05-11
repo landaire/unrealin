@@ -1,14 +1,18 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, debug, span, trace};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UFont::Serialize` (Engine_demo 0x103ed710):
 ///   - `Super::Serialize` (UObject, tagged props)
@@ -78,7 +82,10 @@ impl DeserializeUnrealObject for Font {
                         v_size: reader.read_i32::<E>()?,
                     });
                 }
-                Ok(OldFontPage { texture, characters })
+                Ok(OldFontPage {
+                    texture,
+                    characters,
+                })
             })
             .collect::<io::Result<Vec<_>>>()?;
         self.characters_per_page = reader.read_i32::<E>()?;

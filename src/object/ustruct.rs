@@ -2,22 +2,30 @@ use std::io;
 use std::rc::Rc;
 
 use byteorder::ReadBytesExt;
-use tracing::{Level, debug, span};
+use tracing::Level;
+use tracing::debug;
+use tracing::span;
 
-use crate::{
-    de::{ExportIndex, Linker, RcLinker},
-    object::{
-        BodyKind, DeserializeUnrealObject, RcUnrealObject, SerializeUnrealObject, UObjectKind,
-        UnrealObject,
-        builtins::Property,
-        internal::script::{self, Expr},
-        link_object,
-        ufield::Field,
-        uproperty::PropertyFlags,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::object::BodyKind;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
+use crate::object::builtins::Property;
+use crate::object::internal::script::Expr;
+use crate::object::internal::script::{
+    self,
 };
+use crate::object::link_object;
+use crate::object::ufield::Field;
+use crate::object::uproperty::PropertyFlags;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
 pub struct Struct {
@@ -167,7 +175,8 @@ impl SerializeUnrealObject for Struct {
             return Ok(BodyKind::Opaque(captured.to_vec()));
         }
 
-        let mut body = Vec::with_capacity(captured.len() - self.script_capture.len() + canonical.len());
+        let mut body =
+            Vec::with_capacity(captured.len() - self.script_capture.len() + canonical.len());
         body.extend_from_slice(&captured[..start]);
         body.extend_from_slice(&canonical);
         body.extend_from_slice(&captured[end..]);
@@ -349,7 +358,9 @@ impl DeserializeUnrealObject for Struct {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

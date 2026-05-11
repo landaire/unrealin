@@ -1,14 +1,18 @@
-use std::{cell::RefCell, rc::Rc};
 
 use byteorder::ReadBytesExt;
-use tracing::{Level, span, trace};
+use tracing::Level;
+use tracing::span;
+use tracing::trace;
 
-use crate::{
-    de::{ExportIndex, Linker, RcLinker},
-    object::{BodyKind, DeserializeUnrealObject, SerializeUnrealObject, ustruct::Struct},
-    reader::LinRead,
-    runtime::UnrealRuntime,
-};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::object::BodyKind;
+use crate::object::DeserializeUnrealObject;
+use crate::object::SerializeUnrealObject;
+use crate::object::ustruct::Struct;
+use crate::reader::LinRead;
+use crate::runtime::UnrealRuntime;
 
 #[derive(Default, Debug)]
 pub struct State {
@@ -67,7 +71,9 @@ impl DeserializeUnrealObject for State {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

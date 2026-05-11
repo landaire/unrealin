@@ -1,13 +1,15 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uprimitive::Primitive},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::uprimitive::Primitive;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirrors `UModel::Serialize` (Engine_demo `sub_10420a80`).
 ///
@@ -398,7 +400,8 @@ impl DeserializeUnrealObject for Model {
         assert!(surfs_count >= 0, "Surfs count negative");
         self.surfs = Vec::with_capacity(surfs_count as usize);
         for _ in 0..surfs_count {
-            self.surfs.push(read_bsp_surf::<E, _>(reader, runtime, linker)?);
+            self.surfs
+                .push(read_bsp_surf::<E, _>(reader, runtime, linker)?);
         }
         // Step 5: Verts -- TArray<FVert>, 2 packed_ints/elt.
         let verts_count = reader.read_packed_int()?;

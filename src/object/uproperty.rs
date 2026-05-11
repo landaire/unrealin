@@ -1,18 +1,21 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::io;
+use std::rc::Rc;
 
-use crate::{
-    de::RcLinker,
-    object::{
-        DeserializeUnrealObject, RcUnrealObject, UnrealObject, internal::fname::FName,
-        ufield::Field, ustruct::Struct,
-    },
-    reader::{LinRead, UnrealReadExt},
-    runtime::{self, UnrealRuntime},
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::UnrealObject;
+use crate::object::internal::fname::FName;
+use crate::object::ufield::Field;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 use bitflags::bitflags;
-use byteorder::{ByteOrder, ReadBytesExt};
-use serde::Serialize;
-use tracing::{Level, debug, span, trace};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::span;
+use tracing::trace;
 
 pub trait Link: UnrealObject {
     fn link<E, R>(
@@ -123,9 +126,9 @@ impl DeserializeUnrealObject for FloatProperty {
 impl Link for FloatProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -164,9 +167,9 @@ impl DeserializeUnrealObject for StrProperty {
 impl Link for StrProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -205,9 +208,9 @@ impl DeserializeUnrealObject for BoolProperty {
 impl Link for BoolProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -246,9 +249,9 @@ impl DeserializeUnrealObject for IntProperty {
 impl Link for IntProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -287,9 +290,9 @@ impl DeserializeUnrealObject for NameProperty {
 impl Link for NameProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -332,9 +335,9 @@ impl DeserializeUnrealObject for ObjectProperty {
 impl Link for ObjectProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -377,9 +380,9 @@ impl DeserializeUnrealObject for ClassProperty {
 impl Link for ClassProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -432,9 +435,9 @@ impl DeserializeUnrealObject for ByteProperty {
 impl Link for ByteProperty {
     fn link<E, R>(
         &self,
-        runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
-        reader: &mut R,
+        _runtime: &mut UnrealRuntime,
+        _linker: &RcLinker,
+        _reader: &mut R,
     ) -> io::Result<()>
     where
         E: ByteOrder,
@@ -481,7 +484,7 @@ impl Link for StructProperty {
     fn link<E, R>(
         &self,
         runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
+        _linker: &RcLinker,
         reader: &mut R,
     ) -> io::Result<()>
     where
@@ -535,7 +538,7 @@ impl Link for ArrayProperty {
     fn link<E, R>(
         &self,
         runtime: &mut UnrealRuntime,
-        linker: &RcLinker,
+        _linker: &RcLinker,
         reader: &mut R,
     ) -> io::Result<()>
     where
@@ -636,7 +639,9 @@ bitflags! {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::object::{UObjectKind, UnrealObject, test_common::test_object_is_a};
+    use crate::object::UObjectKind;
+    use crate::object::UnrealObject;
+    use crate::object::test_common::test_object_is_a;
 
     use super::*;
 

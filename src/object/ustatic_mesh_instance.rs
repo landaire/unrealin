@@ -1,13 +1,14 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirrors `UStaticMeshInstance::Serialize` (Engine_demo `0x10305dcb`
 /// tail-calls `sub_104d6ba0`). UStaticMeshInstance derives from
@@ -77,9 +78,7 @@ impl DeserializeUnrealObject for StaticMeshInstance {
             if count < 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "UStaticMeshInstance FRawColorStream colors count negative ({count})"
-                    ),
+                    format!("UStaticMeshInstance FRawColorStream colors count negative ({count})"),
                 ));
             }
             let total = (count as usize).saturating_mul(4);

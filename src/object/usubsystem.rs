@@ -3,7 +3,8 @@ use std::io;
 use byteorder::ByteOrder;
 
 use crate::de::RcLinker;
-use crate::object::{DeserializeUnrealObject, uobject::Object};
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -24,10 +25,11 @@ impl DeserializeUnrealObject for Subsystem {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, R>(runtime, linker, reader)?;
-        
+        self.parent_object
+            .deserialize::<E, R>(runtime, linker, reader)?;
+
         // USubsystem is an abstract base class with no serialized data
-        
+
         Ok(())
     }
 }

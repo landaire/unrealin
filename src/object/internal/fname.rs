@@ -1,4 +1,6 @@
-use crate::{de::Linker, object::DeserializeUnrealObject, reader::UnrealReadExt};
+use crate::de::Linker;
+use crate::object::DeserializeUnrealObject;
+use crate::reader::UnrealReadExt;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct FName(i32);
@@ -33,8 +35,8 @@ impl FName {
 impl DeserializeUnrealObject for FName {
     fn deserialize<E, R>(
         &mut self,
-        runtime: &mut crate::runtime::UnrealRuntime,
-        linker: &std::rc::Rc<std::cell::RefCell<crate::de::Linker>>,
+        _runtime: &mut crate::runtime::UnrealRuntime,
+        _linker: &std::rc::Rc<std::cell::RefCell<crate::de::Linker>>,
         reader: &mut R,
     ) -> std::io::Result<()>
     where

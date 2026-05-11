@@ -1,13 +1,15 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uprimitive::Primitive},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::uprimitive::Primitive;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of `UESoftBody::Serialize` (Engine_demo `0x10306d98`
 /// tail-calling `sub_103b59d0`). UESoftBody is the native SoftBody
@@ -148,9 +150,7 @@ impl DeserializeUnrealObject for SoftBody {
         if attach_count < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "UESoftBody step9 (+0xd0) count negative ({attach_count})"
-                ),
+                format!("UESoftBody step9 (+0xd0) count negative ({attach_count})"),
             ));
         }
         self.attachments.clear();

@@ -14,6 +14,12 @@ mod ufield;
 mod ufont;
 mod ufunction;
 mod ulanguage;
+mod ulevel;
+mod ulevel_base;
+mod ulod_mesh;
+mod umesh;
+mod umesh_animation;
+mod umodel;
 pub(crate) mod uobject;
 mod upackage;
 mod upalette;
@@ -21,16 +27,10 @@ mod upolys;
 mod uprimitive;
 mod uproperty;
 mod urenderdevice;
-mod usound;
-mod ustate;
-mod ulevel;
-mod ulevel_base;
-mod ulod_mesh;
-mod umesh;
-mod umesh_animation;
-mod umodel;
 mod uskel_mesh;
 mod usoft_body;
+mod usound;
+mod ustate;
 mod ustatic_mesh;
 mod ustatic_mesh_instance;
 mod ustruct;
@@ -38,60 +38,76 @@ mod usubsystem;
 mod utext_buffer;
 mod utexture;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
+use std::rc::Weak;
 use tracing::Level as TracingLevel;
 use tracing::span;
-use tracing::trace;
 
 use bitflags::bitflags;
 use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
-    pub use super::uaudio_subsystem::AudioSubsystem;
+    
     pub use super::uclass::Class;
-    pub use super::uclient::Client;
+    
     pub use super::uconst::Const;
     pub use super::uconvex_volume::ConvexVolume;
     pub use super::ucubemap::Cubemap;
-    pub use super::ucylinder::Cylinder;
+    
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufont::Font;
     pub use super::ufunction::Function;
-    pub use super::ulanguage::Language;
-    pub use super::uobject::Object;
-    pub use super::upackage::Package;
-    pub use super::upalette::Palette;
-    pub use super::upolys::Polys;
-    pub use super::uprimitive::Primitive;
-    pub use super::uproperty::{
-        ArrayProperty, BoolProperty, ByteProperty, ClassProperty, FloatProperty, IntProperty, Link,
-        NameProperty, ObjectProperty, Property, PropertyFlags, StrProperty, StructProperty,
-    };
+    
     pub use super::ulevel::Level;
     pub use super::ulevel_base::LevelBase;
     pub use super::ulod_mesh::LodMesh;
     pub use super::umesh::Mesh;
     pub use super::umesh_animation::MeshAnimation;
     pub use super::umodel::Model;
-    pub use super::urenderdevice::RenderDevice;
+    pub use super::uobject::Object;
+    pub use super::upackage::Package;
+    pub use super::upalette::Palette;
+    pub use super::upolys::Polys;
+    pub use super::uprimitive::Primitive;
+    pub use super::uproperty::ArrayProperty;
+    pub use super::uproperty::BoolProperty;
+    pub use super::uproperty::ByteProperty;
+    pub use super::uproperty::ClassProperty;
+    pub use super::uproperty::FloatProperty;
+    pub use super::uproperty::IntProperty;
+    pub use super::uproperty::Link;
+    pub use super::uproperty::NameProperty;
+    pub use super::uproperty::ObjectProperty;
+    pub use super::uproperty::Property;
+    
+    pub use super::uproperty::StrProperty;
+    pub use super::uproperty::StructProperty;
+    
     pub use super::uskel_mesh::SkeletalMesh;
-    pub use super::usoft_body::{ESBChain, ESBPatch, ESBRope, ESBStripDoor, SoftBody};
+    pub use super::usoft_body::ESBChain;
+    pub use super::usoft_body::ESBPatch;
+    pub use super::usoft_body::ESBRope;
+    pub use super::usoft_body::ESBStripDoor;
+    pub use super::usoft_body::SoftBody;
     pub use super::usound::Sound;
     pub use super::ustate::State;
     pub use super::ustatic_mesh::StaticMesh;
     pub use super::ustatic_mesh_instance::StaticMeshInstance;
     pub use super::ustruct::Struct;
-    pub use super::usubsystem::Subsystem;
+    
     pub use super::utext_buffer::TextBuffer;
     pub use super::utexture::Texture;
 }
 
 use builtins::*;
 
-use crate::de::{ExportIndex, Linker, ObjectExport, RcLinker, WeakLinker};
+use crate::de::ExportIndex;
+use crate::de::Linker;
+use crate::de::RcLinker;
+use crate::de::WeakLinker;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -232,7 +248,7 @@ macro_rules! register_builtins {
                         Self::$name => {
                             let mut obj = $name::default();
                             {
-                                let mut base = obj.base_object_mut();
+                                let base = obj.base_object_mut();
                                 base.set_concrete_object_kind(UObjectKind::$name);
                                 base.set_linker(linker);
                                 base.set_export_index(export_index);

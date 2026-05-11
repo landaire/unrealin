@@ -2,12 +2,11 @@ use std::io;
 
 use byteorder::ByteOrder;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uprimitive::Primitive},
-    reader::LinRead,
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uprimitive::Primitive;
+use crate::reader::LinRead;
+use crate::runtime::UnrealRuntime;
 
 /// Mirrors `UMesh::Serialize`. UT2004 source (UnMesh.cpp:20):
 /// ```cpp
@@ -36,6 +35,7 @@ impl DeserializeUnrealObject for Mesh {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, _>(runtime, linker, reader)
+        self.parent_object
+            .deserialize::<E, _>(runtime, linker, reader)
     }
 }

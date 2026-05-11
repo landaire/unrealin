@@ -1,14 +1,14 @@
 use std::io;
 
 use byteorder::ByteOrder;
-use tracing::{Level, span};
+use tracing::Level;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, uobject::Object},
-    reader::LinRead,
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::runtime::UnrealRuntime;
 
 /// `UPackage::Serialize` (Core_retail `0x10102d92`) tail-calls
 /// `UObject::Serialize`. The export body is just the `None` tag from the

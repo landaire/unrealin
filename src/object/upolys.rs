@@ -1,14 +1,17 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use tracing::{Level, span};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use tracing::Level;
+use tracing::span;
 
-use crate::{
-    de::RcLinker,
-    object::{DeserializeUnrealObject, RcUnrealObject, uobject::Object},
-    reader::{LinRead, UnrealReadExt},
-    runtime::UnrealRuntime,
-};
+use crate::de::RcLinker;
+use crate::object::DeserializeUnrealObject;
+use crate::object::RcUnrealObject;
+use crate::object::uobject::Object;
+use crate::reader::LinRead;
+use crate::reader::UnrealReadExt;
+use crate::runtime::UnrealRuntime;
 
 /// Mirror of SC's `UPolys::Serialize` (Engine_demo `0x10303e6d` tail-calls
 /// `0x10310f50`). For the load path (`arg2[6] == 0`, i.e. not saving):

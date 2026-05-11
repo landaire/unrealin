@@ -1,10 +1,13 @@
 use std::io;
 
-use byteorder::{ByteOrder, ReadBytesExt};
-use serde::{Deserialize, Serialize};
+use byteorder::ByteOrder;
+use byteorder::ReadBytesExt;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::de::RcLinker;
-use crate::object::{DeserializeUnrealObject, uobject::Object};
+use crate::object::DeserializeUnrealObject;
+use crate::object::uobject::Object;
 use crate::reader::LinRead;
 use crate::runtime::UnrealRuntime;
 
@@ -46,8 +49,9 @@ impl DeserializeUnrealObject for Primitive {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object.deserialize::<E, R>(runtime, linker, reader)?;
-        
+        self.parent_object
+            .deserialize::<E, R>(runtime, linker, reader)?;
+
         // Read BoundingBox
         self.bounding_box.min.x = reader.read_f32::<E>()?;
         self.bounding_box.min.y = reader.read_f32::<E>()?;
@@ -56,13 +60,13 @@ impl DeserializeUnrealObject for Primitive {
         self.bounding_box.max.y = reader.read_f32::<E>()?;
         self.bounding_box.max.z = reader.read_f32::<E>()?;
         self.bounding_box.is_valid = reader.read_u8()?;
-        
+
         // Read BoundingSphere
         self.bounding_sphere.center.x = reader.read_f32::<E>()?;
         self.bounding_sphere.center.y = reader.read_f32::<E>()?;
         self.bounding_sphere.center.z = reader.read_f32::<E>()?;
         self.bounding_sphere.radius = reader.read_f32::<E>()?;
-        
+
         Ok(())
     }
 }

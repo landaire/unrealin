@@ -8,7 +8,10 @@ use std::rc::Rc;
 use byteorder::ByteOrder;
 
 use crate::de::Linker;
-use crate::object::{UObjectKind, UnrealObject, builtins::Struct, internal::script};
+use crate::object::UObjectKind;
+use crate::object::UnrealObject;
+use crate::object::builtins::Struct;
+use crate::object::internal::script;
 
 /// Per-export round-trip outcome for a UStruct subtype. `script_capture`
 /// is the verbatim source bytes consumed by `Struct::deserialize`'s
