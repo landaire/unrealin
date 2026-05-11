@@ -1030,6 +1030,30 @@ pub mod codec8 {
                 Self::Six(_) => Channels::Six,
             }
         }
+
+        pub const fn outer_calls(&self) -> u32 {
+            match self {
+                Self::Mono(h) => h.outer_calls,
+                Self::Stereo(h) => h.outer_calls,
+                Self::Quad(h) => h.outer_calls,
+                Self::Six(h) => h.outer_calls,
+            }
+        }
+
+        pub const fn tail(&self) -> u32 {
+            match self {
+                Self::Mono(h) => h.tail,
+                Self::Stereo(h) => h.tail,
+                Self::Quad(h) => h.tail,
+                Self::Six(h) => h.tail,
+            }
+        }
+
+        /// Bytes of state snapshot interleaved between macroblock pairs
+        /// (one 52-byte state struct per channel).
+        pub const fn state_pair_bytes(&self) -> usize {
+            self.channels().count() as usize * 52
+        }
     }
 
     fn parse_common<S: SubtypeMarker>(data: &[u8], channels: Channels) -> io::Result<Header<S>> {
@@ -1835,15 +1859,17 @@ pub mod codec8 {
             let bank_size = compute_bank_size(&header);
             let bank_end = (offset + bank_size).min(file_bytes.len());
             let bank_bytes = &file_bytes[offset..bank_end];
-            let (channels, sample_rate, pcm) = match header {
-                HeaderAny::Mono(h) => {
-                    let rate = h.sample_rate;
-                    (Channels::Mono, rate, decode_mono_bank(bank_bytes, &h)?)
-                }
-                HeaderAny::Stereo(h) => {
-                    let rate = h.sample_rate;
-                    (Channels::Stereo, rate, decode_stereo_bank(bank_bytes, &h)?)
-                }
+            let bank = match header {
+                HeaderAny::Mono(h) => DecodedBank {
+                    channels: Channels::Mono,
+                    sample_rate: h.sample_rate,
+                    pcm: decode_mono_bank(bank_bytes, &h)?,
+                },
+                HeaderAny::Stereo(h) => DecodedBank {
+                    channels: Channels::Stereo,
+                    sample_rate: h.sample_rate,
+                    pcm: decode_stereo_bank(bank_bytes, &h)?,
+                },
                 HeaderAny::Quad(_) | HeaderAny::Six(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
@@ -1851,11 +1877,7 @@ pub mod codec8 {
                     ));
                 }
             };
-            banks.push(DecodedBank {
-                channels,
-                sample_rate,
-                pcm,
-            });
+            banks.push(bank);
             if bank_size == 0 {
                 break;
             }
@@ -1874,12 +1896,9 @@ pub mod codec8 {
     fn compute_bank_size(header: &HeaderAny) -> usize {
         const FILE_HEADER: usize = 0x30;
         const CHUNK_SIZE: usize = 769;
-        let (outer, tail, state_pair) = match header {
-            HeaderAny::Mono(h) => (h.outer_calls as usize, h.tail as usize, 52),
-            HeaderAny::Stereo(h) => (h.outer_calls as usize, h.tail as usize, 104),
-            HeaderAny::Quad(h) => (h.outer_calls as usize, h.tail as usize, 52 * 4),
-            HeaderAny::Six(h) => (h.outer_calls as usize, h.tail as usize, 52 * 6),
-        };
+        let outer = header.outer_calls() as usize;
+        let tail = header.tail() as usize;
+        let state_pair = header.state_pair_bytes();
         let macroblock = state_pair + CHUNK_SIZE * 2;
         let full_chunks = outer.saturating_sub(1);
         let full_macros = full_chunks / 2;
@@ -3460,84 +3479,134 @@ pub mod sm2 {
             // at music/stream rates (36k/48k/22k/44k), never at
             // sub-16k for SFX. So per the binary, all entries here
             // should play at +0x44 Hz.
-            let array_b_idx = (seq_id & 0x00FF_FFFF) as usize;
-            let (sample_rate, channels, source_name, is_ls2_redirect) =
-                if array_b_idx < array_b_cnt as usize {
-                    let entry_off = array_b_off + array_b_idx * ARRAY_B_ENTRY_SIZE;
-                    if entry_off + ARRAY_B_ENTRY_SIZE <= descriptor.len() {
-                        let entry = &descriptor[entry_off..entry_off + ARRAY_B_ENTRY_SIZE];
-                        let nominal_sr = u32::from_le_bytes(
-                            entry[ARRAY_B_OFFSET_SAMPLE_RATE..ARRAY_B_OFFSET_SAMPLE_RATE + 4]
-                                .try_into()
-                                .unwrap(),
-                        );
-                        let ch = u16::from_le_bytes(
-                            entry[ARRAY_B_OFFSET_CHANNELS..ARRAY_B_OFFSET_CHANNELS + 2]
-                                .try_into()
-                                .unwrap(),
-                        );
-                        let ch = if ch == 1 || ch == 2 { ch } else { 1 };
-                        let name_bytes =
-                            &entry[ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
-                        let is_ls2 = &name_bytes[13..16] == b"LS2";
-                        let name_end = name_bytes
-                            .iter()
-                            .position(|&b| b == 0)
-                            .unwrap_or(ARRAY_B_NAME_BYTES);
-                        let name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
-                        // Rate scaling: SM2 only applies array_a's
-                        // ratio to LS2-tagged entries (verified
-                        // against the engine on 5_1_2_PresidentialPalace).
-                        // LM2 (language-specific dialog archive)
-                        // applies the ratio to every entry -- its
-                        // array_b names omit the `LS2` suffix (they
-                        // store the bare `.wav` filename), so the tag
-                        // check would never fire. Empirically required:
-                        // `ENGLISH/MAPS.LM2` 0_0_3 entries from
-                        // `seq=0x4000007e` onward play at 0.6674x
-                        // nominal per array_a, otherwise dialog plays
-                        // too fast.
-                        let scale = is_ls2 || kind == Kind::Lm2;
-                        let nominal = super::units::SampleRate::new(nominal_sr);
-                        let sr = if scale {
-                            let ratio_raw = array_a_by_seq
-                                .partition_point(|&(s, _)| s <= seq_id)
-                                .checked_sub(1)
-                                .map(|i| array_a_by_seq[i].1)
-                                .unwrap_or(super::units::RateRatio::UNIT.raw());
-                            super::units::RateRatio::new(ratio_raw).apply(nominal)
-                        } else {
-                            nominal
-                        };
-                        (sr, ch, name, is_ls2)
-                    } else {
-                        (
-                            super::units::SampleRate::new(22050),
-                            1u16,
-                            String::new(),
-                            false,
-                        )
-                    }
-                } else {
-                    (
-                        super::units::SampleRate::new(22050),
-                        1u16,
-                        String::new(),
-                        false,
-                    )
-                };
+            let meta = lookup_array_b_meta(
+                descriptor,
+                array_b_off,
+                array_b_cnt,
+                &array_a_by_seq,
+                seq_id,
+                kind,
+            );
 
             out.push(SoundEntry {
                 seq_id: super::units::SeqId::new(seq_id),
                 file_offset,
                 length,
-                sample_rate,
-                channels,
-                source_name,
-                is_ls2_redirect,
+                sample_rate: meta.sample_rate,
+                channels: meta.channels,
+                source_name: meta.source_name,
+                is_ls2_redirect: meta.is_ls2_redirect,
             });
         }
         Ok(out)
+    }
+
+    /// Per-sound resolved values from one `array_b` entry, after rate
+    /// scaling by `array_a` per SM2/LM2 rules. Returned by
+    /// `lookup_array_b_meta`; collapses the four loosely-related fields
+    /// (sample rate, channel count, source name, LS2 flag) that were
+    /// previously a positional tuple at the SoundEntry assembly site.
+    struct ArrayBMeta {
+        sample_rate: super::units::SampleRate,
+        channels: u16,
+        source_name: String,
+        is_ls2_redirect: bool,
+    }
+
+    impl Default for ArrayBMeta {
+        /// Fallback for an out-of-range `array_b_idx` or a truncated
+        /// descriptor. 22050 Hz mono is what the engine falls back to
+        /// when its `seq_id < array_b_cnt` check fails.
+        fn default() -> Self {
+            Self {
+                sample_rate: super::units::SampleRate::new(22050),
+                channels: 1,
+                source_name: String::new(),
+                is_ls2_redirect: false,
+            }
+        }
+    }
+
+    /// Look up `array_b[seq_id & 0xFFFFFF]` and apply SM2/LM2 rate
+    /// scaling. The high byte of `seq_id` is a TYPE tag (e.g. 0x40 for
+    /// typical SFX); the low 24 bits index `array_b`. Without the mask,
+    /// seq_ids like 0x40000001 are huge u32s that never match
+    /// `seq_id < array_b_cnt`, and the sound falls back to a hardcoded
+    /// 22050 Hz -- wrong rate, audible as ~1.38x playback speed for the
+    /// typical 16000 Hz SFX.
+    ///
+    /// Each array_b entry is 120 bytes; `+0x44` = sample_rate,
+    /// `+0x40` = avg bytes-per-sec, `+0x4a` = channel count (u16 high
+    /// word of the u32 at `+0x48`), `+0x50` = 16-byte source `.wav`
+    /// name. Entries whose name field ends in "LS2" (bytes 13..16)
+    /// carry an LS2 tag. Two encodings observed:
+    ///   "Music_Common.LS2"          -- the LS2 filename itself
+    ///   "EFOLOU_1.wav\0LS2"         -- original .wav name + tag
+    ///
+    /// Rate scaling rule: SM2 only applies array_a's ratio to
+    /// LS2-tagged entries (verified against the engine on
+    /// 5_1_2_PresidentialPalace). LM2 (language-specific dialog
+    /// archive) applies the ratio to every entry -- its array_b names
+    /// omit the `LS2` suffix (they store the bare `.wav` filename), so
+    /// the tag check would never fire. Empirically required:
+    /// `ENGLISH/MAPS.LM2` 0_0_3 entries from `seq=0x4000007e` onward
+    /// play at 0.6674x nominal per array_a, otherwise dialog plays too
+    /// fast.
+    fn lookup_array_b_meta(
+        descriptor: &[u8],
+        array_b_off: usize,
+        array_b_cnt: u32,
+        array_a_by_seq: &[(u32, u32)],
+        seq_id: u32,
+        kind: Kind,
+    ) -> ArrayBMeta {
+        let array_b_idx = (seq_id & 0x00FF_FFFF) as usize;
+        if array_b_idx >= array_b_cnt as usize {
+            return ArrayBMeta::default();
+        }
+        let entry_off = array_b_off + array_b_idx * ARRAY_B_ENTRY_SIZE;
+        if entry_off + ARRAY_B_ENTRY_SIZE > descriptor.len() {
+            return ArrayBMeta::default();
+        }
+        let entry = &descriptor[entry_off..entry_off + ARRAY_B_ENTRY_SIZE];
+        let nominal_sr = u32::from_le_bytes(
+            entry[ARRAY_B_OFFSET_SAMPLE_RATE..ARRAY_B_OFFSET_SAMPLE_RATE + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let ch = u16::from_le_bytes(
+            entry[ARRAY_B_OFFSET_CHANNELS..ARRAY_B_OFFSET_CHANNELS + 2]
+                .try_into()
+                .unwrap(),
+        );
+        let channels = if ch == 1 || ch == 2 { ch } else { 1 };
+        let name_bytes = &entry[ARRAY_B_OFFSET_NAME..ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES];
+        let is_ls2_redirect = &name_bytes[13..16] == b"LS2";
+        let name_end = name_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(ARRAY_B_NAME_BYTES);
+        let source_name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
+
+        let scale = is_ls2_redirect || kind == Kind::Lm2;
+        let nominal = super::units::SampleRate::new(nominal_sr);
+        let sample_rate = if scale {
+            let ratio_raw = array_a_by_seq
+                .partition_point(|&(s, _)| s <= seq_id)
+                .checked_sub(1)
+                .map(|i| array_a_by_seq[i].1)
+                .unwrap_or(super::units::RateRatio::UNIT.raw());
+            super::units::RateRatio::new(ratio_raw).apply(nominal)
+        } else {
+            nominal
+        };
+
+        ArrayBMeta {
+            sample_rate,
+            channels,
+            source_name,
+            is_ls2_redirect,
+        }
     }
 
     /// Parse the outer directory of a `.SM2` (or compatible) file.
