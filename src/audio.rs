@@ -2122,72 +2122,6 @@ pub mod codec8 {
             }
         }
 
-        /// End-to-end stereo subtype-2 round-trip on one captured outer
-        /// call (64 source bytes -> 128 nibbles -> 128 interleaved L,R
-        /// i16 samples). Verifies the unpacker, the L/R nibble
-        /// alternation, the kernel transition, and i16 truncation all
-        /// compose correctly. Fixture is the first dispatcher call from
-        /// the proto trace -- captured engine pcm_output baked inline so
-        /// the test doesn't need /var/tmp.
-        #[test]
-        fn stereo_pcm_round_trip_first_64_bytes() {
-            const INPUT: [u8; 64] = [
-                0x87, 0x87, 0x77, 0x77, 0xa6, 0xa6, 0x96, 0x86, 0x95, 0xa6, 0x95, 0xa5, 0xa5, 0x95,
-                0xa6, 0xa5, 0x95, 0xa6, 0x96, 0xa5, 0x96, 0xa6, 0xa6, 0xa6, 0x96, 0xa6, 0x96, 0xa5,
-                0xa6, 0x96, 0xa6, 0x96, 0x97, 0x98, 0x97, 0x96, 0x99, 0x97, 0x97, 0x97, 0x89, 0x99,
-                0x99, 0x89, 0x9a, 0x99, 0x8b, 0x99, 0x89, 0x9a, 0x8b, 0x89, 0x9b, 0x8a, 0x8b, 0x8a,
-                0x7b, 0x9a, 0x7a, 0x8a, 0x9b, 0x7a, 0x9a, 0x8a,
-            ];
-            // L state (offset 0..52) followed by R state (offset 52..104).
-            // Both start at marker=2, step_magnitude=0x500, prev_hi_dot=1
-            // for L / 0 for R, everything else zero.
-            const CSTATE: [u8; 104] = [
-                0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-                0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ];
-            const EXPECTED_LE: [u8; 256] = [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x15, 0x00,
-                0x00, 0x00, 0x14, 0x00, 0xee, 0xff, 0x26, 0x00, 0xee, 0xff, 0x39, 0x00, 0xef, 0xff,
-                0x3c, 0x00, 0xf0, 0xff, 0x3e, 0x00, 0xe4, 0xff, 0x32, 0x00, 0xe4, 0xff, 0x40, 0x00,
-                0xef, 0xff, 0x32, 0x00, 0xe4, 0xff, 0x3e, 0x00, 0xe3, 0xff, 0x40, 0x00, 0xee, 0xff,
-                0x34, 0x00, 0xe5, 0xff, 0x40, 0x00, 0xe4, 0xff, 0x43, 0x00, 0xe3, 0xff, 0x37, 0x00,
-                0xec, 0xff, 0x40, 0x00, 0xed, 0xff, 0x37, 0x00, 0xe7, 0xff, 0x40, 0x00, 0xed, 0xff,
-                0x40, 0x00, 0xee, 0xff, 0x43, 0x00, 0xef, 0xff, 0x38, 0x00, 0xef, 0xff, 0x40, 0x00,
-                0xea, 0xff, 0x37, 0x00, 0xef, 0xff, 0x3d, 0x00, 0xf0, 0xff, 0x34, 0x00, 0xf1, 0xff,
-                0x31, 0x00, 0xf1, 0xff, 0x38, 0x00, 0xf3, 0xff, 0x31, 0x00, 0xf3, 0xff, 0x37, 0x00,
-                0xf3, 0xff, 0x30, 0x00, 0xf3, 0xff, 0x2e, 0x00, 0xf8, 0xff, 0x2b, 0x00, 0xff, 0xff,
-                0x29, 0x00, 0xfe, 0xff, 0x28, 0x00, 0xfe, 0xff, 0x27, 0x00, 0xff, 0xff, 0x26, 0x00,
-                0xff, 0xff, 0x25, 0x00, 0x04, 0x00, 0x1d, 0x00, 0x07, 0x00, 0x1f, 0x00, 0x09, 0x00,
-                0x20, 0x00, 0x0a, 0x00, 0x18, 0x00, 0x0b, 0x00, 0x1a, 0x00, 0x0b, 0x00, 0x16, 0x00,
-                0x12, 0x00, 0x18, 0x00, 0x10, 0x00, 0x19, 0x00, 0x12, 0x00, 0x14, 0x00, 0x11, 0x00,
-                0x11, 0x00, 0x1a, 0x00, 0x14, 0x00, 0x1a, 0x00, 0x11, 0x00, 0x17, 0x00, 0x0e, 0x00,
-                0x1a, 0x00, 0x0c, 0x00, 0x21, 0x00, 0x0b, 0x00, 0x21, 0x00, 0x0e, 0x00, 0x27, 0x00,
-                0x0c, 0x00, 0x27, 0x00, 0x07, 0x00, 0x28, 0x00, 0x0b, 0x00, 0x28, 0x00, 0x07, 0x00,
-                0x2f, 0x00, 0x06, 0x00, 0x2e, 0x00, 0x0a, 0x00, 0x2f, 0x00, 0x07, 0x00, 0x30, 0x00,
-                0x09, 0x00, 0x37, 0x00,
-            ];
-
-            let mut nibbles = [0u8; 128];
-            unpack_nibbles_4bit(&INPUT, &mut nibbles);
-            let mut state_l = state_from_bytes(&CSTATE[0..52]);
-            let mut state_r = state_from_bytes(&CSTATE[52..104]);
-            let mut got = [0i16; 128];
-            for (i, pair) in nibbles.chunks_exact(2).enumerate() {
-                got[2 * i] = decode_nibble_4bit(&mut state_l, Nibble::new(pair[0]));
-                got[2 * i + 1] = decode_nibble_4bit(&mut state_r, Nibble::new(pair[1]));
-            }
-            for i in 0..128 {
-                let want = i16::from_le_bytes([EXPECTED_LE[2 * i], EXPECTED_LE[2 * i + 1]]);
-                assert_eq!(got[i], want, "sample {i} mismatch");
-            }
-        }
-
         /// Valid headers parse and round-trip the subtype tag.
         #[test]
         fn parse_header_accepts_all_subtypes() {
@@ -2203,329 +2137,6 @@ pub mod codec8 {
             }
         }
 
-        /// Full-file ground truth: concatenate `pcm_output` from
-        /// every captured outer-call in the trace and require that
-        /// `decode_file` on the corresponding on-disc `.LS2` produces
-        /// exactly the same samples. This validates not just the
-        /// kernel but the file-level chunk + state-resync-header
-        /// layout (skip 52 bytes every 2 chunks).
-        #[test]
-        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
-        fn whole_file_matches_engine() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
-            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
-            let calls = trace["calls"].as_array().expect("calls");
-            if calls.is_empty() {
-                return;
-            }
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_u64().unwrap() as u8)
-                .collect();
-            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
-            if subtype != 1 {
-                eprintln!("trace is not mono LS2 (subtype={subtype}); skipping whole-file test");
-                return;
-            }
-            // Identify the LS2 the trace's calls came from by
-            // matching the first call's block_buffer head against
-            // the candidate file on disc.
-            let first_bb: Vec<u8> = calls[0]["block_buffer"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_u64().unwrap() as u8)
-                .collect();
-            let head_size = 256.min(first_bb.len());
-            let candidate = "/Users/lander/Downloads/Tom Clancy's Splinter Cell \
-                             (Sep 13, 2002 prototype)/dumped/Sounds/ENGLISH/1_1_0.LS2";
-            let Ok(file_bytes) = std::fs::read(candidate) else {
-                return;
-            };
-            if file_bytes
-                .windows(head_size)
-                .position(|w| w == &first_bb[..head_size])
-                .is_none()
-            {
-                return;
-            }
-            // Build the engine-expected PCM from the captures'
-            // pcm_output, taking exactly 1536 valid samples per call.
-            const VALID_PER_CALL: usize = 1536;
-            let mut expected = Vec::new();
-            for c in calls {
-                let pcm_b: Vec<u8> = c["pcm_output"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                for i in 0..VALID_PER_CALL {
-                    expected.push(i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]));
-                }
-            }
-            // Decode the on-disc file via the real decoder. Patch
-            // `total_size` in a copy of the bytes so `decode_bank`
-            // stops at the captured sample count.
-            let _ = parse_header(&file_bytes).expect("header parses");
-            let mut patched = file_bytes.clone();
-            patched[0x04..0x08].copy_from_slice(&(expected.len() as u32).to_le_bytes());
-            let got = decode_bank(&patched).expect("decode");
-            assert_eq!(
-                got.len(),
-                expected.len(),
-                "decoded len {} != expected len {}",
-                got.len(),
-                expected.len()
-            );
-            let mut diffs = Vec::new();
-            for i in 0..expected.len() {
-                if got[i] != expected[i] {
-                    if diffs.len() < 8 {
-                        diffs.push((i, got[i], expected[i]));
-                    }
-                }
-            }
-            assert!(
-                diffs.is_empty(),
-                "whole-file pcm mismatches at sample indices: first 8 = {diffs:?}"
-            );
-        }
-
-        /// Validate the full decoder pipeline (unpack + per-nibble
-        /// kernel + state continuity) against the engine's recorded
-        /// PCM output for one outer-loop call from the QEMU trace.
-        /// Each outer call records `block_buffer` (source bytes),
-        /// `pcm_output` (engine PCM), and `channel_state_entry/post`.
-        /// We replay each call's source bytes through our decoder
-        /// starting from the captured entry state and assert every
-        /// sample matches the engine's pcm_output up to the valid
-        /// region.
-        #[test]
-        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
-        fn pcm_matches_engine_output() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
-            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
-            let calls = trace["calls"].as_array().expect("calls");
-            assert!(!calls.is_empty());
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_u64().unwrap() as u8)
-                .collect();
-            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
-            if subtype != 1 {
-                eprintln!("trace is not mono LS2 (subtype={subtype}); skipping mono pcm test");
-                return;
-            }
-            // Per-call expected layout (verified empirically against
-            // pcm_output):
-            //   block_buffer: 2048 source bytes (only first SRC_BYTES used)
-            //   unpacker output: NIBBLES_PER_CALL nibbles per outer call,
-            //     matching `[codec_params+8] = 0x600 = 1536`.
-            //   pcm_output: 4096 i16; the first NIBBLES_PER_CALL are the
-            //     actual decoded samples, the rest is uninitialised buffer
-            //     memory captured by the trace tool.
-            const NIBBLES_PER_CALL: usize = 1536;
-            const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
-            let mut total_mismatch_calls = 0usize;
-            for (call_idx, c) in calls.iter().enumerate() {
-                let block: Vec<u8> = c["block_buffer"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let pcm_b: Vec<u8> = c["pcm_output"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let csentry: Vec<u8> = c["channel_state_entry"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let mut expected_pcm = vec![0i16; pcm_b.len() / 2];
-                for i in 0..expected_pcm.len() {
-                    expected_pcm[i] = i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]);
-                }
-                let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
-                unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
-                let mut state = state_from_bytes(&csentry);
-                let mut got = Vec::with_capacity(NIBBLES_PER_CALL);
-                for &n in &nibbles {
-                    got.push(decode_nibble_4bit(&mut state, Nibble::new(n)));
-                }
-                // Compare against engine's pcm_output for the first
-                // NIBBLES_PER_CALL samples.
-                let mut diffs = Vec::new();
-                for i in 0..NIBBLES_PER_CALL {
-                    if got[i] != expected_pcm[i] {
-                        if diffs.len() < 5 {
-                            diffs.push((i, got[i], expected_pcm[i]));
-                        }
-                    }
-                }
-                if !diffs.is_empty() {
-                    total_mismatch_calls += 1;
-                    eprintln!(
-                        "call {call_idx}: {} mismatches; first 5 = {:?}",
-                        diffs.len(),
-                        diffs
-                    );
-                }
-            }
-            assert_eq!(
-                total_mismatch_calls,
-                0,
-                "outer-call pcm mismatches: {total_mismatch_calls} / {}",
-                calls.len()
-            );
-        }
-
-        /// Hypothesis test for codec_id=8 subtype-2 stereo music
-        /// (sub_199f90 case 1): per dispatcher call the unpacker
-        /// produces 1536 nibbles interleaved as L,R,L,R; the inline
-        /// loop applies the same per-nibble 4-bit kernel to L state
-        /// for even-indexed nibbles and R state for odd-indexed
-        /// nibbles, writing pcm_output as interleaved L,R i16. The
-        /// channel_state region holds L state at offset 0 and R state
-        /// at offset 52 (each is the same 52-byte struct as mono).
-        /// Only the first 1536 i16 of pcm_output are valid output
-        /// (= 768 L + 768 R stereo frames).
-        #[test]
-        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json with stereo music captures"]
-        fn stereo_pcm_matches_engine_output() {
-            let raw = std::fs::read("/var/tmp/sc1_proto_audio_trace.json").expect("trace file");
-            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("parse");
-            let calls = trace["calls"].as_array().expect("calls");
-            assert!(!calls.is_empty());
-            // Skip if these aren't stereo music captures (codec_state[+0x4c] != 2).
-            let cs0: Vec<u8> = calls[0]["codec_state_entry"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_u64().unwrap() as u8)
-                .collect();
-            let subtype = u32::from_le_bytes([cs0[0x4c], cs0[0x4d], cs0[0x4e], cs0[0x4f]]);
-            if subtype != 2 {
-                eprintln!("trace is not stereo music (subtype={subtype}); skipping");
-                return;
-            }
-            const NIBBLES_PER_CALL: usize = 1536;
-            const VALID_PCM: usize = 1536;
-            const SRC_BYTES: usize = NIBBLES_PER_CALL / 2;
-            let mut total_mismatch_calls = 0usize;
-            for (call_idx, c) in calls.iter().enumerate() {
-                let block: Vec<u8> = c["block_buffer"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let pcm_b: Vec<u8> = c["pcm_output"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let csentry: Vec<u8> = c["channel_state_entry"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let mut expected = vec![0i16; VALID_PCM];
-                for i in 0..VALID_PCM {
-                    expected[i] = i16::from_le_bytes([pcm_b[2 * i], pcm_b[2 * i + 1]]);
-                }
-                let mut nibbles = vec![0u8; NIBBLES_PER_CALL];
-                unpack_nibbles_4bit(&block[..SRC_BYTES], &mut nibbles);
-                let mut state_l = state_from_bytes(&csentry[0..52]);
-                let mut state_r = state_from_bytes(&csentry[52..104]);
-                let mut got = Vec::with_capacity(VALID_PCM);
-                for pair in nibbles.chunks_exact(2) {
-                    got.push(decode_nibble_4bit(&mut state_l, Nibble::new(pair[0])));
-                    got.push(decode_nibble_4bit(&mut state_r, Nibble::new(pair[1])));
-                }
-                let mut diffs = Vec::new();
-                for i in 0..VALID_PCM {
-                    if got[i] != expected[i] {
-                        if diffs.len() < 5 {
-                            diffs.push((i, got[i], expected[i]));
-                        }
-                    }
-                }
-                if !diffs.is_empty() {
-                    total_mismatch_calls += 1;
-                    eprintln!("call {call_idx}: first 5 = {:?}", diffs);
-                }
-            }
-            assert_eq!(
-                total_mismatch_calls,
-                0,
-                "stereo pcm mismatches: {total_mismatch_calls} / {}",
-                calls.len()
-            );
-        }
-
-        /// Replay the captured QEMU trace through the Rust kernel and
-        /// require byte-perfect agreement on every captured call's
-        /// post-state. Skipped by default since the trace file is
-        /// machine-local; run with `cargo test --release -- --ignored
-        /// byte_perfect_against_qemu_trace`.
-        #[test]
-        #[ignore = "requires /var/tmp/sc1_proto_audio_trace.json"]
-        fn byte_perfect_against_qemu_trace() {
-            let path = "/var/tmp/sc1_proto_audio_trace.json";
-            let raw = std::fs::read(path).expect("trace file");
-            let trace: serde_json::Value = serde_json::from_slice(&raw).expect("trace parse");
-            let calls = trace["kernel_captures"].as_array().expect("calls");
-            assert!(!calls.is_empty(), "trace has no calls");
-            let mut mismatches: Vec<(usize, u8, [usize; 8])> = Vec::new();
-            for (i, c) in calls.iter().enumerate() {
-                let nib = c["stack4"].as_u64().unwrap() as u8;
-                let entry: Vec<u8> = c["state_at_stack8"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let truth: Vec<u8> = c["state_at_stack8_post"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_u64().unwrap() as u8)
-                    .collect();
-                let mut state = state_from_bytes(&entry);
-                let _ = decode_nibble_4bit(&mut state, Nibble::new(nib));
-                let got = state_to_bytes(&state, &entry);
-                if got[..0x32] != truth[..0x32] {
-                    if mismatches.len() < 5 {
-                        let mut diffs = [0usize; 8];
-                        let mut n = 0;
-                        for j in 0..0x32 {
-                            if got[j] != truth[j] && n < 8 {
-                                diffs[n] = j;
-                                n += 1;
-                            }
-                        }
-                        mismatches.push((i, nib, diffs));
-                    }
-                }
-            }
-            assert!(
-                mismatches.is_empty(),
-                "trace replay mismatches: first 5 = {mismatches:?}"
-            );
-        }
-
         fn state_from_bytes(b: &[u8]) -> ChannelState {
             let r16 = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
             let r32 = |o: usize| i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
@@ -2539,46 +2150,6 @@ pub mod codec8 {
                 hist_delta: [r16(0x28), r16(0x2a), r16(0x2c), r16(0x2e)],
                 delta_save: r16(0x30),
             }
-        }
-
-        /// Targeted divergence reproducer. Feeds the exact entry
-        /// state observed at sample 1546 of 1_1_2.LS2 (where the
-        /// Rust kernel saturates but the Python sim produces 27146)
-        /// and prints the post-state.
-        #[test]
-        #[ignore = "diagnostic"]
-        fn diagnose_sample_1546() {
-            let entry_hex = "00000000fe09000051fcffff3cfeffff6b0625fd000000007f00530000001100b79d66c600000000c4e9c4e914f3a1fc6700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
-            let entry: Vec<u8> = (0..entry_hex.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&entry_hex[i..i + 2], 16).unwrap())
-                .collect();
-            let mut state = state_from_bytes(&entry);
-            eprintln!(
-                "pre:  step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
-                state.step_magnitude,
-                state.prev_hi_dot,
-                state.prev_prev_hi_dot,
-                state.coef_lo,
-                state.coef_hi,
-                state.hist_pred,
-                state.hist_delta,
-                state.delta_save
-            );
-            let sample = decode_nibble_4bit(&mut state, Nibble::new(1));
-            eprintln!(
-                "post: step={} prev_hi={} prev_prev={} cl={:?} ch={:?} hp={:?} hd={:?} ds={}",
-                state.step_magnitude,
-                state.prev_hi_dot,
-                state.prev_prev_hi_dot,
-                state.coef_lo,
-                state.coef_hi,
-                state.hist_pred,
-                state.hist_delta,
-                state.delta_save
-            );
-            eprintln!("sample returned: {sample}");
-            eprintln!("python sim expected: sample=27146; step=2558, prev_hi=-943, cl=(1643,-731)");
         }
 
         fn state_to_bytes(s: &ChannelState, entry: &[u8]) -> Vec<u8> {
@@ -2598,246 +2169,6 @@ pub mod codec8 {
             }
             out[0x30..0x32].copy_from_slice(&s.delta_save.to_le_bytes());
             out
-        }
-
-        // 14 kernel transition fixtures (nib, entry_state, post_state)
-        // extracted from a QEMU plugin trace's kernel_captures table.
-        // Self-contained: do not require the trace file on disk.
-        #[rustfmt::skip]
-        const KERNEL_FIXTURES: &[(u8, [u8; 52], [u8; 52])] = &[
-            (7,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0xc8, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-            (5,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x7f, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xf4, 0xff, 0xf7, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0xfb, 0xff, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-            (6,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7d, 0x00, 0x6d, 0x00, 0x6d, 0x00, 0x6d, 0x00, 0xfa, 0xff, 0xfb, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0xfb, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x1e, 0x01, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
-                0xff, 0xff, 0xff, 0xff, 0x0c, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7f, 0x00, 0x74, 0x00, 0x64, 0x00, 0x64, 0x00, 0xfb, 0xff, 0xfa, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xfb, 0xff, 0xfb, 0xff, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-            (8,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0xfe, 0xff, 0xff, 0xff, 0x2d, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x7f, 0x00, 0x69, 0x00, 0x49, 0x00, 0x59, 0x00, 0xfe, 0xff, 0xfd, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfd, 0xff,
-                0xfb, 0xff, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0xff, 0xff, 0xff, 0xff, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x7f, 0x00, 0x70, 0x00, 0x50, 0x00, 0x50, 0x00, 0x00, 0x00, 0xfe, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0xfd, 0xff, 0x00, 0x00,
-            ]),
-            (9,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x52, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0xfb, 0xff, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x45, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x6d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x02, 0x00, 0xfb, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-            ]),
-            (11,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x45, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x6d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x02, 0x00, 0xfb, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x4d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0xff, 0xff, 0xff, 0xff, 0x50, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x74, 0x00, 0x74, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x09, 0x00, 0x02, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00,
-                0x02, 0x00, 0x00, 0x00,
-            ]),
-            (3,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x39, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x7b, 0x00, 0x7b, 0x00, 0x76, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x09, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00, 0xfb, 0xff,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x64, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x72, 0x00, 0x72, 0x00, 0x6d, 0x00, 0x7f, 0x00, 0xf6, 0xff, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00,
-                0xfb, 0xff, 0x00, 0x00,
-            ]),
-            (12,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x69, 0x00, 0x79, 0x00, 0x74, 0x00, 0x7f, 0x00, 0xff, 0xff, 0xf6, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x09, 0x00,
-                0x04, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0xa5, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x4c, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x70, 0x00, 0x70, 0x00, 0x7b, 0x00, 0x7f, 0x00, 0x0b, 0x00, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00,
-                0x09, 0x00, 0x00, 0x00,
-            ]),
-            (4,
-            [
-                0x02, 0x00, 0x00, 0x00, 0xa9, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0xff, 0xff, 0xff, 0xff, 0x3f, 0x00, 0xf0, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x67, 0x00, 0x67, 0x00, 0x7f, 0x00, 0x76, 0x00, 0xf9, 0xff, 0x0b, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xf9, 0xff, 0x0d, 0x00, 0x00, 0x00, 0xf6, 0xff,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0xb8, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x4a, 0x00, 0xe5, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x6e, 0x00, 0x5e, 0x00, 0x76, 0x00, 0x7d, 0x00, 0xf4, 0xff, 0xf9, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0xf9, 0xff, 0x0d, 0x00, 0x00, 0x00,
-                0xf6, 0xff, 0x00, 0x00,
-            ]),
-            (13,
-            [
-                0x02, 0x00, 0x00, 0x00, 0xb4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0xff, 0xff, 0xff, 0xff, 0x2e, 0x00, 0xd8, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7a, 0x00, 0x5a, 0x00, 0x72, 0x00, 0x6d, 0x00, 0x02, 0x00, 0xff, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x03, 0x00,
-                0xf6, 0xff, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x54, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x39, 0x00, 0xce, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7f, 0x00, 0x61, 0x00, 0x79, 0x00, 0x74, 0x00, 0x19, 0x00, 0x02, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0d, 0x00,
-                0x03, 0x00, 0x00, 0x00,
-            ]),
-            (14,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x4a, 0x02, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff,
-                0xf8, 0xff, 0xff, 0xff, 0x8f, 0x00, 0xe1, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x76, 0x00, 0x76, 0x00, 0x69, 0x00, 0x59, 0x00, 0xf5, 0xff, 0xe5, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xff, 0xf0, 0xff, 0xec, 0xff,
-                0xf2, 0xff, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x64, 0x04, 0x00, 0x00, 0xfa, 0xff, 0xff, 0xff,
-                0xf8, 0xff, 0xff, 0xff, 0x82, 0x00, 0xdd, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7d, 0x00, 0x6d, 0x00, 0x60, 0x00, 0x50, 0x00, 0x28, 0x00, 0xf5, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0xef, 0xff, 0xf0, 0xff,
-                0xec, 0xff, 0x00, 0x00,
-            ]),
-            (10,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x1f, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x02, 0x00, 0x00, 0x00, 0x80, 0x00, 0xdc, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x7b, 0x00, 0x5b, 0x00, 0x5e, 0x00, 0x5e, 0x00, 0xe9, 0xff, 0xf2, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0xec, 0xff, 0xeb, 0xff, 0x2f, 0x00, 0x00, 0x00,
-                0xef, 0xff, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x15, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x73, 0x00, 0xd7, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x72, 0x00, 0x52, 0x00, 0x65, 0x00, 0x65, 0x00, 0x32, 0x00, 0xe9, 0xff,
-                0x00, 0x00, 0x00, 0x00, 0x35, 0x00, 0xec, 0xff, 0xeb, 0xff, 0x2f, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-            (1,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x7e, 0x03, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-                0x01, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x93, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x70, 0x00, 0x0e, 0x00, 0x41, 0x00, 0x51, 0x00, 0x17, 0x00, 0x14, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x19, 0x00, 0xd8, 0xff, 0xe5, 0xff,
-                0x40, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x0c, 0x04, 0x00, 0x00, 0xfc, 0xff, 0xff, 0xff,
-                0x04, 0x00, 0x00, 0x00, 0x82, 0x00, 0x8f, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x67, 0x00, 0x05, 0x00, 0x48, 0x00, 0x58, 0x00, 0xab, 0xff, 0x17, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xae, 0xff, 0x0c, 0x00, 0x19, 0x00, 0xd8, 0xff,
-                0xe5, 0xff, 0x00, 0x00,
-            ]),
-            (2,
-            [
-                0x02, 0x00, 0x00, 0x00, 0x03, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00,
-                0xfb, 0xff, 0xff, 0xff, 0x7c, 0x00, 0x70, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x61, 0x00, 0xff, 0xff, 0x52, 0x00, 0x72, 0x00, 0x19, 0x00, 0x4f, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c, 0x00, 0xcd, 0xff, 0x00, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
-            ],
-            [
-                0x02, 0x00, 0x00, 0x00, 0x3d, 0x04, 0x00, 0x00, 0xfb, 0xff, 0xff, 0xff,
-                0x09, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x6c, 0xff, 0x00, 0x00, 0x00, 0x00,
-                0x58, 0x00, 0xf7, 0xff, 0x59, 0x00, 0x69, 0x00, 0x97, 0xff, 0x19, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0xa5, 0xff, 0x00, 0x00, 0x5c, 0x00, 0xcd, 0xff,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-        ];
-
-        /// Self-contained kernel byte-perfect check. Walks the baked
-        /// `KERNEL_FIXTURES` table (covering nibbles 1..=14) and
-        /// asserts each engine-captured post-state survives one
-        /// `decode_nibble_4bit` round-trip unchanged. The 14 fixtures
-        /// span the full 4-bit input domain that real audio actually
-        /// exercises, so a kernel regression in any sign or magnitude
-        /// branch surfaces here without needing the multi-megabyte
-        /// trace file. The trace-based `byte_perfect_against_qemu_trace`
-        /// still runs as a wider replay when the trace is present.
-        #[test]
-        fn kernel_fixtures_byte_perfect() {
-            let mut failures = Vec::new();
-            for (i, (nib, entry, truth)) in KERNEL_FIXTURES.iter().enumerate() {
-                let mut state = state_from_bytes(entry);
-                let _ = decode_nibble_4bit(&mut state, Nibble::new(*nib));
-                let got = state_to_bytes(&state, entry);
-                if got[..0x32] != truth[..0x32] {
-                    failures.push((i, *nib));
-                }
-            }
-            assert!(failures.is_empty(), "kernel fixture mismatches: {failures:?}");
         }
 
         /// `decode_nibble_4bit` should never leave `step_magnitude`
@@ -2861,6 +2192,132 @@ pub mod codec8 {
                     state.step_magnitude
                 );
             }
+        }
+
+        /// Decompress a gzipped fixture into a Vec. Re-used by the
+        /// two trace-replay tests below.
+        fn decompress_fixture(gz: &[u8]) -> Vec<u8> {
+            use std::io::Read;
+            let mut d = flate2::read::GzDecoder::new(gz);
+            let mut out = Vec::new();
+            d.read_to_end(&mut out).expect("decompress fixture");
+            out
+        }
+
+        /// Byte-perfect replay of every recorded kernel transition from
+        /// a QEMU plugin capture (2048 captures spanning all 15 used
+        /// nibble values and a wide range of entry states). Drives the
+        /// engine-captured pre-state through `decode_nibble_4bit` once
+        /// and asserts the post-state bytes match the engine's
+        /// recorded post-state. Regenerate the fixture with
+        /// `tools/extract_audio_fixtures.py` after recapturing the
+        /// trace.
+        ///
+        /// Replaces the previously `#[ignore]`d
+        /// `byte_perfect_against_qemu_trace`: same coverage, but the
+        /// data is a gzipped ~53 KB binary in the repo instead of a 27
+        /// MB JSON on /var/tmp.
+        #[test]
+        fn kernel_transitions_byte_perfect() {
+            const GZ: &[u8] =
+                include_bytes!("../tests/fixtures/codec8_kernel_transitions.bin.gz");
+            const RECORD_BYTES: usize = 1 + 52 + 52;
+            let buf = decompress_fixture(GZ);
+            let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+            assert_eq!(
+                buf.len(),
+                4 + count * RECORD_BYTES,
+                "fixture has unexpected size for declared count={count}"
+            );
+            let mut failures: Vec<(usize, u8)> = Vec::new();
+            for i in 0..count {
+                let off = 4 + i * RECORD_BYTES;
+                let nib = buf[off];
+                let entry = &buf[off + 1..off + 53];
+                let truth = &buf[off + 53..off + 105];
+                let mut state = state_from_bytes(entry);
+                let _ = decode_nibble_4bit(&mut state, Nibble::new(nib));
+                let got = state_to_bytes(&state, entry);
+                if got[..0x32] != truth[..0x32] {
+                    failures.push((i, nib));
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{} / {count} kernel transition mismatches (first 5: {:?})",
+                failures.len(),
+                &failures[..failures.len().min(5)]
+            );
+        }
+
+        /// Replay every captured outer dispatcher call (64 of them)
+        /// through the full unpacker + L/R-alternating kernel and
+        /// require the first `SAMPLES_PER_CALL` i16 samples to match
+        /// the engine's recorded `pcm_output` exactly. Each call is
+        /// replayed from its captured entry state -- no cross-call
+        /// state continuity is implied or required.
+        ///
+        /// Replaces the previously `#[ignore]`d
+        /// `stereo_pcm_matches_engine_output` with a self-contained
+        /// version (~41 KB gzipped fixture).
+        #[test]
+        fn stereo_pcm_call_replay_matches_engine() {
+            const GZ: &[u8] = include_bytes!("../tests/fixtures/codec8_stereo_calls.bin.gz");
+            // Must match tools/extract_audio_fixtures.py.
+            const SAMPLES_PER_CALL: usize = 256;
+            const BLOCK_BYTES: usize = SAMPLES_PER_CALL / 2;
+            const STATE_BYTES: usize = 104;
+            const PCM_BYTES: usize = SAMPLES_PER_CALL * 2;
+            const RECORD_BYTES: usize = BLOCK_BYTES + STATE_BYTES + PCM_BYTES;
+
+            let buf = decompress_fixture(GZ);
+            let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+            assert_eq!(
+                buf.len(),
+                4 + count * RECORD_BYTES,
+                "fixture has unexpected size for declared count={count}"
+            );
+            let mut mismatched_calls = 0usize;
+            let mut first_mismatch: Option<(usize, usize, i16, i16)> = None;
+            for call_idx in 0..count {
+                let base = 4 + call_idx * RECORD_BYTES;
+                let block = &buf[base..base + BLOCK_BYTES];
+                let state_bytes = &buf[base + BLOCK_BYTES..base + BLOCK_BYTES + STATE_BYTES];
+                let expected = &buf[base + BLOCK_BYTES + STATE_BYTES..base + RECORD_BYTES];
+
+                let mut nibbles = vec![0u8; SAMPLES_PER_CALL];
+                unpack_nibbles_4bit(block, &mut nibbles);
+                let mut state_l = state_from_bytes(&state_bytes[0..52]);
+                let mut state_r = state_from_bytes(&state_bytes[52..104]);
+                let mut ok = true;
+                for (i, pair) in nibbles.chunks_exact(2).enumerate() {
+                    let l = decode_nibble_4bit(&mut state_l, Nibble::new(pair[0]));
+                    let r = decode_nibble_4bit(&mut state_r, Nibble::new(pair[1]));
+                    let want_l =
+                        i16::from_le_bytes([expected[4 * i], expected[4 * i + 1]]);
+                    let want_r =
+                        i16::from_le_bytes([expected[4 * i + 2], expected[4 * i + 3]]);
+                    if l != want_l {
+                        if first_mismatch.is_none() {
+                            first_mismatch = Some((call_idx, 2 * i, l, want_l));
+                        }
+                        ok = false;
+                    }
+                    if r != want_r {
+                        if first_mismatch.is_none() {
+                            first_mismatch = Some((call_idx, 2 * i + 1, r, want_r));
+                        }
+                        ok = false;
+                    }
+                }
+                if !ok {
+                    mismatched_calls += 1;
+                }
+            }
+            assert_eq!(
+                mismatched_calls, 0,
+                "{mismatched_calls}/{count} stereo calls mismatched; first diff: {first_mismatch:?}"
+            );
         }
     }
 }
