@@ -236,8 +236,7 @@ fn is_asset_class(class_name: &str) -> bool {
 /// `bytes_read`.
 fn expr_byte_size(expr: &Expr) -> usize {
     match expr {
-        Expr::Token(_) => 1,
-        Expr::Native(_) => 1,
+        Expr::Token(_) | Expr::Native(_) | Expr::ScNoOpByte(_) => 1,
         Expr::Object(_) | Expr::Name(_) | Expr::Int(_) | Expr::Float(_) => 4,
         Expr::Byte(_) => 1,
         Expr::Word(_) => 2,

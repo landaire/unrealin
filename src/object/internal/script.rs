@@ -115,7 +115,19 @@ where
 
         return Ok(result);
     }
-    let token = ExprToken::try_from(token_value).expect("failed to parse ExprToken");
+    if is_sc_noop_byte(token_value) {
+        result.push(Expr::ScNoOpByte(token_value));
+        return Ok(result);
+    }
+    let token = ExprToken::try_from(token_value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to parse ExprToken: invalid token byte {token_value:#x} \
+                 (cursor likely mis-aligned with engine read order)"
+            ),
+        )
+    })?;
     result.push(Expr::Token(token));
 
     debug!("Token is: {:?}", token);
@@ -452,7 +464,7 @@ pub fn serialize_expr<W: Write, E: ByteOrder>(exprs: &[Expr], w: &mut W) -> io::
     for e in exprs {
         match e {
             Expr::Token(t) => w.write_u8(*t as u8)?,
-            Expr::Native(b) => w.write_u8(*b)?,
+            Expr::Native(b) | Expr::ScNoOpByte(b) => w.write_u8(*b)?,
             Expr::Object(idx) | Expr::Name(idx) => write_packed_int(w, *idx)?,
             Expr::Byte(b) => w.write_u8(*b)?,
             Expr::Word(v) => w.write_u16::<E>(*v)?,
@@ -485,6 +497,37 @@ pub enum Expr {
     /// Variable-length payload (string bodies, ExtendedNative second-byte
     /// when emitted via `Data` from older trees).
     Data(Vec<u8>),
+    /// A token byte that SC's `SerializeExpr` dispatcher treats as a
+    /// single-byte no-op (verified in `Core_retail.dll sub_1012f3c0`):
+    /// the jump-table at `0x1012f918` maps some indices to case 0x19
+    /// (`return result`), and any byte 0x43..=0x5F falls through the
+    /// `if (result u> 0x42) return` early-out. We preserve the raw byte
+    /// here so serialize round-trips it; the parser consumes no further
+    /// bytes for these tokens.
+    ScNoOpByte(u8),
+}
+
+/// Token bytes that SC's `SerializeExpr` dispatcher consumes without
+/// reading a payload. Verified in `Core_retail.dll sub_1012f3c0`: the
+/// jump-index table at `0x1012f918` indexes 0x00..0x42; the slots that
+/// dispatch to case `0x19` (`return result` with no payload reads)
+/// AND aren't already named by an existing `ExprToken` variant are
+/// `0x03`, `0x2B`, `0x3A..=0x3F`. Observed in `EchelonPattern.VGame`'s
+/// UClass script body in
+/// `004_CaspianOilRefinery/1_3_3CaspianOilRefinery.lin`.
+///
+/// Note: the fall-through range `0x48..=0x5F` (bytes that hit
+/// `if (result u> 0x42) return` BEFORE the table dispatch even runs)
+/// is intentionally NOT included here. Empirically, treating those as
+/// no-ops causes runaway misreads in proto's
+/// `EchelonPattern.VGame` parser, indicating proto's compiled bytecode
+/// never legitimately contains those bytes and seeing one means our
+/// cursor is already misaligned. The cheat-advance recovery in
+/// `runtime::preload` handles that case; masking it via silent no-op
+/// makes the misalignment cascade through subsequent object/name
+/// reference reads.
+fn is_sc_noop_byte(b: u8) -> bool {
+    matches!(b, 0x03 | 0x2B | 0x3A..=0x3F)
 }
 
 /// Evaluatable expression item types.
