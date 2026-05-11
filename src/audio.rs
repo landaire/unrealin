@@ -771,23 +771,71 @@ pub mod codec8 {
     /// data immediately after.
     pub const HEADER_BYTES: usize = 0x40;
 
-    /// Top-of-file metadata. `unknown_*` fields are kept by exact
-    /// offset until the kernel port reveals their semantics; do not
-    /// rename them speculatively.
+    /// Top-of-file metadata (12 dwords, file offsets 0x00..0x30).
+    /// Field semantics derived from `sub_19b4a0`'s file-header-to-
+    /// codec-params copy block at proto VA `0x19b6a8..0x19b6e0` and
+    /// the dispatcher `sub_199f90`'s reads of those params:
+    ///
+    /// ```text
+    ///   codec_params[+0x00] = file[+0x00]   codec_id
+    ///   codec_params[+0x04] = file[+0x28]   kernel_selector
+    ///   codec_params[+0x0c] = file[+0x2c]   dispatch_subtype
+    ///   codec_params[+0x10] = file[+0x1c]   separate_flag
+    ///   codec_params[+0x14] = file[+0x24]   bits_per_sample
+    ///   codec_params[+0x18] = file[+0x10]   block_size
+    ///   codec_params[+0x1c] = file[+0x14]   channels
+    /// ```
     #[derive(Clone, Debug)]
     pub struct Header {
+        /// `+0x04`. Per-bank total interleaved sample count
+        /// (= `(outer_calls - 1) * block_size + tail`).
         pub total_size: u32,
-        pub unknown_08: u32,
-        pub unknown_0c: u32,
+        /// `+0x08`. Number of dispatcher invocations to play one
+        /// bank: `outer_calls - 1` produce a full chunk each, the
+        /// last one a partial chunk sized by `tail`.
+        pub outer_calls: u32,
+        /// `+0x0c`. Nibble count consumed by the bank's last
+        /// (partial) dispatcher call.
+        pub tail: u32,
+        /// `+0x10`. Full-chunk nibble count per dispatcher call;
+        /// always 1536 in observed files.
         pub block_size: u32,
+        /// `+0x14`. Logical output channel count. Engine-validated
+        /// to be 1, 2, 4, or 6 by the `"Adpcm allows only sound
+        /// files with 1, 2, 4 and 6 channels"` check at `0x19b6e0`.
         pub channels: u32,
+        /// `+0x18`. Per-channel sample rate (typically 36000).
         pub sample_rate: u32,
-        pub unknown_24: u32,
-        pub unknown_28: u32,
-        pub unknown_2c: u32,
-        pub unknown_30: u32,
-        pub unknown_34: u32,
-        pub unknown_38: u32,
+        /// `+0x1c`. "Separate mode" flag. `0` means the channels are
+        /// stored separately (= one channel-state per kernel call);
+        /// non-zero means packed. Validated only for `channels > 2`
+        /// by the `"Only adpcm 4 Bits Separate work with sounds
+        /// having more than 2 channels"` check; mono/stereo files
+        /// load regardless of its value.
+        pub separate_flag: u32,
+        /// `+0x20`. Reserved/unused; engine never reads it. Always
+        /// `0` in every observed file (retail, proto, PC).
+        pub reserved_20: u32,
+        /// `+0x24`. Bits per encoded nibble. Passed to the unpacker
+        /// `sub_199f10` as arg3 (unused there) but matches the
+        /// kernel selection: `4` for the 4-bit kernel path,
+        /// presumably `6` for the 6-bit one. Always `4` in observed
+        /// files.
+        pub bits_per_sample: u32,
+        /// `+0x28`. Kernel selector applied in `sub_199f90`'s
+        /// prologue (`if [codec_params+4] != 1`): `1` →
+        /// `sub_1999d0` (4-bit kernel + `sub_199f10` unpacker);
+        /// anything else → `sub_199dc0` (6-bit kernel +
+        /// `sub_199e90` unpacker). Always `1` in observed files;
+        /// the 6-bit path is reachable but unexercised.
+        pub kernel_selector: u32,
+        /// `+0x2c`. Dispatcher mode. `sub_199f90`'s inner switch is
+        /// on `(dispatch_subtype - 1)`: `1` = mono inline (case 0),
+        /// `2` = stereo MMX (case 1), `4` / `6` route to the
+        /// multichannel cases 3 / 5. In observed files this
+        /// matches `channels` (mono LS2 ⇒ subtype 1, stereo SS2 ⇒
+        /// subtype 2).
+        pub dispatch_subtype: u32,
     }
 
     pub fn parse_header(data: &[u8]) -> io::Result<Header> {
@@ -807,17 +855,16 @@ pub mod codec8 {
         let read_u32 = |off: usize| u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         Ok(Header {
             total_size: read_u32(0x04),
-            unknown_08: read_u32(0x08),
-            unknown_0c: read_u32(0x0c),
+            outer_calls: read_u32(0x08),
+            tail: read_u32(0x0c),
             block_size: read_u32(0x10),
             channels: read_u32(0x14),
             sample_rate: read_u32(0x18),
-            unknown_24: read_u32(0x24),
-            unknown_28: read_u32(0x28),
-            unknown_2c: read_u32(0x2c),
-            unknown_30: read_u32(0x30),
-            unknown_34: read_u32(0x34),
-            unknown_38: read_u32(0x38),
+            separate_flag: read_u32(0x1c),
+            reserved_20: read_u32(0x20),
+            bits_per_sample: read_u32(0x24),
+            kernel_selector: read_u32(0x28),
+            dispatch_subtype: read_u32(0x2c),
         })
     }
 
@@ -1500,17 +1547,17 @@ pub mod codec8 {
     }
 
     /// Decode one codec_id=8 file. Two on-disc layouts are observed,
-    /// distinguished by the `unknown_2c` field of the header
+    /// distinguished by the `dispatch_subtype` field of the header
     /// (= 1 for voice/SFX `.LS2`, = 2 for stereo music `.SS2`):
     ///
-    /// **Mono LS2** (`unknown_2c == 1`), 1590-byte macroblock stride:
+    /// **Mono LS2** (`dispatch_subtype == 1`), 1590-byte macroblock stride:
     /// ```text
     ///   0..769     chunk A   (768 nibble bytes + 1 reserved)
     ///   769..1538  chunk B   (768 nibble bytes + 1 reserved)
     ///   1538..1590 52-byte mono state-resync header (skip)
     /// ```
     ///
-    /// **Stereo SS2** (`unknown_2c == 2`), 1642-byte macroblock stride
+    /// **Stereo SS2** (`dispatch_subtype == 2`), 1642-byte macroblock stride
     /// starting at file offset `0x30`:
     /// ```text
     ///   0..52     52-byte L channel state-resync header (skip)
@@ -1560,7 +1607,7 @@ pub mod codec8 {
             let bank_size = compute_bank_size(&header);
             let bank_end = (offset + bank_size).min(file_bytes.len());
             let bank = &file_bytes[offset..bank_end];
-            let pcm = if header.unknown_2c == 2 {
+            let pcm = if header.dispatch_subtype == 2 {
                 decode_stereo_bank(bank, &header)?
             } else {
                 decode_mono_bank(bank, &header)?
@@ -1585,9 +1632,9 @@ pub mod codec8 {
     fn compute_bank_size(header: &Header) -> usize {
         const FILE_HEADER: usize = 0x30;
         const CHUNK_SIZE: usize = 769;
-        let outer = header.unknown_08 as usize;
-        let tail_nibbles = header.unknown_0c as usize;
-        let stereo = header.unknown_2c == 2;
+        let outer = header.outer_calls as usize;
+        let tail_nibbles = header.tail as usize;
+        let stereo = header.dispatch_subtype == 2;
         let state_pair = if stereo { 104 } else { 52 };
         let macroblock = state_pair + CHUNK_SIZE * 2;
         let full_chunks = outer.saturating_sub(1);
@@ -1638,8 +1685,8 @@ pub mod codec8 {
                 "codec_id=8 bank too short for state header",
             ));
         }
-        let outer_calls = header.unknown_08 as usize;
-        let tail_nibbles = header.unknown_0c as usize;
+        let outer_calls = header.outer_calls as usize;
+        let tail_nibbles = header.tail as usize;
         let full_chunks = outer_calls.saturating_sub(1);
         let full_macros = full_chunks / 2;
         let leftover_full_chunks = full_chunks - full_macros * 2;
@@ -1700,8 +1747,8 @@ pub mod codec8 {
                 "codec_id=8 stereo bank too short for state header",
             ));
         }
-        let outer_calls = header.unknown_08 as usize;
-        let tail_nibbles = header.unknown_0c as usize;
+        let outer_calls = header.outer_calls as usize;
+        let tail_nibbles = header.tail as usize;
         let full_chunks = outer_calls.saturating_sub(1);
         let full_macros = full_chunks / 2;
         let leftover_full_chunks = full_chunks - full_macros * 2;

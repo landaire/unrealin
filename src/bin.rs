@@ -280,9 +280,9 @@ fn dump_codec8(bytes: &[u8], dst_dir: &std::path::Path) -> Result<usize> {
     }
     std::fs::create_dir_all(dst_dir)
         .wrap_err_with(|| format!("failed to create {dst_dir:?}"))?;
-    let channels = if banks[0].header.unknown_2c == 2 { 2u16 } else { 1u16 };
+    let channels = if banks[0].header.dispatch_subtype == 2 { 2u16 } else { 1u16 };
     let rate = banks[0].header.sample_rate;
-    let subtype = banks[0].header.unknown_2c;
+    let subtype = banks[0].header.dispatch_subtype;
     let mut all = Vec::new();
     let mut bank_files = Vec::with_capacity(banks.len());
     for (i, bank) in banks.iter().enumerate() {
