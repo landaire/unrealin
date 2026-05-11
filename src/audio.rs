@@ -733,6 +733,65 @@ pub mod codec3 {
             assert_eq!(state[1].predictor, 0);
             assert_eq!(state[1].step_index, 0);
         }
+
+        fn valid_header_bytes(mode: u8) -> Vec<u8> {
+            let mut bytes = vec![0u8; HEADER_BYTES];
+            bytes[0] = 3;
+            bytes[12] = mode;
+            bytes
+        }
+
+        #[test]
+        fn parse_rejects_short_file() {
+            assert!(parse_header(&[0u8; HEADER_BYTES - 1]).is_err());
+            assert!(parse_header(&[]).is_err());
+        }
+
+        #[test]
+        fn parse_rejects_wrong_codec_id() {
+            let mut bytes = valid_header_bytes(0);
+            bytes[0] = 8; // codec_id=8 byte, not 3
+            assert!(parse_header(&bytes).is_err());
+        }
+
+        #[test]
+        fn parse_rejects_unsupported_mode() {
+            for bad in [2u8, 3, 4, 0xFF] {
+                let bytes = valid_header_bytes(bad);
+                assert!(
+                    parse_header(&bytes).is_err(),
+                    "mode={bad} should be rejected"
+                );
+            }
+        }
+
+        #[test]
+        fn parse_rejects_oversized_track_count() {
+            let mut bytes = valid_header_bytes(0);
+            bytes[8..12].copy_from_slice(&1000u32.to_le_bytes());
+            assert!(parse_header(&bytes).is_err());
+        }
+
+        #[test]
+        fn parse_accepts_mode_0_and_1() {
+            assert!(matches!(
+                parse_header(&valid_header_bytes(0)).unwrap().mode,
+                Mode::PlanarMono
+            ));
+            assert!(matches!(
+                parse_header(&valid_header_bytes(1)).unwrap().mode,
+                Mode::InterleavedStereo
+            ));
+        }
+
+        /// `decode_file` requires at least `HEADER_BYTES` of input but
+        /// otherwise tolerates a payload of any length (including empty).
+        #[test]
+        fn decode_file_empty_payload_decodes_zero_samples() {
+            let bytes = valid_header_bytes(0);
+            let pcm = decode_file(&bytes).expect("decode");
+            assert!(pcm.is_empty());
+        }
     }
 }
 
@@ -1986,6 +2045,145 @@ pub mod codec8 {
     mod tests {
         use super::*;
 
+        /// The 4-bit unpacker (`sub_199f10`) swaps the lo/hi dwords of
+        /// each 8-byte source qword and extracts 16 nibbles at bit
+        /// positions 60, 56, ..., 4, 0. Hand-computed reference:
+        ///   lo = 0x6745_2301 (LE of `01 23 45 67`)
+        ///   hi = 0xEFCD_AB89 (LE of `89 AB CD EF`)
+        ///   qword = (lo << 32) | hi = 0x6745_2301_EFCD_AB89
+        ///   -> nibbles MSB->LSB: 6,7,4,5,2,3,0,1,E,F,C,D,A,B,8,9
+        #[test]
+        fn unpacker_swaps_dwords_and_extracts_msb_first() {
+            let input = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+            let mut out = [0u8; 16];
+            unpack_nibbles_4bit(&input, &mut out);
+            assert_eq!(
+                out,
+                [0x6, 0x7, 0x4, 0x5, 0x2, 0x3, 0x0, 0x1, 0xE, 0xF, 0xC, 0xD, 0xA, 0xB, 0x8, 0x9]
+            );
+        }
+
+        /// Output length not a multiple of 16 stops mid-qword without
+        /// reading past the requested count. Asking for 10 nibbles must
+        /// consume one 8-byte qword (which yields up to 16) and stop
+        /// after writing 10.
+        #[test]
+        fn unpacker_stops_at_requested_count() {
+            let input = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+            let mut out = [0u8; 10];
+            unpack_nibbles_4bit(&input, &mut out);
+            assert_eq!(out, [0x6, 0x7, 0x4, 0x5, 0x2, 0x3, 0x0, 0x1, 0xE, 0xF]);
+        }
+
+        /// `parse_header` rejects short input.
+        #[test]
+        fn parse_header_short_input_errors() {
+            assert!(parse_header(&[0u8; HEADER_BYTES - 1]).is_err());
+        }
+
+        /// `parse_header` rejects a non-codec-8 first dword.
+        #[test]
+        fn parse_header_wrong_codec_errors() {
+            let mut data = vec![0u8; HEADER_BYTES];
+            data[0..4].copy_from_slice(&3u32.to_le_bytes());
+            assert!(parse_header(&data).is_err());
+        }
+
+        /// `parse_header` rejects forbidden channel counts. Picks `3`
+        /// (the most likely off-by-one bug a future change would
+        /// produce) and `0` plus `0xFFFF_FFFF`.
+        #[test]
+        fn parse_header_rejects_bad_channels() {
+            for bad in [0u32, 3, 5, 0xFFFF_FFFF] {
+                let mut data = vec![0u8; HEADER_BYTES];
+                data[0..4].copy_from_slice(&CODEC_ID.to_le_bytes());
+                data[0x14..0x18].copy_from_slice(&bad.to_le_bytes());
+                data[0x2c..0x30].copy_from_slice(&1u32.to_le_bytes());
+                assert!(parse_header(&data).is_err(), "channels={bad}");
+            }
+        }
+
+        /// End-to-end stereo subtype-2 round-trip on one captured outer
+        /// call (64 source bytes -> 128 nibbles -> 128 interleaved L,R
+        /// i16 samples). Verifies the unpacker, the L/R nibble
+        /// alternation, the kernel transition, and i16 truncation all
+        /// compose correctly. Fixture is the first dispatcher call from
+        /// the proto trace -- captured engine pcm_output baked inline so
+        /// the test doesn't need /var/tmp.
+        #[test]
+        fn stereo_pcm_round_trip_first_64_bytes() {
+            const INPUT: [u8; 64] = [
+                0x87, 0x87, 0x77, 0x77, 0xa6, 0xa6, 0x96, 0x86, 0x95, 0xa6, 0x95, 0xa5, 0xa5, 0x95,
+                0xa6, 0xa5, 0x95, 0xa6, 0x96, 0xa5, 0x96, 0xa6, 0xa6, 0xa6, 0x96, 0xa6, 0x96, 0xa5,
+                0xa6, 0x96, 0xa6, 0x96, 0x97, 0x98, 0x97, 0x96, 0x99, 0x97, 0x97, 0x97, 0x89, 0x99,
+                0x99, 0x89, 0x9a, 0x99, 0x8b, 0x99, 0x89, 0x9a, 0x8b, 0x89, 0x9b, 0x8a, 0x8b, 0x8a,
+                0x7b, 0x9a, 0x7a, 0x8a, 0x9b, 0x7a, 0x9a, 0x8a,
+            ];
+            // L state (offset 0..52) followed by R state (offset 52..104).
+            // Both start at marker=2, step_magnitude=0x500, prev_hi_dot=1
+            // for L / 0 for R, everything else zero.
+            const CSTATE: [u8; 104] = [
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+                0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            const EXPECTED_LE: [u8; 256] = [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x15, 0x00,
+                0x00, 0x00, 0x14, 0x00, 0xee, 0xff, 0x26, 0x00, 0xee, 0xff, 0x39, 0x00, 0xef, 0xff,
+                0x3c, 0x00, 0xf0, 0xff, 0x3e, 0x00, 0xe4, 0xff, 0x32, 0x00, 0xe4, 0xff, 0x40, 0x00,
+                0xef, 0xff, 0x32, 0x00, 0xe4, 0xff, 0x3e, 0x00, 0xe3, 0xff, 0x40, 0x00, 0xee, 0xff,
+                0x34, 0x00, 0xe5, 0xff, 0x40, 0x00, 0xe4, 0xff, 0x43, 0x00, 0xe3, 0xff, 0x37, 0x00,
+                0xec, 0xff, 0x40, 0x00, 0xed, 0xff, 0x37, 0x00, 0xe7, 0xff, 0x40, 0x00, 0xed, 0xff,
+                0x40, 0x00, 0xee, 0xff, 0x43, 0x00, 0xef, 0xff, 0x38, 0x00, 0xef, 0xff, 0x40, 0x00,
+                0xea, 0xff, 0x37, 0x00, 0xef, 0xff, 0x3d, 0x00, 0xf0, 0xff, 0x34, 0x00, 0xf1, 0xff,
+                0x31, 0x00, 0xf1, 0xff, 0x38, 0x00, 0xf3, 0xff, 0x31, 0x00, 0xf3, 0xff, 0x37, 0x00,
+                0xf3, 0xff, 0x30, 0x00, 0xf3, 0xff, 0x2e, 0x00, 0xf8, 0xff, 0x2b, 0x00, 0xff, 0xff,
+                0x29, 0x00, 0xfe, 0xff, 0x28, 0x00, 0xfe, 0xff, 0x27, 0x00, 0xff, 0xff, 0x26, 0x00,
+                0xff, 0xff, 0x25, 0x00, 0x04, 0x00, 0x1d, 0x00, 0x07, 0x00, 0x1f, 0x00, 0x09, 0x00,
+                0x20, 0x00, 0x0a, 0x00, 0x18, 0x00, 0x0b, 0x00, 0x1a, 0x00, 0x0b, 0x00, 0x16, 0x00,
+                0x12, 0x00, 0x18, 0x00, 0x10, 0x00, 0x19, 0x00, 0x12, 0x00, 0x14, 0x00, 0x11, 0x00,
+                0x11, 0x00, 0x1a, 0x00, 0x14, 0x00, 0x1a, 0x00, 0x11, 0x00, 0x17, 0x00, 0x0e, 0x00,
+                0x1a, 0x00, 0x0c, 0x00, 0x21, 0x00, 0x0b, 0x00, 0x21, 0x00, 0x0e, 0x00, 0x27, 0x00,
+                0x0c, 0x00, 0x27, 0x00, 0x07, 0x00, 0x28, 0x00, 0x0b, 0x00, 0x28, 0x00, 0x07, 0x00,
+                0x2f, 0x00, 0x06, 0x00, 0x2e, 0x00, 0x0a, 0x00, 0x2f, 0x00, 0x07, 0x00, 0x30, 0x00,
+                0x09, 0x00, 0x37, 0x00,
+            ];
+
+            let mut nibbles = [0u8; 128];
+            unpack_nibbles_4bit(&INPUT, &mut nibbles);
+            let mut state_l = state_from_bytes(&CSTATE[0..52]);
+            let mut state_r = state_from_bytes(&CSTATE[52..104]);
+            let mut got = [0i16; 128];
+            for (i, pair) in nibbles.chunks_exact(2).enumerate() {
+                got[2 * i] = decode_nibble_4bit(&mut state_l, Nibble::new(pair[0]));
+                got[2 * i + 1] = decode_nibble_4bit(&mut state_r, Nibble::new(pair[1]));
+            }
+            for i in 0..128 {
+                let want = i16::from_le_bytes([EXPECTED_LE[2 * i], EXPECTED_LE[2 * i + 1]]);
+                assert_eq!(got[i], want, "sample {i} mismatch");
+            }
+        }
+
+        /// Valid headers parse and round-trip the subtype tag.
+        #[test]
+        fn parse_header_accepts_all_subtypes() {
+            for (ch, want_count) in [(1u32, 1u16), (2, 2), (4, 4), (6, 6)] {
+                let mut data = vec![0u8; HEADER_BYTES];
+                data[0..4].copy_from_slice(&CODEC_ID.to_le_bytes());
+                data[0x14..0x18].copy_from_slice(&ch.to_le_bytes());
+                data[0x18..0x1c].copy_from_slice(&36000u32.to_le_bytes());
+                data[0x28..0x2c].copy_from_slice(&1u32.to_le_bytes()); // kernel = 4-bit
+                data[0x2c..0x30].copy_from_slice(&ch.to_le_bytes());
+                let h = parse_header(&data).expect("parse");
+                assert_eq!(h.channels().count(), want_count);
+            }
+        }
+
         /// Full-file ground truth: concatenate `pcm_output` from
         /// every captured outer-call in the trace and require that
         /// `decode_file` on the corresponding on-disc `.LS2` produces
@@ -2382,6 +2580,269 @@ pub mod codec8 {
             out[0x30..0x32].copy_from_slice(&s.delta_save.to_le_bytes());
             out
         }
+
+        // 14 kernel transition fixtures (nib, entry_state, post_state)
+        // extracted from a QEMU plugin trace's kernel_captures table.
+        // Self-contained: do not require the trace file on disk.
+        #[rustfmt::skip]
+        const KERNEL_FIXTURES: &[(u8, [u8; 52], [u8; 52])] = &[
+            (7,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0xc8, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+            (5,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x7f, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xf4, 0xff, 0xf7, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0xfb, 0xff, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+            (6,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7d, 0x00, 0x6d, 0x00, 0x6d, 0x00, 0x6d, 0x00, 0xfa, 0xff, 0xfb, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0xfb, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x1e, 0x01, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x0c, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7f, 0x00, 0x74, 0x00, 0x64, 0x00, 0x64, 0x00, 0xfb, 0xff, 0xfa, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xfb, 0xff, 0xfb, 0xff, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+            (8,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xfe, 0xff, 0xff, 0xff, 0x2d, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x7f, 0x00, 0x69, 0x00, 0x49, 0x00, 0x59, 0x00, 0xfe, 0xff, 0xfd, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfd, 0xff,
+                0xfb, 0xff, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x0f, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x7f, 0x00, 0x70, 0x00, 0x50, 0x00, 0x50, 0x00, 0x00, 0x00, 0xfe, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xfd, 0xff, 0x00, 0x00,
+            ]),
+            (9,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x52, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0x76, 0x00, 0xfb, 0xff, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00,
+                0x02, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x45, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x6d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x02, 0x00, 0xfb, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00,
+                0x02, 0x00, 0x00, 0x00,
+            ]),
+            (11,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x45, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x6d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x7d, 0x00, 0x02, 0x00, 0xfb, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00, 0x02, 0x00,
+                0x02, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x4d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x50, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x74, 0x00, 0x74, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x09, 0x00, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00, 0xfb, 0xff, 0x00, 0x00,
+                0x02, 0x00, 0x00, 0x00,
+            ]),
+            (3,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x39, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x4f, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x7b, 0x00, 0x7b, 0x00, 0x76, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x09, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00, 0xfb, 0xff,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x64, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x42, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x72, 0x00, 0x72, 0x00, 0x6d, 0x00, 0x7f, 0x00, 0xf6, 0xff, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x09, 0x00, 0x04, 0x00,
+                0xfb, 0xff, 0x00, 0x00,
+            ]),
+            (12,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x50, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x69, 0x00, 0x79, 0x00, 0x74, 0x00, 0x7f, 0x00, 0xff, 0xff, 0xf6, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x09, 0x00,
+                0x04, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0xa5, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x4c, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x70, 0x00, 0x70, 0x00, 0x7b, 0x00, 0x7f, 0x00, 0x0b, 0x00, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00,
+                0x09, 0x00, 0x00, 0x00,
+            ]),
+            (4,
+            [
+                0x02, 0x00, 0x00, 0x00, 0xa9, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x3f, 0x00, 0xf0, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x67, 0x00, 0x67, 0x00, 0x7f, 0x00, 0x76, 0x00, 0xf9, 0xff, 0x0b, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xf9, 0xff, 0x0d, 0x00, 0x00, 0x00, 0xf6, 0xff,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0xb8, 0x01, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x4a, 0x00, 0xe5, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x6e, 0x00, 0x5e, 0x00, 0x76, 0x00, 0x7d, 0x00, 0xf4, 0xff, 0xf9, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0xf9, 0xff, 0x0d, 0x00, 0x00, 0x00,
+                0xf6, 0xff, 0x00, 0x00,
+            ]),
+            (13,
+            [
+                0x02, 0x00, 0x00, 0x00, 0xb4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x2e, 0x00, 0xd8, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7a, 0x00, 0x5a, 0x00, 0x72, 0x00, 0x6d, 0x00, 0x02, 0x00, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x03, 0x00,
+                0xf6, 0xff, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x54, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x39, 0x00, 0xce, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7f, 0x00, 0x61, 0x00, 0x79, 0x00, 0x74, 0x00, 0x19, 0x00, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0d, 0x00,
+                0x03, 0x00, 0x00, 0x00,
+            ]),
+            (14,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x4a, 0x02, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff,
+                0xf8, 0xff, 0xff, 0xff, 0x8f, 0x00, 0xe1, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x76, 0x00, 0x76, 0x00, 0x69, 0x00, 0x59, 0x00, 0xf5, 0xff, 0xe5, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xef, 0xff, 0xf0, 0xff, 0xec, 0xff,
+                0xf2, 0xff, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x64, 0x04, 0x00, 0x00, 0xfa, 0xff, 0xff, 0xff,
+                0xf8, 0xff, 0xff, 0xff, 0x82, 0x00, 0xdd, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7d, 0x00, 0x6d, 0x00, 0x60, 0x00, 0x50, 0x00, 0x28, 0x00, 0xf5, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0xef, 0xff, 0xf0, 0xff,
+                0xec, 0xff, 0x00, 0x00,
+            ]),
+            (10,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x1f, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x02, 0x00, 0x00, 0x00, 0x80, 0x00, 0xdc, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x7b, 0x00, 0x5b, 0x00, 0x5e, 0x00, 0x5e, 0x00, 0xe9, 0xff, 0xf2, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xec, 0xff, 0xeb, 0xff, 0x2f, 0x00, 0x00, 0x00,
+                0xef, 0xff, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x15, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x73, 0x00, 0xd7, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x72, 0x00, 0x52, 0x00, 0x65, 0x00, 0x65, 0x00, 0x32, 0x00, 0xe9, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0x35, 0x00, 0xec, 0xff, 0xeb, 0xff, 0x2f, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+            (1,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x7e, 0x03, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+                0x01, 0x00, 0x00, 0x00, 0x8f, 0x00, 0x93, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x70, 0x00, 0x0e, 0x00, 0x41, 0x00, 0x51, 0x00, 0x17, 0x00, 0x14, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x19, 0x00, 0xd8, 0xff, 0xe5, 0xff,
+                0x40, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x0c, 0x04, 0x00, 0x00, 0xfc, 0xff, 0xff, 0xff,
+                0x04, 0x00, 0x00, 0x00, 0x82, 0x00, 0x8f, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x67, 0x00, 0x05, 0x00, 0x48, 0x00, 0x58, 0x00, 0xab, 0xff, 0x17, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xae, 0xff, 0x0c, 0x00, 0x19, 0x00, 0xd8, 0xff,
+                0xe5, 0xff, 0x00, 0x00,
+            ]),
+            (2,
+            [
+                0x02, 0x00, 0x00, 0x00, 0x03, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00,
+                0xfb, 0xff, 0xff, 0xff, 0x7c, 0x00, 0x70, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x61, 0x00, 0xff, 0xff, 0x52, 0x00, 0x72, 0x00, 0x19, 0x00, 0x4f, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c, 0x00, 0xcd, 0xff, 0x00, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x02, 0x00, 0x00, 0x00, 0x3d, 0x04, 0x00, 0x00, 0xfb, 0xff, 0xff, 0xff,
+                0x09, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x6c, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x58, 0x00, 0xf7, 0xff, 0x59, 0x00, 0x69, 0x00, 0x97, 0xff, 0x19, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xa5, 0xff, 0x00, 0x00, 0x5c, 0x00, 0xcd, 0xff,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+        ];
+
+        /// Self-contained kernel byte-perfect check. Walks the baked
+        /// `KERNEL_FIXTURES` table (covering nibbles 1..=14) and
+        /// asserts each engine-captured post-state survives one
+        /// `decode_nibble_4bit` round-trip unchanged. The 14 fixtures
+        /// span the full 4-bit input domain that real audio actually
+        /// exercises, so a kernel regression in any sign or magnitude
+        /// branch surfaces here without needing the multi-megabyte
+        /// trace file. The trace-based `byte_perfect_against_qemu_trace`
+        /// still runs as a wider replay when the trace is present.
+        #[test]
+        fn kernel_fixtures_byte_perfect() {
+            let mut failures = Vec::new();
+            for (i, (nib, entry, truth)) in KERNEL_FIXTURES.iter().enumerate() {
+                let mut state = state_from_bytes(entry);
+                let _ = decode_nibble_4bit(&mut state, Nibble::new(*nib));
+                let got = state_to_bytes(&state, entry);
+                if got[..0x32] != truth[..0x32] {
+                    failures.push((i, *nib));
+                }
+            }
+            assert!(failures.is_empty(), "kernel fixture mismatches: {failures:?}");
+        }
+
+        /// `decode_nibble_4bit` should never leave `step_magnitude`
+        /// outside the engine-validated clamp `[0x10f, 0xa00]` no
+        /// matter what (state, nibble) pair drives it. This guards
+        /// the clamp logic at the kernel tail and catches
+        /// regressions where the clamp gets reordered or dropped.
+        #[test]
+        fn kernel_step_magnitude_stays_in_clamp() {
+            const MIN: i32 = 0x10f;
+            const MAX: i32 = 0xa00;
+            // Initial state is well-formed; the engine never starts
+            // outside the clamp.
+            let mut state = ChannelState::init();
+            for round in 0..256 {
+                let nib = Nibble::new((round & 0xF) as u8);
+                let _ = decode_nibble_4bit(&mut state, nib);
+                assert!(
+                    state.step_magnitude >= MIN && state.step_magnitude <= MAX,
+                    "round {round}: step_magnitude {} out of clamp [{MIN}, {MAX}]",
+                    state.step_magnitude
+                );
+            }
+        }
     }
 }
 
@@ -2591,6 +3052,140 @@ pub mod ss2 {
                 assert_eq!(s[0], 0x03, "voice {i} should start with codec3 byte");
                 assert_eq!(s[1], *expected_marker, "voice {i} marker mismatch");
             }
+        }
+
+        fn build_bank(bank_size: usize, voice_markers: [u8; VOICES_PER_BANK]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bank_size];
+            bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+            bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&(bank_size as u32).to_le_bytes());
+            let mut off = WRAPPER_BYTES;
+            for (voice, marker) in voice_markers.iter().enumerate() {
+                bytes[off] = 0x03;
+                bytes[off + 1] = *marker;
+                off += CYCLE0_VOICE_REGION_SIZES[voice];
+            }
+            bytes
+        }
+
+        /// `is_multibank` must accept files whose first 8 bytes are the
+        /// wrapper signature and reject codec_id=3 / codec_id=8 / random
+        /// data so the dispatcher in bin.rs picks the right decoder.
+        #[test]
+        fn is_multibank_signature_detect() {
+            assert!(is_multibank(&[2, 0, 0, 0, 3, 0, 0, 0]));
+            assert!(!is_multibank(&[3, 0, 0, 0, 0, 0, 0, 0])); // codec_id=3 directly
+            assert!(!is_multibank(&[8, 0, 0, 0, 0, 0, 0, 0])); // codec_id=8
+            assert!(!is_multibank(&[2, 0, 0, 0])); // too short
+            assert!(!is_multibank(&[])); // empty
+        }
+
+        /// Two consecutive banks must round-trip through `list`. The
+        /// per-bank `offset` field is load-bearing for any extractor that
+        /// indexes back into the source file.
+        #[test]
+        fn list_walks_multiple_banks() {
+            let bank_size = WRAPPER_BYTES + CYCLE_BYTES;
+            let bank0 = build_bank(bank_size, [0xA0, 0xA1, 0xA2]);
+            let bank1 = build_bank(bank_size, [0xB0, 0xB1, 0xB2]);
+            let mut file = Vec::new();
+            file.extend_from_slice(&bank0);
+            file.extend_from_slice(&bank1);
+
+            let banks = list(&file).expect("parse");
+            assert_eq!(banks.len(), 2);
+            assert_eq!(banks[0].offset, 0);
+            assert_eq!(banks[0].bank_size, bank_size);
+            assert_eq!(banks[1].offset, bank_size);
+            assert_eq!(banks[1].bank_size, bank_size);
+
+            for (b, expected) in banks.iter().zip([[0xA0, 0xA1, 0xA2], [0xB0, 0xB1, 0xB2]]) {
+                for (v, marker) in expected.iter().enumerate() {
+                    let s = b.voice_stream(v);
+                    assert_eq!(s[1], *marker);
+                }
+            }
+        }
+
+        /// Voice 0 of cycle 0 holds `0x16A - 0x44 = 294` ADPCM bytes; cycles
+        /// `>= 1` give 361 bytes per voice plus a `+1` bonus that rotates
+        /// `cycle_idx % VOICES_PER_BANK`. Verify the de-interleave assembles
+        /// the right slices in the right order for cycles 1 and 2.
+        #[test]
+        fn voice_stream_assembles_rotation_correctly() {
+            let bank_size = WRAPPER_BYTES + 3 * CYCLE_BYTES;
+            let mut bytes = build_bank(bank_size, [0xA0, 0xA1, 0xA2]);
+
+            // Stamp a unique byte at the START of each (cycle, voice)
+            // chunk so we can identify it after de-interleave.
+            // Cycle 0 voice 0 starts at WRAPPER_BYTES + VOICE_HEADER_BYTES.
+            let c0v0_adpcm = WRAPPER_BYTES + VOICE_HEADER_BYTES;
+            bytes[c0v0_adpcm] = 0xC0;
+
+            // Cycle 1 (bonus rotates to voice 1). Voice 0 gets exactly 361
+            // bytes starting at the cycle base.
+            let c1 = WRAPPER_BYTES + CYCLE_BYTES;
+            bytes[c1] = 0xC1; // voice 0
+            bytes[c1 + 361] = 0xD1; // voice 1
+            bytes[c1 + 361 + 362] = 0xE1; // voice 2
+
+            // Cycle 2 (bonus rotates to voice 2). Voice 0=361, voice 1=361,
+            // voice 2=362.
+            let c2 = WRAPPER_BYTES + 2 * CYCLE_BYTES;
+            bytes[c2] = 0xC2; // voice 0
+            bytes[c2 + 361] = 0xD2; // voice 1
+            bytes[c2 + 361 + 361] = 0xE2; // voice 2
+
+            let banks = list(&bytes).expect("parse");
+            let b = &banks[0];
+
+            // Voice 0 stream: 28-byte header + 0x126 (294) bytes from cycle 0
+            // + 361 + 361 = 1044 bytes total.
+            let v0 = b.voice_stream(0);
+            assert_eq!(v0.len(), codec3::HEADER_BYTES + 294 + 361 + 361);
+            assert_eq!(v0[codec3::HEADER_BYTES], 0xC0); // cycle 0 start
+            assert_eq!(v0[codec3::HEADER_BYTES + 294], 0xC1); // cycle 1 start
+            assert_eq!(v0[codec3::HEADER_BYTES + 294 + 361], 0xC2); // cycle 2 start
+
+            // Voice 1 stream: header + (0x169 - 0x44) + 362 + 361.
+            let v1 = b.voice_stream(1);
+            let v1_c0_len = CYCLE0_VOICE_REGION_SIZES[1] - VOICE_HEADER_BYTES;
+            assert_eq!(v1.len(), codec3::HEADER_BYTES + v1_c0_len + 362 + 361);
+            assert_eq!(v1[codec3::HEADER_BYTES + v1_c0_len], 0xD1);
+            assert_eq!(v1[codec3::HEADER_BYTES + v1_c0_len + 362], 0xD2);
+
+            // Voice 2 stream: header + (0x169 - 0x44) + 361 + 362.
+            let v2 = b.voice_stream(2);
+            let v2_c0_len = CYCLE0_VOICE_REGION_SIZES[2] - VOICE_HEADER_BYTES;
+            assert_eq!(v2.len(), codec3::HEADER_BYTES + v2_c0_len + 361 + 362);
+            assert_eq!(v2[codec3::HEADER_BYTES + v2_c0_len], 0xE1);
+            assert_eq!(v2[codec3::HEADER_BYTES + v2_c0_len + 361], 0xE2);
+        }
+
+        /// End-to-end through `decode_voice`: stamp a valid codec3 header
+        /// (mode=0 / planar mono) at voice 0's cycle-0 region and check
+        /// `codec3::decode_file` actually accepts the assembled stream.
+        /// The first sample of the all-zero ADPCM body must equal the
+        /// header predictor seed = 0 (the parser zero-seeds state per the
+        /// QEMU plugin trace; see `codec3::parse_header`).
+        #[test]
+        fn decode_voice_round_trip_with_valid_header() {
+            let bank_size = WRAPPER_BYTES + CYCLE_BYTES;
+            let mut bytes = build_bank(bank_size, [0x00, 0x00, 0x00]);
+            // Place a valid codec3 header at voice 0's cycle-0 region.
+            // version=3, mode=0 (planar mono). All other bytes 0.
+            let v0 = WRAPPER_BYTES;
+            bytes[v0] = 0x03; // version
+            bytes[v0 + 12] = 0x00; // mode
+
+            let banks = list(&bytes).expect("parse");
+            let pcm = decode_voice(&banks[0], 0).expect("decode");
+            // Voice 0 ADPCM payload is 294 bytes of zeros, decoded as
+            // 588 mono samples; predictor seeded to 0 means the entire
+            // run stays at 0 (each nibble=0 with step_index=0 yields
+            // delta=0).
+            assert_eq!(pcm.len(), 294 * 2);
+            assert!(pcm.iter().all(|&s| s == 0));
         }
     }
 }
@@ -2981,6 +3576,224 @@ pub mod sm2 {
         }
         Ok(records)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Build a synthetic descriptor blob laid out as the engine
+        /// expects. `sub_a`: `(seq_id, audio_rel_offset)`. `array_b_entry`:
+        /// `(avg_bps, sample_rate, channels, name_16)` where the 16-byte
+        /// name field is taken verbatim (bytes 13..16 of `b"LS2"` mark
+        /// LS2-redirected entries). `array_a`: `(seq_id, ratio)`.
+        fn build_descriptor(
+            sub_a: &[(u32, u32)],
+            array_b: &[(u32, u32, u16, [u8; ARRAY_B_NAME_BYTES])],
+            array_a: &[(u32, u32)],
+        ) -> Vec<u8> {
+            const HEADER_BYTES: usize = 0x24;
+            const ARRAY_C_BYTES: usize = 20;
+            let array_a_size = array_a.len() * ARRAY_A_ENTRY_SIZE;
+            let array_b_size = array_b.len() * ARRAY_B_ENTRY_SIZE;
+            let sub_a_size = sub_a.len() * 8;
+
+            let array_a_off = HEADER_BYTES;
+            let array_b_off = array_a_off + array_a_size;
+            let array_c_off = array_b_off + array_b_size;
+            let sub_a_off = array_c_off + ARRAY_C_BYTES;
+            let total = sub_a_off + sub_a_size;
+
+            let mut buf = vec![0u8; total];
+            buf[0x04..0x08].copy_from_slice(&(array_a_off as u32).to_le_bytes());
+            buf[0x08..0x0c].copy_from_slice(&(array_a.len() as u32).to_le_bytes());
+            buf[0x0c..0x10].copy_from_slice(&(array_b_off as u32).to_le_bytes());
+            buf[0x10..0x14].copy_from_slice(&(array_b.len() as u32).to_le_bytes());
+            buf[0x14..0x18].copy_from_slice(&(array_c_off as u32).to_le_bytes());
+            buf[0x18..0x1c].copy_from_slice(&1u32.to_le_bytes());
+
+            for (i, &(seq, ratio)) in array_a.iter().enumerate() {
+                let off = array_a_off + i * ARRAY_A_ENTRY_SIZE;
+                buf[off + ARRAY_A_OFFSET_SEQ_ID..off + ARRAY_A_OFFSET_SEQ_ID + 4]
+                    .copy_from_slice(&seq.to_le_bytes());
+                buf[off + ARRAY_A_OFFSET_RATE_RATIO..off + ARRAY_A_OFFSET_RATE_RATIO + 4]
+                    .copy_from_slice(&ratio.to_le_bytes());
+            }
+
+            for (i, &(avg, rate, ch, name)) in array_b.iter().enumerate() {
+                let off = array_b_off + i * ARRAY_B_ENTRY_SIZE;
+                buf[off + ARRAY_B_OFFSET_AVG_BYTES_PER_SEC
+                    ..off + ARRAY_B_OFFSET_AVG_BYTES_PER_SEC + 4]
+                    .copy_from_slice(&avg.to_le_bytes());
+                buf[off + ARRAY_B_OFFSET_SAMPLE_RATE..off + ARRAY_B_OFFSET_SAMPLE_RATE + 4]
+                    .copy_from_slice(&rate.to_le_bytes());
+                // Channel count: u16 high word of the u32 at +0x48. Low
+                // word is the engine's format-flag constant `0x0010` for
+                // every observed entry; pin it so the test doesn't drift
+                // if the parser ever starts validating it.
+                let ch_u32 = ((ch as u32) << 16) | 0x0010;
+                buf[off + 0x48..off + 0x4c].copy_from_slice(&ch_u32.to_le_bytes());
+                buf[off + ARRAY_B_OFFSET_NAME..off + ARRAY_B_OFFSET_NAME + ARRAY_B_NAME_BYTES]
+                    .copy_from_slice(&name);
+            }
+
+            let sub_a_rel = sub_a_off - array_c_off;
+            buf[array_c_off + 0x04..array_c_off + 0x08]
+                .copy_from_slice(&(sub_a_rel as u32).to_le_bytes());
+            buf[array_c_off + 0x08..array_c_off + 0x0c]
+                .copy_from_slice(&(sub_a.len() as u32).to_le_bytes());
+
+            for (i, &(seq, rel)) in sub_a.iter().enumerate() {
+                let off = sub_a_off + i * 8;
+                buf[off..off + 4].copy_from_slice(&seq.to_le_bytes());
+                buf[off + 4..off + 8].copy_from_slice(&rel.to_le_bytes());
+            }
+            buf
+        }
+
+        fn name_with_ls2(prefix: &[u8]) -> [u8; ARRAY_B_NAME_BYTES] {
+            let mut out = [0u8; ARRAY_B_NAME_BYTES];
+            let p = prefix.len().min(13);
+            out[..p].copy_from_slice(&prefix[..p]);
+            out[13..16].copy_from_slice(b"LS2");
+            out
+        }
+
+        fn name_plain(prefix: &[u8]) -> [u8; ARRAY_B_NAME_BYTES] {
+            let mut out = [0u8; ARRAY_B_NAME_BYTES];
+            let p = prefix.len().min(16);
+            out[..p].copy_from_slice(&prefix[..p]);
+            out
+        }
+
+        fn record() -> Record {
+            Record {
+                data_offset: 0x1000,
+                data_size: 0x200,
+                name: "test_map".into(),
+            }
+        }
+
+        /// Two sub_a entries: file_offset relative to audio_base, length
+        /// is `next_offset - this_offset` for the first and
+        /// `audio_end - last_offset` for the last. `0x40_00_00_01` /
+        /// `0x40_00_00_02` exercise the seq-id type-tag mask.
+        #[test]
+        fn basic_two_entries_offsets_and_lengths() {
+            // array_b indexed by seq & 0x00FFFFFF -> entries 1 and 2.
+            let array_b = vec![
+                (0, 0, 0, [0u8; ARRAY_B_NAME_BYTES]),
+                (0, 22050, 1, name_plain(b"sfx_a.wav")),
+                (0, 16000, 1, name_plain(b"sfx_b.wav")),
+            ];
+            let sub_a = vec![(0x4000_0001u32, 0u32), (0x4000_0002u32, 100u32)];
+            let desc = build_descriptor(&sub_a, &array_b, &[]);
+            let r = record();
+            let audio_base = r.data_offset as u64 + r.data_size as u64;
+            let next_record = Some(0x1500u32);
+
+            let out = parse_sound_table_for(&desc, &r, next_record, Kind::Sm2).expect("parse");
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].file_offset, audio_base);
+            assert_eq!(out[0].length, 100);
+            assert_eq!(out[0].sample_rate.hz(), 22050);
+            assert_eq!(out[0].channels, 1);
+            assert_eq!(out[0].source_name, "sfx_a.wav");
+            assert!(!out[0].is_ls2_redirect);
+
+            assert_eq!(out[1].file_offset, audio_base + 100);
+            assert_eq!(out[1].length, 0x1500 - (audio_base + 100));
+            assert_eq!(out[1].sample_rate.hz(), 16000);
+        }
+
+        /// SM2 only scales LS2-tagged entries; non-LS2 stays at the
+        /// array_b nominal rate even when array_a has a matching ratio.
+        #[test]
+        fn sm2_non_ls2_ignores_array_a_ratio() {
+            let array_b = vec![(0, 16000, 1, name_plain(b"plain.wav"))];
+            let sub_a = vec![(0u32, 0u32)];
+            // Force a non-unity ratio for the matching seq.
+            let array_a = vec![(0u32, 0xAADAu32)]; // 0.6674x
+            let desc = build_descriptor(&sub_a, &array_b, &array_a);
+            let r = record();
+            let out = parse_sound_table_for(&desc, &r, None, Kind::Sm2).expect("parse");
+            assert_eq!(out[0].sample_rate.hz(), 16000);
+            assert!(!out[0].is_ls2_redirect);
+        }
+
+        /// SM2 LS2-tagged entry gets scaled by the array_a ratio whose
+        /// seq_id is the largest <= this entry's seq_id.
+        #[test]
+        fn sm2_ls2_entry_gets_array_a_scaling() {
+            let array_b = vec![(0, 16000, 1, name_with_ls2(b"DIA_A"))];
+            let sub_a = vec![(0u32, 0u32)];
+            let array_a = vec![(0u32, 0xAADAu32)];
+            let desc = build_descriptor(&sub_a, &array_b, &array_a);
+            let r = record();
+            let out = parse_sound_table_for(&desc, &r, None, Kind::Sm2).expect("parse");
+            assert!(out[0].is_ls2_redirect);
+            assert_eq!(out[0].sample_rate.hz(), (16000u64 * 0xAADA / 0x10000) as u32);
+        }
+
+        /// LM2 scales every entry regardless of LS2 tag (LM2 array_b
+        /// names omit the suffix; rate scaling is applied unconditionally).
+        #[test]
+        fn lm2_scales_every_entry() {
+            let array_b = vec![(0, 16000, 1, name_plain(b"dialog.wav"))];
+            let sub_a = vec![(0u32, 0u32)];
+            let array_a = vec![(0u32, 0xAADAu32)];
+            let desc = build_descriptor(&sub_a, &array_b, &array_a);
+            let r = record();
+            let out = parse_sound_table_for(&desc, &r, None, Kind::Lm2).expect("parse");
+            assert!(!out[0].is_ls2_redirect);
+            assert_eq!(out[0].sample_rate.hz(), (16000u64 * 0xAADA / 0x10000) as u32);
+        }
+
+        /// array_a entries with `ratio == 0` are sentinel/placeholder
+        /// slots and are skipped. A scaled entry whose seq matches only
+        /// a zero-ratio slot must fall back to ratio = UNIT (nominal
+        /// rate), not crash and not multiply by zero.
+        #[test]
+        fn lm2_zero_ratio_falls_back_to_unit() {
+            let array_b = vec![(0, 16000, 1, name_plain(b"dialog.wav"))];
+            let sub_a = vec![(0u32, 0u32)];
+            let array_a = vec![(0u32, 0u32)]; // sentinel
+            let desc = build_descriptor(&sub_a, &array_b, &array_a);
+            let r = record();
+            let out = parse_sound_table_for(&desc, &r, None, Kind::Lm2).expect("parse");
+            assert_eq!(out[0].sample_rate.hz(), 16000);
+        }
+
+        /// Out-of-bounds seq_id (after the `& 0x00FFFFFF` mask still
+        /// >= array_b_cnt) falls back to the hardcoded 22050 default.
+        /// This guards the path that protected real maps before the
+        /// type-tag mask was applied.
+        #[test]
+        fn out_of_range_seq_falls_back_to_default_rate() {
+            // array_b_cnt = 1, but seq's low-24 = 0x10 -> beyond the array.
+            let array_b = vec![(0, 16000, 1, name_plain(b"a.wav"))];
+            let sub_a = vec![(0x4000_0010u32, 0u32)];
+            let desc = build_descriptor(&sub_a, &array_b, &[]);
+            let r = record();
+            let out = parse_sound_table_for(&desc, &r, None, Kind::Sm2).expect("parse");
+            assert_eq!(out[0].sample_rate.hz(), 22050);
+            assert_eq!(out[0].source_name, "");
+        }
+
+        #[test]
+        fn rejects_descriptor_shorter_than_header() {
+            assert!(parse_sound_table_for(&[0u8; 0x20], &record(), None, Kind::Sm2).is_err());
+        }
+
+        #[test]
+        fn rejects_array_c_count_not_one() {
+            let array_b = vec![(0, 16000, 1, name_plain(b"a.wav"))];
+            let sub_a = vec![(0u32, 0u32)];
+            let mut desc = build_descriptor(&sub_a, &array_b, &[]);
+            // Smash array_c count to 2.
+            desc[0x18..0x1c].copy_from_slice(&2u32.to_le_bytes());
+            assert!(parse_sound_table_for(&desc, &record(), None, Kind::Sm2).is_err());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3067,5 +3880,118 @@ mod tests {
         // Interleaved L, R: pcm[0] = L's first sample, pcm[1] = R's.
         assert_eq!(pcm[0], 100);
         assert_eq!(pcm[1], -200);
+    }
+
+    mod units {
+        use crate::audio::units::*;
+
+        #[test]
+        fn rate_ratio_unit_is_identity() {
+            let r = SampleRate::new(36000);
+            assert_eq!(RateRatio::UNIT.apply(r), r);
+        }
+
+        /// 0xAADA observed in 0_0_3 LM2 entries; 16:16 fixed-point ~ 0.6674x.
+        /// Engine math is `(rate * ratio) / 0x10000` in u64 with truncation.
+        /// Pin the exact division so a future move to floating-point or
+        /// different rounding surfaces here.
+        #[test]
+        fn rate_ratio_observed_lm2_scaling() {
+            let nominal = SampleRate::new(16000);
+            let scaled = RateRatio::new(0xAADA).apply(nominal);
+            assert_eq!(scaled.hz(), (16000u64 * 0xAADA / 0x10000) as u32);
+            assert_eq!(scaled.hz(), 10678);
+        }
+
+        /// Above-unity ratios push past the input rate; the u64 widening
+        /// guards against the 32-bit overflow you'd hit if you multiplied
+        /// in u32 (44100 * 0x20000 = 0x564f8000, which fits, but the
+        /// intermediate is asking for trouble for higher rates).
+        #[test]
+        fn rate_ratio_above_unity_widens() {
+            // ratio = 2.0
+            let scaled = RateRatio::new(0x20000).apply(SampleRate::new(44100));
+            assert_eq!(scaled.hz(), 88200);
+        }
+
+        #[test]
+        fn rate_ratio_zero_is_zero() {
+            assert!(RateRatio::new(0).is_zero());
+            assert!(!RateRatio::UNIT.is_zero());
+        }
+
+        #[test]
+        fn nibble_wraps_to_four_bits() {
+            assert_eq!(Nibble::new(0xFF).value(), 0x0F);
+            assert_eq!(Nibble::new(0x10).value(), 0x00);
+            assert_eq!(Nibble::new(0x07).value(), 0x07);
+        }
+
+        #[test]
+        fn nibble_lo_hi_split_a_byte() {
+            assert_eq!(Nibble::lo(0xA3).value(), 0x03);
+            assert_eq!(Nibble::hi(0xA3).value(), 0x0A);
+        }
+
+        #[test]
+        fn sample_rate_display_includes_hz() {
+            assert_eq!(SampleRate::new(36000).to_string(), "36000 Hz");
+        }
+
+        #[test]
+        fn seq_id_lower_hex_strips_type_tag_via_caller_mask() {
+            // SeqId itself doesn't mask; the SM2 parser does `& 0x00FFFFFF`
+            // before indexing array_b. Pin the raw round-trip so a future
+            // change to mask inside SeqId surfaces here.
+            let s = SeqId::new(0x4000_007E);
+            assert_eq!(s.raw(), 0x4000_007E);
+            assert_eq!(format!("{s:x}"), "4000007e");
+        }
+    }
+
+    mod enums {
+        use crate::audio::codec3;
+        use crate::audio::codec8;
+
+        #[test]
+        fn codec3_mode_round_trip() {
+            for v in 0u8..=255 {
+                match codec3::Mode::from_u8(v) {
+                    Some(m) => assert_eq!(m.as_u8(), v),
+                    None => assert!(v >= 2, "unexpected None at {v}"),
+                }
+            }
+        }
+
+        #[test]
+        fn codec3_mode_channel_counts() {
+            assert_eq!(codec3::Mode::PlanarMono.channels(), 1);
+            assert_eq!(codec3::Mode::InterleavedStereo.channels(), 2);
+        }
+
+        /// Engine accepts 1, 2, 4, 6 channels and rejects everything else
+        /// in `sub_19b4a0` with the `"Adpcm allows only sound files with
+        /// 1, 2, 4 and 6 channels"` string. Pin the exact set.
+        #[test]
+        fn codec8_channels_match_engine_allow_list() {
+            for v in [1, 2, 4, 6] {
+                let c = codec8::Channels::from_u32(v).expect("accepted");
+                assert_eq!(c.count() as u32, v);
+            }
+            for v in [0, 3, 5, 7, 8, 16, 0xFFFFFFFF] {
+                assert!(
+                    codec8::Channels::from_u32(v).is_err(),
+                    "channels={v} should be rejected"
+                );
+            }
+        }
+
+        #[test]
+        fn codec8_kernel_kind_branch() {
+            assert_eq!(codec8::KernelKind::from_u32(1), codec8::KernelKind::FourBit);
+            for v in [0, 2, 3, 99, 0xFFFF_FFFF] {
+                assert_eq!(codec8::KernelKind::from_u32(v), codec8::KernelKind::SixBit);
+            }
+        }
     }
 }
