@@ -2,9 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::SeekFrom;
-use std::io::{
-    self,
-};
+use std::io::{self};
 use std::rc::Rc;
 
 use byteorder::ByteOrder;
@@ -15,9 +13,10 @@ use tracing::span;
 use tracing::trace;
 
 use crate::de::ExportIndex;
+use crate::de::Game;
 use crate::de::ImportIndex;
 use crate::de::Linker;
-use crate::de::read_package;
+use crate::de::read_package_for_game;
 use crate::object::ObjectFlags;
 use crate::object::RcUnrealObject;
 use crate::object::UObjectKind;
@@ -50,6 +49,7 @@ impl RcUnrealObjPointer {
 }
 
 pub struct UnrealRuntime {
+    pub game: Game,
     pub linkers: HashMap<String, RcLinker>,
     /// Objects currently between `seek+ClearFlags(RF_NeedLoad)` and end of
     /// serialize body. Mirrors UE2's `RF_Preloading`. Tracked on the runtime
@@ -74,6 +74,10 @@ pub struct UnrealRuntime {
     /// equality (the file_table ships `Water.uax`, `ENPC.ukx`, etc. but
     /// imports reference `water`, `enpc`).
     pub present_packages: HashSet<String>,
+    /// In checked prototype runs, this is the QEMU-recorded GObjLoaded
+    /// construction list. Used only for narrowly scoped proto tag-loop
+    /// fallout where Rust constructs class refs the engine did not.
+    pub engine_constructed_objects: Option<HashSet<String>>,
     /// Mirror of UE2's `GObjLoaded`: every newly constructed object lands here so
     /// `end_load` can drain it in serial-offset order. That's the "random I/O ->
     /// sequential bytes" property the .lin format relies on.
@@ -100,6 +104,17 @@ pub struct UnrealRuntime {
 }
 
 impl UnrealRuntime {
+    fn canonical_package_name(&self, name: &str) -> String {
+        if self.game == Game::PandoraTomorrow {
+            match name {
+                "Core" => return "Cr".to_owned(),
+                "Engine" => return "Egn".to_owned(),
+                _ => {}
+            }
+        }
+        name.to_owned()
+    }
+
     /// Find a file in the LIN file_table whose path ends with `body_filename`
     /// (case-insensitive). Used to resolve lipsynch `.bin` references stored
     /// in `USound.lipsynch_filename`: the body holds a relative path like
@@ -154,7 +169,11 @@ impl UnrealRuntime {
             );
         }
         reader.set_reading_linker_header(true);
-        let package = read_package::<E, _>(reader)?;
+        let package_result = read_package_for_game::<E, _>(reader, self.game);
+        if package_result.is_err() {
+            reader.set_reading_linker_header(false);
+        }
+        let (package, pkg_source_start) = package_result?;
         let pkg_source_end = reader.source_consumed();
         debug!(
             "load_linker {} ended at source 0x{:X} (consumed 0x{:X} bytes)",
@@ -202,9 +221,9 @@ impl UnrealRuntime {
         // Recursion safety: we insert into `self.linkers` *before* calling
         // verify_imports so cyclic import graphs short-circuit on the
         // `contains_key` check below.
-        self.verify_imports::<E, _>(&linker_rc, reader)?;
-
+        let verify_result = self.verify_imports::<E, _>(&linker_rc, reader);
         reader.set_reading_linker_header(false);
+        verify_result?;
 
         Ok(())
     }
@@ -235,6 +254,7 @@ impl UnrealRuntime {
                 top_name
             };
             let Some(pkg_name) = pkg_name else { continue };
+            let pkg_name = self.canonical_package_name(&pkg_name);
             if pkg_name.is_empty() {
                 continue;
             }
@@ -331,13 +351,13 @@ impl UnrealRuntime {
             if parts.len() < 2 {
                 return None;
             }
-            let module = parts[0];
+            let module = self.canonical_package_name(parts[0]);
             let leaf = parts.last().copied()?;
             drop(l);
             let target_linker = self
                 .linkers
                 .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(module))
+                .find(|(k, _)| k.eq_ignore_ascii_case(&module))
                 .map(|(_, v)| v.clone())?;
             let tl = target_linker.borrow();
             let (export_idx, _) = tl.find_export_by_name(leaf)?;
@@ -840,6 +860,25 @@ impl UnrealRuntime {
                 return Ok(None);
             }
 
+            if self.game == Game::SplinterCellPrototype
+                && class_name == "Class"
+                && export_full_name.starts_with("EchelonIngredient.")
+                && self
+                    .preload_stack
+                    .last()
+                    .is_some_and(|name| name.ends_with("(EchelonPlayerStart)"))
+                && self
+                    .engine_constructed_objects
+                    .as_ref()
+                    .is_some_and(|objects| !objects.contains(&export_full_name))
+            {
+                debug!(
+                    "Skipping {} from proto EchelonPlayerStart tag-loop fallout",
+                    export_full_name
+                );
+                return Ok(None);
+            }
+
             debug!(
                 "Entering construction branch: {}, class = {}",
                 export_full_name, class_name
@@ -1048,21 +1087,21 @@ impl UnrealRuntime {
         // loaded (the same side-effect `GetPackageLinker` would have)
         // and return None.
         if parts.len() < 2 {
-            let module = parts[0];
+            let module = self.canonical_package_name(parts[0]);
             if !module.is_empty()
-                && !self.linkers.contains_key(module)
+                && !self.linkers.contains_key(&module)
                 && self.present_packages.contains(&module.to_lowercase())
             {
-                self.load_linker::<E, _>(module.to_owned(), reader)?;
+                self.load_linker::<E, _>(module, reader)?;
             }
             return Ok(None);
         }
 
-        let module = parts[0];
+        let module = self.canonical_package_name(parts[0]);
         let path_parts = &parts[1..];
         let object_name = *path_parts.last().expect("path has no leaf");
 
-        if module == "Core"
+        if (module == "Core" || module == "Cr")
             && path_parts.len() == 1
             && let Ok(kind) = UObjectKind::try_from(object_name)
         {
@@ -1076,12 +1115,12 @@ impl UnrealRuntime {
                 Some(linker) => linker,
                 None => return Ok(None),
             }
-        } else if let Some(linker) = self.linker(module) {
+        } else if let Some(linker) = self.linker(&module) {
             linker
         } else {
-            self.load_linker::<E, _>(module.to_owned(), reader)?;
+            self.load_linker::<E, _>(module.clone(), reader)?;
 
-            self.linker(module).expect("failed to force load linker")
+            self.linker(&module).expect("failed to force load linker")
         };
 
         let linker_inner = linker.borrow();

@@ -1,8 +1,6 @@
 use std::io::SeekFrom;
 use std::io::Write;
-use std::io::{
-    self,
-};
+use std::io::{self};
 
 use byteorder::ByteOrder;
 use byteorder::ReadBytesExt;
@@ -704,11 +702,13 @@ mod tests {
 
     fn stub_runtime() -> UnrealRuntime {
         UnrealRuntime {
+            game: crate::de::Game::SplinterCell,
             linkers: HashMap::new(),
             objects_full_loading: HashSet::new(),
             loaded_objects: HashSet::new(),
             package_file_size: HashMap::new(),
             present_packages: HashSet::new(),
+            engine_constructed_objects: None,
             pending_loads: Vec::new(),
             begin_load_count: 0,
             next_construction_index: 0,

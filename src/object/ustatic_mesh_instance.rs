@@ -44,6 +44,7 @@ use crate::runtime::UnrealRuntime;
 #[derive(Default, Debug)]
 pub struct StaticMeshInstance {
     pub parent_object: Object,
+    pub mesh_ref: Option<crate::object::RcUnrealObject>,
     pub color_stream: FRawColorStream,
 }
 
@@ -67,12 +68,25 @@ impl DeserializeUnrealObject for StaticMeshInstance {
         E: ByteOrder,
         R: LinRead,
     {
-        self.parent_object
-            .deserialize::<E, _>(runtime, linker, reader)?;
+        if runtime.game == crate::de::Game::SplinterCellPrototype {
+            // Proto's `UStaticMeshInstance::Serialize` calls
+            // `FArchive__ArchiveStateSetup` before `FRawColorStream`. The
+            // class hook reads the native `Mesh` object property directly,
+            // without a tagged-property header.
+            self.parent_object
+                .deserialize_proto_base::<E, _>(runtime, linker, reader)?;
+            self.mesh_ref = reader.read_object::<E>(runtime, linker)?;
+            if let Some(mesh_ref) = self.mesh_ref.clone() {
+                runtime.full_load_object::<E, _>(&mesh_ref, reader)?;
+            }
+        } else {
+            self.parent_object
+                .deserialize::<E, _>(runtime, linker, reader)?;
+        }
 
         let file_version = linker.borrow().version();
 
-        if file_version >= 0x11 {
+        if file_version >= 0x11 || runtime.game == crate::de::Game::SplinterCellPrototype {
             // Inline FRawColorStream::operator<< body.
             let count = reader.read_packed_int()?;
             if count < 0 {
@@ -88,6 +102,10 @@ impl DeserializeUnrealObject for StaticMeshInstance {
             }
             self.color_stream.colors = colors;
             self.color_stream.trailing = reader.read_u32::<E>()?;
+        }
+
+        if runtime.game == crate::de::Game::SplinterCellPrototype {
+            let _ = reader.drain_alien_archive_reads()?;
         }
 
         Ok(())

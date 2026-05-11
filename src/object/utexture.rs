@@ -1,7 +1,5 @@
 use std::io::SeekFrom;
-use std::io::{
-    self,
-};
+use std::io::{self};
 
 use byteorder::ByteOrder;
 use byteorder::ReadBytesExt;

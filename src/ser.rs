@@ -15,9 +15,7 @@
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
-use std::io::{
-    self,
-};
+use std::io::{self};
 
 use byteorder::ByteOrder;
 use byteorder::LittleEndian;

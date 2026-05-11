@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::Read;
 use std::io::Seek;
-use std::io::{
-    self,
-};
+use std::io::{self};
 use std::rc::Rc;
 
 use byteorder::ByteOrder;
@@ -401,6 +399,7 @@ pub struct CheckedLinReader<R> {
     /// "skip IO op consumption" mode active across the whole nested span.
     /// Effective state: `linker_header_depth > 0`.
     linker_header_depth: u32,
+    validate_seeks: bool,
     /// Counter of trace ops popped (Read or Seek). Used to compute the
     /// trace-op index for diagnostic logging only.
     pub trace_ops_consumed: u64,
@@ -417,6 +416,7 @@ pub struct CheckedLinReader<R> {
     /// `current_source_idx` so the EOF safety net can verify both
     /// `.lin` files were drained at the end of a run.
     source_consumed_per_source: Vec<u64>,
+    main_seek_archive_per_source: Vec<Option<u32>>,
     linker: Vec<RcLinker>,
 }
 
@@ -441,10 +441,12 @@ impl<R> CheckedLinReader<R> {
             pos: 0,
             source_consumed: 0,
             source_consumed_per_source: vec![0; source_count],
+            main_seek_archive_per_source: vec![None; source_count],
             capture_stack: Vec::new(),
             source_start: 0,
             source_start_stack: Vec::new(),
             linker_header_depth: 0,
+            validate_seeks: true,
             trace_ops_consumed: 0,
             expected_source_per_op: None,
             last_drift: 0,
@@ -468,6 +470,10 @@ impl<R> CheckedLinReader<R> {
 
     pub fn source_consumed_per_source(&self) -> &[u64] {
         &self.source_consumed_per_source
+    }
+
+    pub fn set_validate_seeks(&mut self, validate_seeks: bool) {
+        self.validate_seeks = validate_seeks;
     }
 
     /// Switch the active source to the one bound to `file_ptr`. Binds
@@ -576,11 +582,12 @@ impl<R: Read> Seek for CheckedLinReader<R> {
         let _enter = span.enter();
 
         let mut next_file_ptr: u32 = 0;
+        let mut validated_seek_archive: Option<u32> = None;
         let res = match pos {
             std::io::SeekFrom::Start(pos) => {
                 trace!("to= {:#X}, from= {:#X}", pos, self.pos);
 
-                if self.linker_header_depth == 0 {
+                if self.linker_header_depth == 0 && self.validate_seeks {
                     let mut ops = self.io_ops.borrow_mut();
 
                     match ops
@@ -588,7 +595,11 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                         .expect("conducting an IO op but there are no more IO ops")
                     {
                         IoOp::Seek {
-                            to, from, file_ptr, ..
+                            to,
+                            from,
+                            file_ptr,
+                            seek_archive,
+                            ..
                         } => {
                             next_file_ptr = file_ptr;
                             // Not checking `from` because there's some weird nuance with EOF
@@ -625,6 +636,7 @@ impl<R: Read> Seek for CheckedLinReader<R> {
                                     remaining,
                                 );
                             }
+                            validated_seek_archive = Some(seek_archive);
                             self.trace_ops_consumed += 1;
                             if let Some(expected) = self.expected_source_per_op.as_ref()
                                 && let Some(&exp) =
@@ -674,6 +686,9 @@ impl<R: Read> Seek for CheckedLinReader<R> {
             std::io::SeekFrom::Current(_) => todo!("current position seeking not implemented"),
         };
         self.switch_source(next_file_ptr);
+        if let Some(seek_archive) = validated_seek_archive {
+            self.main_seek_archive_per_source[self.current_source_idx] = Some(seek_archive);
+        }
         if let Some(linker) = self.linker.last_mut() {
             linker.borrow_mut().set_position(self.pos);
         }
@@ -695,6 +710,13 @@ pub trait LinRead: io::Read + io::Seek {
     /// FArchive for the `.bin`, reads the whole body, then frees the archive
     /// before continuing the outer linker's serialize.
     fn read_aliased(&mut self, buf: &mut [u8]) -> io::Result<()>;
+    /// Drain native side-archive reads that happen inside a known
+    /// deserializer callback. This preserves the current logical archive
+    /// position while consuming the shared source bytes that the engine
+    /// reads through a second FArchive.
+    fn drain_alien_archive_reads(&mut self) -> io::Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
     fn push_linker(&mut self, linker: RcLinker);
     fn pop_linker(&mut self) -> RcLinker;
     /// Begin capturing bytes read into a new buffer. Subsequent `read`
@@ -1035,6 +1057,61 @@ where
             linker.borrow_mut().set_position(self.pos);
         }
         Ok(())
+    }
+
+    fn drain_alien_archive_reads(&mut self) -> io::Result<Vec<u8>> {
+        if self.linker_header_depth != 0 {
+            return Ok(Vec::new());
+        }
+        let Some(main_seek_archive) = self.main_seek_archive_per_source[self.current_source_idx]
+        else {
+            return Ok(Vec::new());
+        };
+        let starts_with_alien_seek = matches!(
+            self.io_ops.borrow().front(),
+            Some(IoOp::Seek { seek_archive, .. }) if *seek_archive != main_seek_archive
+        );
+        if !starts_with_alien_seek {
+            return Ok(Vec::new());
+        }
+
+        let mut drained = Vec::new();
+        loop {
+            let Some(front) = self.io_ops.borrow().front().cloned() else {
+                break;
+            };
+            match front {
+                IoOp::Seek { seek_archive, .. } if seek_archive == main_seek_archive => break,
+                IoOp::Seek { .. } => {
+                    let mut ops = self.io_ops.borrow_mut();
+                    let Some(IoOp::Seek { .. }) = ops.pop_front() else {
+                        unreachable!("front was checked as Seek");
+                    };
+                    drop(ops);
+                    self.trace_ops_consumed += 1;
+                }
+                IoOp::Read { len, file_ptr, .. } => {
+                    let mut ops = self.io_ops.borrow_mut();
+                    let Some(IoOp::Read { .. }) = ops.pop_front() else {
+                        unreachable!("front was checked as Read");
+                    };
+                    drop(ops);
+                    self.trace_ops_consumed += 1;
+                    self.switch_source(file_ptr);
+
+                    let cur_idx = self.current_source_idx;
+                    let mut buf = vec![0u8; len as usize];
+                    self.sources[cur_idx].read_exact(&mut buf)?;
+                    self.source_consumed += len;
+                    self.source_consumed_per_source[cur_idx] += len;
+                    if let Some(top) = self.capture_stack.last_mut() {
+                        top.extend_from_slice(&buf);
+                    }
+                    drained.extend_from_slice(&buf);
+                }
+            }
+        }
+        Ok(drained)
     }
 
     fn push_linker(&mut self, linker: RcLinker) {

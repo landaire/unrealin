@@ -17,9 +17,7 @@ use crate::object::UObjectKind;
 use crate::object::UnrealObject;
 use crate::object::builtins::Property;
 use crate::object::internal::script::Expr;
-use crate::object::internal::script::{
-    self,
-};
+use crate::object::internal::script::{self};
 use crate::object::link_object;
 use crate::object::ufield::Field;
 use crate::object::uproperty::PropertyFlags;
@@ -236,7 +234,7 @@ impl DeserializeUnrealObject for Struct {
         debug!("deserializing friendly_name");
         self.friendly_name = reader.read_packed_int()?;
 
-        if licensee_version > 0x1A {
+        if licensee_version > 0x1A && runtime.game != crate::de::Game::PandoraTomorrow {
             self.flags = reader.read_u32::<E>()?;
         }
 

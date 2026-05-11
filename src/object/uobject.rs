@@ -180,6 +180,66 @@ impl Object {
     pub fn construction_index(&self) -> u64 {
         self.construction_index
     }
+
+    pub(crate) fn deserialize_proto_base<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<Linker>>,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        self.deserialize_state_frame::<E, _>(runtime, linker, reader)
+    }
+
+    fn deserialize_state_frame<E, R>(
+        &mut self,
+        runtime: &mut UnrealRuntime,
+        linker: &Rc<RefCell<Linker>>,
+        reader: &mut R,
+    ) -> io::Result<()>
+    where
+        E: ByteOrder,
+        R: LinRead,
+    {
+        if !self.flags.contains(ObjectFlags::HAS_STACK) {
+            return Ok(());
+        }
+
+        // Mirrors xbe `UObject::Serialize` HAS_STACK block at `0x4859c`:
+        //   Ar << Node;            // packed_int (UObject*)
+        //   Ar << StateNode;       // packed_int (UObject*)
+        //   Ar.Serialize(&ProbeMask, 8);
+        //   Ar.Serialize(&LatentAction, 4);
+        //   if (Node) {
+        //       Ar.Preload(Node);                       // seek+body+seek-back
+        //       Ar << AR_INDEX(Code - Node->Script(0)); // packed_int offset
+        //   }
+        let node = reader.read_object::<E>(runtime, linker)?;
+        let state_node = reader.read_object::<E>(runtime, linker)?;
+        let mut probe_mask = [0u8; 8];
+        reader.cheat(&mut probe_mask)?;
+        let mut latent_buf = [0u8; 4];
+        reader.cheat(&mut latent_buf)?;
+        let latent_action = u32::from_le_bytes(latent_buf);
+        let code_offset = if let Some(node_obj) = node.clone() {
+            runtime.full_load_object::<E, _>(&node_obj, reader)?;
+            reader.read_packed_int()?
+        } else {
+            -1
+        };
+        self.state_frame = Some(FStateFrame {
+            node,
+            state_node,
+            probe_mask,
+            latent_action,
+            code_offset,
+        });
+
+        Ok(())
+    }
 }
 
 impl DeserializeUnrealObject for Object {
@@ -201,37 +261,7 @@ impl DeserializeUnrealObject for Object {
             self.concrete_object_kind
         );
 
-        if self.flags.contains(ObjectFlags::HAS_STACK) {
-            // Mirrors xbe `UObject::Serialize` HAS_STACK block at `0x4859c`:
-            //   Ar << Node;            // packed_int (UObject*)
-            //   Ar << StateNode;       // packed_int (UObject*)
-            //   Ar.Serialize(&ProbeMask, 8);
-            //   Ar.Serialize(&LatentAction, 4);
-            //   if (Node) {
-            //       Ar.Preload(Node);                       // seek+body+seek-back
-            //       Ar << AR_INDEX(Code - Node->Script(0)); // packed_int offset
-            //   }
-            let node = reader.read_object::<E>(runtime, linker)?;
-            let state_node = reader.read_object::<E>(runtime, linker)?;
-            let mut probe_mask = [0u8; 8];
-            reader.cheat(&mut probe_mask)?;
-            let mut latent_buf = [0u8; 4];
-            reader.cheat(&mut latent_buf)?;
-            let latent_action = u32::from_le_bytes(latent_buf);
-            let code_offset = if let Some(node_obj) = node.clone() {
-                runtime.full_load_object::<E, _>(&node_obj, reader)?;
-                reader.read_packed_int()?
-            } else {
-                -1
-            };
-            self.state_frame = Some(FStateFrame {
-                node,
-                state_node,
-                probe_mask,
-                latent_action,
-                code_offset,
-            });
-        }
+        self.deserialize_state_frame::<E, _>(runtime, linker, reader)?;
 
         if self.concrete_object_kind() != UObjectKind::Class {
             // Resolve this instance's class so the tag loop can
@@ -246,6 +276,32 @@ impl DeserializeUnrealObject for Object {
             // engine's `SerializeTaggedProperties` skip-on-mismatch
             // (cheat tag.size bytes). Same behavior as the engine
             // when the property dispatch can't resolve.
+            //
+            // SC1 Sep-2002 PROTOTYPE divergence (Game::SplinterCellPrototype):
+            //   Proto eliminated tagged properties at the disk format level.
+            //   Per-class property reads happen via Class->vtable[+0x74] and
+            //   Class->vtable[+0x78] virtual calls inside proto's
+            //   `FArchive__ArchiveStateSetup` (sub_46420), not via a
+            //   name-prefixed tag loop here. Proto's per-class Serialize
+            //   functions (e.g. sub_eb600 = UStaticMeshInstance::Serialize)
+            //   call sub_46420 directly without going through the demo's
+            //   ~250-line UObject::Serialize.
+            //
+            //   This Rust tag-loop reads bytes that the proto engine reads
+            //   via those Class hooks. For many exports the bytes happen to
+            //   align because it's the same disk data. The known divergence
+            //   point is when the per-class hook reads MORE bytes than the
+            //   tag-loop's None-terminator stops at (e.g. SMI469 in the
+            //   Severonickel trace reads 79 extra bytes from the Class hook
+            //   that our tag-loop doesn't account for, causing cascade
+            //   misalignment).
+            //
+            //   To make proto trace replay reach 100%, this branch needs a
+            //   Game::SplinterCellPrototype path that calls a
+            //   proto-specific UClass vtable[+0x74]/[+0x78] equivalent
+            //   instead of the tag loop. See bndb comments on sub_46420
+            //   and sub_ac0b0 in splintercell_proto.xbe.bndb for the byte
+            //   layout this needs to mirror.
             let class_obj = resolve_instance_class::<E, _>(self, runtime, linker, reader)?;
             let properties = match class_obj.as_ref() {
                 Some(c) => serialize_item::collect_struct_properties(c),

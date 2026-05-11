@@ -11,9 +11,7 @@ use std::collections::HashMap;
 use std::io::BufWriter;
 use std::io::Cursor;
 use std::io::Write;
-use std::io::{
-    self,
-};
+use std::io::{self};
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
@@ -173,13 +171,12 @@ fn read_and_decompress_lin(path: &Path) -> io::Result<Vec<u8>> {
 /// engine's logical end-of-data; using it as the denominator in the
 /// unread-tail check filters out the padding so the warning reflects
 /// real coverage gaps, not file-format noise.
-fn read_and_decompress_lin_with_size(path: &Path) -> io::Result<(Vec<u8>, u64)> {
+fn read_and_decompress_lin_with_size(path: &Path) -> io::Result<(Vec<u8>, u64, crate::de::Game)> {
     let f = std::fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&f)? };
     let mut slice: &[u8] = &mmap[..];
-    let (data, declared) =
-        crate::de::decompress_linear_file_with_size::<LittleEndian, _>(&mut slice)?;
-    Ok((data, declared as u64))
+    let info = crate::de::decompress_linear_file_with_info::<LittleEndian, _>(&mut slice)?;
+    Ok((info.data, info.declared_size as u64, info.game))
 }
 
 /// Index every `reads.json.*` (trace) under `trace_dir` by the session
@@ -221,33 +218,121 @@ fn index_traces(trace_dir: &Path) -> HashMap<String, PathBuf> {
 }
 
 /// Read the `file_load_order` array from a trace JSON and return the
-/// level package's basename (the entry under `..\\Maps\\<basename>.unr`).
-/// Streams just the first 64 KiB of the file so we don't materialise the
-/// 500 MiB trace bodies during indexing -- `file_load_order` is the first
-/// top-level field in every recorded trace.
+/// level package's basename. Tries SC1 style (`..\\Maps\\<X>.unr`) first;
+/// if no `.unr` entry exists, falls back to PT style
+/// (last non-`common.lin` entry, stem only).
+///
+/// Streams just the first 64 KiB of the file so we don't materialise
+/// the 500 MiB trace bodies during indexing -- `file_load_order` is
+/// the first top-level field in every recorded trace.
 fn level_basename_from_trace(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).ok()?;
     let mut buf = vec![0u8; 64 * 1024];
     let n = f.read(&mut buf).ok()?;
     let s = std::str::from_utf8(&buf[..n]).ok()?;
-    // Look for `Maps\\<name>.unr` (escaped backslash in JSON). Examples:
-    //   "..\\Maps\\menu\\menu.unr"
-    //   "..\\Maps\\1_1_0Tbilisi.unr"
-    //   "..\\Maps\\0_0_2_Training.unr"
-    let pat = "Maps\\\\";
-    let mut i = 0;
-    while let Some(off) = s[i..].find(pat) {
-        let start = i + off + pat.len();
-        let rest = &s[start..];
-        let end = rest.find(".unr")?;
-        let segment = &rest[..end];
-        // Take the last `\\`-separated segment so `menu\\menu` -> `menu`.
-        let basename = segment.rsplit("\\\\").next().unwrap_or(segment);
-        if !basename.is_empty() {
-            return Some(basename.to_string());
+    let load_order = parse_file_load_order_prefix(s)?;
+    level_basename_from_load_order(&load_order)
+}
+
+/// Pull the `file_load_order` array out of the JSON prefix. The array
+/// is the first top-level field in every trace, so the bracketed
+/// content fits well inside the 64 KiB prefix the caller streamed.
+/// Returns `None` if the field is absent or the bracket scan reaches
+/// past the prefix without closing.
+fn parse_file_load_order_prefix(s: &str) -> Option<Vec<String>> {
+    let key = "\"file_load_order\":";
+    let idx = s.find(key)?;
+    let after = s[idx + key.len()..].trim_start();
+    if !after.starts_with('[') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end = None;
+    for (i, c) in after.char_indices() {
+        if escape {
+            escape = false;
+            continue;
         }
-        i = start + end;
+        if in_string {
+            match c {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    serde_json::from_str::<Vec<String>>(&after[..end]).ok()
+}
+
+/// Combined level-basename extractor. SC1 traces yield a `.unr` entry
+/// directly. PT traces have no `.unr` in `file_load_order` (the engine
+/// loads through `.lin` containers) so we fall through to the last
+/// non-`common.lin` entry's stem.
+pub fn level_basename_from_load_order(entries: &[String]) -> Option<String> {
+    sc1_level_basename_from_load_order(entries)
+        .or_else(|| pt_level_basename_from_load_order(entries))
+}
+
+/// SC1 style: look for the last `..\\Maps\\<X>.unr` entry and return
+/// `<X>` (the file stem, not the dir). Retail menus nest under
+/// `..\\Maps\\menu\\menu.unr`, so the stem-after-last-separator rule
+/// gives the right answer in both flat and nested cases.
+pub fn sc1_level_basename_from_load_order(entries: &[String]) -> Option<String> {
+    for entry in entries.iter().rev() {
+        let normalised = entry.replace('\\', "/");
+        let lower = normalised.to_ascii_lowercase();
+        if !lower.ends_with(".unr") {
+            continue;
+        }
+        if !lower.contains("/maps/") && !lower.starts_with("maps/") {
+            continue;
+        }
+        let stem_with_path = &normalised[..normalised.len() - 4];
+        let leaf = stem_with_path.rsplit('/').next().unwrap_or(stem_with_path);
+        if !leaf.is_empty() {
+            return Some(leaf.to_string());
+        }
+    }
+    None
+}
+
+/// PT style: a trace may walk through multiple maps; the terminal
+/// level (last non-`common.lin` entry) is what the player ended on,
+/// so we pair against that. Returns `None` if the trace only loaded
+/// `common.lin` or has no `.lin` entries at all.
+pub fn pt_level_basename_from_load_order(entries: &[String]) -> Option<String> {
+    for entry in entries.iter().rev() {
+        let normalised = entry.replace('\\', "/");
+        let leaf = normalised.rsplit('/').next().unwrap_or(&normalised);
+        let lower = leaf.to_ascii_lowercase();
+        if !lower.ends_with(".lin") {
+            continue;
+        }
+        if lower == "common.lin" {
+            continue;
+        }
+        let stem = &leaf[..leaf.len() - 4];
+        if stem.is_empty() {
+            continue;
+        }
+        return Some(stem.to_string());
     }
     None
 }
@@ -394,8 +479,23 @@ fn run_pair(
     session_path: &Path,
     trace_path: Option<&Path>,
 ) -> io::Result<PairOutcome> {
-    let (common_data, common_size) = read_and_decompress_lin_with_size(common_path)?;
-    let (session_data, session_size) = read_and_decompress_lin_with_size(session_path)?;
+    let (common_data, common_size, common_game) = read_and_decompress_lin_with_size(common_path)?;
+    let (session_data, session_size, session_game) =
+        read_and_decompress_lin_with_size(session_path)?;
+    let path_hint =
+        format!("{}\n{}", common_path.display(), session_path.display()).to_ascii_lowercase();
+    let game = if path_hint.contains("prototype")
+        || common_game == crate::de::Game::SplinterCellPrototype
+        || session_game == crate::de::Game::SplinterCellPrototype
+    {
+        crate::de::Game::SplinterCellPrototype
+    } else if common_game == crate::de::Game::PandoraTomorrow
+        || session_game == crate::de::Game::PandoraTomorrow
+    {
+        crate::de::Game::PandoraTomorrow
+    } else {
+        crate::de::Game::SplinterCell
+    };
     // Keep a copy of the decompressed bytes so `warn_unread_tails` can
     // hex-dump the start of any unread region after the decoder has
     // consumed the originals.
@@ -423,9 +523,10 @@ fn run_pair(
             .iter_mut()
             .for_each(|(_k, v)| v.reverse());
 
-        let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+        let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_checked_for_game(
             vec![Cursor::new(common_data), Cursor::new(session_data)],
             metadata,
+            game,
         );
 
         let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -490,10 +591,13 @@ fn run_pair(
     // doesn't invalidate the post-decode unread-tail dump.
     let common_for_decode = common_data_for_tail.clone();
     let session_for_decode = session_data_for_tail.clone();
-    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
-        LinSource::new(Cursor::new(common_for_decode), common_size),
-        LinSource::new(Cursor::new(session_for_decode), session_size),
-    ]);
+    let mut decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_for_game(
+        vec![
+            LinSource::new(Cursor::new(common_for_decode), common_size),
+            LinSource::new(Cursor::new(session_for_decode), session_size),
+        ],
+        game,
+    );
 
     let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
         if let Err(e) = decoder.decode_unchecked() {
@@ -1310,6 +1414,122 @@ mod tests {
             "no variant when src group equals canonical group"
         );
         assert_eq!(merged.body_mismatches.len(), 1);
+    }
+
+    #[test]
+    fn sc1_level_basename_finds_unr_basename() {
+        // SC1-style trace: `..\Maps\<name>.unr` entries. Returns the
+        // file stem of the last such entry.
+        let entries = vec![
+            "..\\System\\Engine.u".to_string(),
+            "..\\Maps\\0_0_2_Training.unr".to_string(),
+            "..\\System\\Echelon.u".to_string(),
+        ];
+        assert_eq!(
+            sc1_level_basename_from_load_order(&entries),
+            Some("0_0_2_Training".to_string()),
+        );
+    }
+
+    #[test]
+    fn sc1_level_basename_handles_menu_subdir() {
+        // Retail SC1 menu trace: `..\Maps\menu\menu.unr` — the menu
+        // package nests under its own subdir. The basename is the
+        // file stem, not the parent dir.
+        let entries = vec!["..\\Maps\\menu\\menu.unr".to_string()];
+        assert_eq!(
+            sc1_level_basename_from_load_order(&entries),
+            Some("menu".to_string()),
+        );
+    }
+
+    #[test]
+    fn sc1_level_basename_returns_none_when_no_unr() {
+        let entries = vec![
+            "..\\System\\Engine.u".to_string(),
+            "LMaps\\Menu\\Menu.lin".to_string(),
+        ];
+        assert!(sc1_level_basename_from_load_order(&entries).is_none());
+    }
+
+    #[test]
+    fn level_basename_combined_prefers_unr_then_falls_back_to_lin() {
+        // SC1 trace -> .unr wins.
+        let sc1 = vec!["..\\Maps\\0_0_2_Training.unr".to_string()];
+        assert_eq!(
+            level_basename_from_load_order(&sc1),
+            Some("0_0_2_Training".to_string()),
+        );
+        // PT trace -> no .unr, falls through to last non-common .lin.
+        let pt = vec![
+            "LMaps\\0_0_0_MENU\\common.lin".to_string(),
+            "LMaps\\0_0_0_MENU\\0_0_0_MENU.lin".to_string(),
+        ];
+        assert_eq!(
+            level_basename_from_load_order(&pt),
+            Some("0_0_0_MENU".to_string()),
+        );
+    }
+
+    #[test]
+    fn pt_level_basename_takes_last_non_common_lin() {
+        // PT's `file_load_order` paths use `LMaps\\<dir>\\<file>.lin`.
+        // Two map loads in one trace -> we pick the last non-common
+        // `.lin` because that's the level the player ended on.
+        let entries = vec![
+            "splintercellxboxretail.umd".to_string(),
+            "LMaps\\0_0_0_MENU\\common.lin".to_string(),
+            "LMaps\\0_0_0_MENU\\0_0_0_MENU.lin".to_string(),
+            "LMaps\\0_0_1_HANDCUFF\\common.lin".to_string(),
+            "LMaps\\0_0_1_HANDCUFF\\0_0_1_HANDCUFF.lin".to_string(),
+        ];
+        assert_eq!(
+            pt_level_basename_from_load_order(&entries),
+            Some("0_0_1_HANDCUFF".to_string()),
+        );
+    }
+
+    #[test]
+    fn pt_level_basename_ignores_non_lin_entries() {
+        let entries = vec![
+            "Offline\\UW.ini".to_string(),
+            "LMaps\\Training\\common.lin".to_string(),
+            "LMaps\\Training\\Training.lin".to_string(),
+            "Offline\\Localization\\ENGLISH\\Hud.int".to_string(),
+        ];
+        assert_eq!(
+            pt_level_basename_from_load_order(&entries),
+            Some("Training".to_string()),
+        );
+    }
+
+    #[test]
+    fn pt_level_basename_handles_forward_slashes() {
+        // PT trace happens to use backslashes, but be tolerant: a
+        // forward-slash variant must still resolve to the stem.
+        let entries = vec![
+            "LMaps/Menu/common.lin".to_string(),
+            "LMaps/Menu/Menu.lin".to_string(),
+        ];
+        assert_eq!(
+            pt_level_basename_from_load_order(&entries),
+            Some("Menu".to_string()),
+        );
+    }
+
+    #[test]
+    fn pt_level_basename_returns_none_when_only_common() {
+        let entries = vec![
+            "splintercellxboxretail.umd".to_string(),
+            "LMaps\\0_0_0_MENU\\common.lin".to_string(),
+        ];
+        assert!(pt_level_basename_from_load_order(&entries).is_none());
+    }
+
+    #[test]
+    fn pt_level_basename_returns_none_for_empty() {
+        let entries: Vec<String> = Vec::new();
+        assert!(pt_level_basename_from_load_order(&entries).is_none());
     }
 
     #[test]

@@ -609,25 +609,39 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     // next source's first byte without consuming the alignment tail
     // (009_ChineseEmbassy variant otherwise mis-shifts session.lin's
     // first PKG_TAG read).
-    fn read_source(path: &std::path::Path, raw: &mut &[u8]) -> color_eyre::Result<(Vec<u8>, u64)> {
+    fn read_source(
+        path: &std::path::Path,
+        raw: &mut &[u8],
+    ) -> color_eyre::Result<(Vec<u8>, u64, unrealin::de::Game)> {
         let is_lin = path
             .extension()
             .and_then(std::ffi::OsStr::to_str)
             .map(|s| s.eq_ignore_ascii_case("lin"))
             .unwrap_or(false);
         if is_lin {
-            let (d, declared) =
-                unrealin::de::decompress_linear_file_with_size::<LittleEndian, _>(raw)?;
-            Ok((d, declared as u64))
+            let info = unrealin::de::decompress_linear_file_with_info::<LittleEndian, _>(raw)?;
+            Ok((info.data, info.declared_size as u64, info.game))
         } else {
             let bytes = raw.to_vec();
             let len = bytes.len() as u64;
-            Ok((bytes, len))
+            Ok((bytes, len, unrealin::de::Game::SplinterCell))
         }
     }
 
-    let (common_lin_data, common_size) = read_source(&args.common_lin, &mut raw_common_file)?;
-    let (map_lin_data, map_size) = read_source(&args.map_lin, &mut raw_map_file)?;
+    let (common_lin_data, common_size, common_game) =
+        read_source(&args.common_lin, &mut raw_common_file)?;
+    let (map_lin_data, map_size, map_game) = read_source(&args.map_lin, &mut raw_map_file)?;
+    let path_hint =
+        format!("{}\n{}", args.common_lin.display(), args.map_lin.display()).to_ascii_lowercase();
+    let game = if path_hint.contains("prototype") {
+        unrealin::de::Game::SplinterCellPrototype
+    } else if common_game == unrealin::de::Game::PandoraTomorrow
+        || map_game == unrealin::de::Game::PandoraTomorrow
+    {
+        unrealin::de::Game::PandoraTomorrow
+    } else {
+        unrealin::de::Game::SplinterCell
+    };
 
     let pkg_out = output_dir.join("packages");
     std::fs::create_dir_all(&pkg_out)?;
@@ -635,8 +649,8 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
     let common_lin_data_len = common_lin_data.len();
     let map_lin_data_len = map_lin_data.len();
     eprintln!(
-        "decompressed sizes: common.lin={:#x}, map.lin={:#x}",
-        common_lin_data_len, map_lin_data_len,
+        "decompressed sizes: common.lin={:#x}, map.lin={:#x}; detected game={:?}",
+        common_lin_data_len, map_lin_data_len, game,
     );
 
     if let Some(trace_path) = args.checked.as_ref() {
@@ -651,9 +665,10 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
             .iter_mut()
             .for_each(|(_k, v)| v.reverse());
 
-        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked(
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_checked_for_game(
             vec![Cursor::new(common_lin_data), Cursor::new(map_lin_data)],
             metadata,
+            game,
         );
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Err(e) = lin_decoder.decode_linear_file() {
@@ -683,10 +698,13 @@ fn run_extract(mut args: ExtractArgs) -> Result<()> {
         // does (warmup classes, MyLevel cascade, post-MyLevel
         // PreBeginPlay/BeginPlay/PostBeginPlay/SetInitialState
         // bytecode walk). No recorded trace required.
-        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked(vec![
-            unrealin::de::LinSource::new(Cursor::new(common_lin_data), common_size),
-            unrealin::de::LinSource::new(Cursor::new(map_lin_data), map_size),
-        ]);
+        let mut lin_decoder = LinearFileDecoder::<LittleEndian, _>::new_unchecked_for_game(
+            vec![
+                unrealin::de::LinSource::new(Cursor::new(common_lin_data), common_size),
+                unrealin::de::LinSource::new(Cursor::new(map_lin_data), map_size),
+            ],
+            game,
+        );
         if let Err(e) = lin_decoder.decode_unchecked() {
             eprintln!("decode_unchecked partial (continuing with captured): {e}");
         }

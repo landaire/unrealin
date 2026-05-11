@@ -133,6 +133,24 @@ impl DeserializeUnrealObject for SoftBody {
         // 5. Per-instance disk version at +0x58.
         self.disk_version = reader.read_u32::<E>()?;
         let v = self.disk_version as i32;
+        // Splinter Cell 1 Sep-2002 prototype's UESoftBody::Serialize
+        // (`splintercell_proto.xbe UESoftBody__Serialize` at 0x61a90)
+        // has the same field set and order as the demo's
+        // `sub_103b59d0` but ZERO version gates: every gated field
+        // below is read unconditionally. Proto stamps every save at
+        // V=9 (its only on-disk value), so demo gates that fire at
+        // V > 9 / V > 0xa miss the trailing fields for proto saves.
+        //
+        // Auto-upgrade detection: V==9 in a SoftBody body is a
+        // reliable proto marker -- retail/demo bumped the version
+        // past 9 the moment the gates landed. Once detected, persist
+        // it on the runtime so any other proto-aware path (e.g. PT-
+        // style branches that should also fire for proto) sees the
+        // right game without re-deriving it.
+        if v == 9 && runtime.game == crate::de::Game::SplinterCell {
+            runtime.game = crate::de::Game::SplinterCellPrototype;
+        }
+        let proto_no_gates = runtime.game == crate::de::Game::SplinterCellPrototype;
 
         // 6. TArray<72-byte> at +0x94.
         read_fixed_tarray(reader, 72, "step6 (+0x94)")?;
@@ -209,13 +227,13 @@ impl DeserializeUnrealObject for SoftBody {
         }
 
         // 18. (V > 9): 6 raw u32s at +0x7c..+0x90.
-        if v > 9 {
+        if v > 9 || proto_no_gates {
             let mut buf = [0u8; 24];
             reader.cheat(&mut buf)?;
         }
 
         // 19. (V > 0xa): 4 each at +0x134, +0x138.
-        if v > 0xa {
+        if v > 0xa || proto_no_gates {
             let mut buf = [0u8; 8];
             reader.cheat(&mut buf)?;
         }

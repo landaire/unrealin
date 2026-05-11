@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::io::Cursor;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Seek;
@@ -27,6 +26,31 @@ use crate::PKG_TAG;
 use crate::common::ExportedData;
 use crate::common::IoOp;
 use crate::common::normalize_index;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Game {
+    /// Retail/demo Splinter Cell 1 (NTSC/PAL Xbox). Native serialize
+    /// code has version-gated fields keyed on a per-instance disk
+    /// version stamp (e.g. UESoftBody at `Engine_demo.dll 0x103b59d0`
+    /// gates on V > 2..0xa).
+    SplinterCell,
+    /// Splinter Cell 1 Sep-13-2002 prototype. Native serialize code
+    /// is structurally similar to retail's but without the version
+    /// gates: every field is read unconditionally and the proto
+    /// stamps every save at V=9 (e.g. UESoftBody at
+    /// `splintercell_proto.xbe sub_61a90`).
+    SplinterCellPrototype,
+    /// Splinter Cell: Pandora Tomorrow (Xbox). The `.lin` zlib
+    /// wrapper carries a 5th metadata block (vs SC1's 4); see
+    /// `decompress_linear_file_with_info` for the detection.
+    PandoraTomorrow,
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Self::SplinterCell
+    }
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct ImportIndex(usize);
@@ -585,12 +609,57 @@ where
     Ok(file_table)
 }
 
+fn read_pt_open_path_list<E, R>(reader: &mut R) -> io::Result<Vec<String>>
+where
+    R: Read,
+    E: ByteOrder,
+{
+    let count = reader.read_u32::<E>()?;
+    read_pt_open_path_list_entries::<E, _>(reader, count)
+}
+
+fn read_pt_open_path_list_entries<E, R>(reader: &mut R, count: u32) -> io::Result<Vec<String>>
+where
+    R: Read,
+    E: ByteOrder,
+{
+    let mut paths = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let char_count = reader.read_u32::<E>()? as usize;
+        let unit_count = char_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "PT LIN path length overflow")
+        })?;
+        let byte_count = unit_count.checked_mul(2).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "PT LIN path length overflow")
+        })?;
+        let mut raw = vec![0u8; byte_count];
+        reader.read_exact(&mut raw)?;
+        let mut units = Vec::with_capacity(unit_count);
+        for chunk in raw.chunks_exact(2) {
+            units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+        }
+        if units.last() == Some(&0) {
+            units.pop();
+        }
+        paths.push(String::from_utf16_lossy(&units));
+    }
+    Ok(paths)
+}
+
 fn read_package_header<E, R>(reader: &mut R) -> io::Result<PackageHeader>
 where
     R: LinRead,
     E: ByteOrder,
 {
     let tag = reader.read_u32::<E>()?;
+    read_package_header_after_tag::<E, _>(reader, tag)
+}
+
+fn read_package_header_after_tag<E, R>(reader: &mut R, tag: u32) -> io::Result<PackageHeader>
+where
+    R: LinRead,
+    E: ByteOrder,
+{
     if tag != PKG_TAG {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -678,7 +747,38 @@ where
     E: ByteOrder,
 {
     let header = read_package_header::<E, _>(reader)?;
+    read_package_tables::<E, _>(reader, header)
+}
 
+pub fn read_package_for_game<E, R>(reader: &mut R, game: Game) -> io::Result<(RawPackage, u64)>
+where
+    R: LinRead,
+    E: ByteOrder,
+{
+    let mut source_start = reader.source_consumed();
+    let header = if game == Game::PandoraTomorrow {
+        let tag_or_count = reader.read_u32::<E>()?;
+        if tag_or_count == PKG_TAG {
+            read_package_header_after_tag::<E, _>(reader, tag_or_count)?
+        } else {
+            let paths = read_pt_open_path_list_entries::<E, _>(reader, tag_or_count)?;
+            tracing::debug!(?paths, "skipped PT package open path list");
+            source_start = reader.source_consumed();
+            read_package_header::<E, _>(reader)?
+        }
+    } else {
+        read_package_header::<E, _>(reader)?
+    };
+
+    let package = read_package_tables::<E, _>(reader, header)?;
+    Ok((package, source_start))
+}
+
+fn read_package_tables<E, R>(reader: &mut R, header: PackageHeader) -> io::Result<RawPackage>
+where
+    R: LinRead,
+    E: ByteOrder,
+{
     reader.seek(SeekFrom::Start(header.name_offset as u64))?;
 
     let mut names = Vec::with_capacity(header.name_count as usize);
@@ -719,81 +819,14 @@ where
     R: Read,
     E: ByteOrder,
 {
-    let mut out_data = Vec::new();
+    decompress_linear_file_with_info::<E, _>(reader).map(|info| info.data)
+}
 
-    // Read the first data block to get the decompressed size
-    let uncompressed_data_size = {
-        let block = read_block::<E, _>(reader).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
-        std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data ");
-
-        u32::from_le_bytes(bytes)
-    };
-
-    out_data.reserve(uncompressed_data_size as usize);
-
-    let compressed_data_size = {
-        let block = read_block::<E, _>(reader).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
-        std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
-
-        u32::from_le_bytes(bytes)
-    };
-
-    let unk1 = {
-        let block = read_block::<E, _>(reader).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
-        std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
-
-        u32::from_le_bytes(bytes)
-    };
-
-    let unk2 = {
-        let block = read_block::<E, _>(reader).expect("failed to read block");
-        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        let mut cursor = Cursor::new(bytes.as_mut_slice());
-        std::io::copy(&mut reader, &mut cursor).expect("failed to read zlib data");
-
-        u32::from_le_bytes(bytes)
-    };
-
-    println!("uncompressed_data_size: {uncompressed_data_size:#X}");
-    println!("compressed_data_size: {compressed_data_size:#X}");
-    println!("unk1: {unk1:#X}");
-    println!("unk2: {unk2:#X}");
-
-    // Read until EOF
-    loop {
-        let block = match read_block::<E, _>(reader) {
-            Ok(block) => block,
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                break;
-            }
-            Err(e) => {
-                // Unexpected error
-                return Err(e);
-            }
-        };
-        let mut reader = ZlibDecoder::new(block.compressed_data.as_slice());
-
-        std::io::copy(&mut reader, &mut out_data).expect("failed to read zlib data");
-    }
-
-    // Don't truncate or pad: the LIN file's decompressed data blocks
-    // (chunks 4..N) sum to slightly more than `uncompressed_data_size`
-    // due to zlib block alignment. Trace-driven mode replays exact
-    // recorded reads against the full buffer; unchecked mode applies
-    // its own per-source effective-size limit via `LinReader` so the
-    // cross-source auto-advance lands on the right byte boundary.
-    let _ = uncompressed_data_size;
-    Ok(out_data)
+pub struct DecompressedLinearFile {
+    pub data: Vec<u8>,
+    pub declared_size: u32,
+    pub game: Game,
+    pub metadata: Vec<u32>,
 }
 
 /// Decompress a `.lin` and return both the bytes and the
@@ -807,21 +840,22 @@ where
     R: Read,
     E: ByteOrder,
 {
+    let info = decompress_linear_file_with_info::<E, _>(reader)?;
+    Ok((info.data, info.declared_size))
+}
+
+/// Decompress a `.lin` and preserve enough wrapper metadata to identify
+/// game-specific LIN dialects. SC1 stores four 4-byte metadata zlib
+/// blocks before archive data; Pandora Tomorrow map LINs store five.
+/// The engine treats all of these as wrapper fields, not archive bytes.
+pub fn decompress_linear_file_with_info<E, R>(reader: &mut R) -> io::Result<DecompressedLinearFile>
+where
+    R: Read,
+    E: ByteOrder,
+{
     let mut out_data = Vec::new();
-    let uncompressed_data_size = {
-        let block = read_block::<E, _>(reader)?;
-        let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        std::io::copy(&mut zr, &mut Cursor::new(bytes.as_mut_slice()))?;
-        u32::from_le_bytes(bytes)
-    };
-    // Skip the remaining 3 metadata blocks.
-    for _ in 0..3 {
-        let block = read_block::<E, _>(reader)?;
-        let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
-        let mut bytes = [0u8; 4];
-        let _ = std::io::copy(&mut zr, &mut Cursor::new(bytes.as_mut_slice()));
-    }
+    let mut metadata = Vec::new();
+
     loop {
         let block = match read_block::<E, _>(reader) {
             Ok(b) => b,
@@ -829,9 +863,32 @@ where
             Err(e) => return Err(e),
         };
         let mut zr = ZlibDecoder::new(block.compressed_data.as_slice());
-        std::io::copy(&mut zr, &mut out_data)?;
+        let mut decoded = Vec::with_capacity(block.uncompressed_len as usize);
+        std::io::copy(&mut zr, &mut decoded)?;
+        if out_data.is_empty() && block.uncompressed_len == 4 && decoded.len() == 4 {
+            metadata.push(u32::from_le_bytes(
+                decoded
+                    .as_slice()
+                    .try_into()
+                    .expect("4-byte metadata block"),
+            ));
+        } else {
+            out_data.extend_from_slice(&decoded);
+        }
     }
-    Ok((out_data, uncompressed_data_size))
+
+    let declared_size = metadata.first().copied().unwrap_or(out_data.len() as u32);
+    let game = match metadata.len() {
+        5.. => Game::PandoraTomorrow,
+        _ => Game::SplinterCell,
+    };
+
+    Ok(DecompressedLinearFile {
+        data: out_data,
+        declared_size,
+        game,
+        metadata,
+    })
 }
 
 pub struct LinearFileDecoder<E, R> {
@@ -902,6 +959,46 @@ fn compute_expected_source_per_op(metadata: &ExportedData) -> Option<Vec<u64>> {
     Some(out)
 }
 
+fn is_lin_path(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .and_then(|leaf| leaf.rsplit_once('.').map(|(_, ext)| ext))
+        .map(|ext| ext.eq_ignore_ascii_case("lin"))
+        .unwrap_or(false)
+}
+
+fn normalize_checked_io_source_ids(metadata: &mut ExportedData, game: Game) {
+    if game != Game::PandoraTomorrow {
+        return;
+    }
+
+    let mut lin_file_ptrs = std::collections::HashSet::new();
+    for open in &metadata.archive_opens {
+        if is_lin_path(&open.filename) {
+            lin_file_ptrs.insert(open.archive_ptr);
+        }
+    }
+
+    if lin_file_ptrs.is_empty() {
+        return;
+    }
+
+    for op in &mut metadata.raw_io_ops {
+        match op {
+            IoOp::Read { file_ptr, .. } | IoOp::Seek { file_ptr, .. }
+                if lin_file_ptrs.contains(file_ptr) =>
+            {
+                *file_ptr = 0;
+            }
+            _ => {}
+        }
+    }
+
+    metadata
+        .file_ptr_order
+        .retain(|file_ptr| !lin_file_ptrs.contains(file_ptr));
+}
+
 /// One `.lin` input to `LinearFileDecoder::new_unchecked`. Bundles the
 /// reader with the engine's logical end-of-data so the decoder can cap
 /// `LinReader` exactly at the LIN format's `uncompressed_data_size` --
@@ -938,6 +1035,10 @@ where
     /// package name to `secondary_package_names`. Each `LinSource`'s
     /// `declared_size` caps the corresponding `LinReader`.
     pub fn new_unchecked(sources: Vec<LinSource<R>>) -> Self {
+        Self::new_unchecked_for_game(sources, Game::SplinterCell)
+    }
+
+    pub fn new_unchecked_for_game(sources: Vec<LinSource<R>>, game: Game) -> Self {
         let mut readers: Vec<R> = Vec::with_capacity(sources.len());
         let mut declared_sizes: Vec<u64> = Vec::with_capacity(sources.len());
         for src in sources {
@@ -947,7 +1048,7 @@ where
         let mut secondary_package_names = Vec::with_capacity(readers.len().saturating_sub(1));
         let mut prefix_lengths: Vec<u64> = vec![0; readers.len()];
         for (i, source) in readers.iter_mut().enumerate().skip(1) {
-            let (name, prefix_len) = skip_secondary_lin_header::<_>(source)
+            let (name, prefix_len) = skip_secondary_lin_header::<_, E>(source, game)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
             prefix_lengths[i] = prefix_len;
@@ -969,6 +1070,7 @@ where
         Self {
             sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
+                game,
                 linkers: HashMap::new(),
                 objects_full_loading: Default::default(),
                 loaded_objects: Default::default(),
@@ -977,6 +1079,7 @@ where
                 // populates it from the file_table; we don't have a
                 // recorded `file_load_order` to seed from.
                 present_packages: Default::default(),
+                engine_constructed_objects: None,
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
@@ -996,7 +1099,15 @@ where
     E: ByteOrder,
     R: Read,
 {
-    pub fn new_checked(mut sources: Vec<R>, mut metadata: ExportedData) -> Self {
+    pub fn new_checked(sources: Vec<R>, metadata: ExportedData) -> Self {
+        Self::new_checked_for_game(sources, metadata, Game::SplinterCell)
+    }
+
+    pub fn new_checked_for_game(
+        mut sources: Vec<R>,
+        mut metadata: ExportedData,
+        game: Game,
+    ) -> Self {
         // Engine's `CreateFileReader` consumes each `.lin` file's
         // LIN-format prefix (`u32 load_address + packed_int name_len +
         // ANSI name`) at file-open time. The reader's `decompressed_size`
@@ -1010,11 +1121,16 @@ where
         // etc.).
         let mut secondary_package_names = Vec::with_capacity(sources.len().saturating_sub(1));
         for source in sources.iter_mut().skip(1) {
-            let (name, _prefix_len) = skip_secondary_lin_header::<_>(source)
+            let (name, _prefix_len) = skip_secondary_lin_header::<_, E>(source, game)
                 .expect("failed to skip secondary lin header");
             secondary_package_names.push(name);
         }
+        normalize_checked_io_source_ids(&mut metadata, game);
         let expected_source_per_op = compute_expected_source_per_op(&metadata);
+        let validate_seeks = metadata
+            .raw_io_ops
+            .iter()
+            .any(|op| matches!(op, IoOp::Seek { .. }));
         let io_ops = Rc::new(RefCell::new(metadata.raw_io_ops.drain(..).collect()));
         let file_ptr_order = metadata.file_ptr_order.clone();
         // Single CheckedLinReader holds all sources and switches between
@@ -1022,10 +1138,12 @@ where
         // `file_ptr_order` (already reversed by bin.rs to consumption
         // order) tells us which source each new file_ptr value maps to.
         let mut combined = CheckedLinReader::new(sources, file_ptr_order, io_ops);
+        combined.set_validate_seeks(validate_seeks);
         combined.expected_source_per_op = expected_source_per_op;
         Self {
             sources: VecDeque::from(vec![combined]),
             runtime: UnrealRuntime {
+                game,
                 linkers: HashMap::with_capacity(metadata.file_load_order.len()),
                 objects_full_loading: Default::default(),
                 loaded_objects: Default::default(),
@@ -1035,6 +1153,8 @@ where
                     .iter()
                     .filter_map(|p| package_name_from_path(p).map(|n| n.to_lowercase()))
                     .collect(),
+                engine_constructed_objects: (game == Game::SplinterCellPrototype)
+                    .then(|| metadata.gobj_loaded_order.iter().cloned().collect()),
                 pending_loads: Vec::new(),
                 begin_load_count: 0,
                 next_construction_index: 0,
@@ -1330,13 +1450,25 @@ where
 
     pub fn read_lin_header(&mut self) -> io::Result<()> {
         let has_file_table = !self.file_table.is_empty();
+        let game = self.runtime.game;
 
         let reader = self.reader();
 
         reader.set_reading_linker_header(true);
 
-        let _unk = reader.read_u32::<E>()?;
-        let _name = reader.read_string()?;
+        match game {
+            // Retail/demo SC1 and the proto share the LIN header
+            // shape (u32 load_address + length-prefixed name); the
+            // proto-specific differences kick in at the per-export
+            // native serialize layer, not here.
+            Game::SplinterCell | Game::SplinterCellPrototype => {
+                let _unk = reader.read_u32::<E>()?;
+                let _name = reader.read_string()?;
+            }
+            Game::PandoraTomorrow => {
+                let _name = reader.read_string()?;
+            }
+        }
 
         if has_file_table {
             reader.set_reading_linker_header(false);
@@ -1347,6 +1479,12 @@ where
         assert_eq!(tag, LIN_FILE_TABLE_TAG, "LIN file table tag mismatch");
 
         let file_table = read_file_table::<E, _>(reader).expect("failed to read file table");
+        if game == Game::PandoraTomorrow {
+            let _unknown = reader.read_u32::<E>()?;
+            let paths = read_pt_open_path_list::<E, _>(reader)
+                .expect("failed to read PT LIN open path list");
+            tracing::debug!(?paths, "read PT LIN open path list");
+        }
         reader.set_reading_linker_header(false);
 
         for entry in &file_table {
@@ -1468,42 +1606,31 @@ pub fn try_parse_package_at<E: ByteOrder>(data: &[u8], offset: usize) -> Option<
     })
 }
 
-/// Read past a secondary `.lin` source's LIN-format prefix:
-/// `u32 load_address + packed_int name_len + ANSI name`. Mirrors
-/// what the engine's `CreateFileReader` does at file-open time --
-/// those bytes never appear in the file-data stream, only in the
-/// reader's metadata. Returns the decoded package name (e.g.
-/// `"menu"` for `menu.lin`, `"0_0_2_Training"` for the training
-/// map's `.lin`) so the bootstrap can route `None.MyLevel` to the
-/// right secondary package.
-fn skip_secondary_lin_header<R>(source: &mut R) -> io::Result<(String, u64)>
+/// Read a UE packed int directly from a raw byte stream.
+fn read_packed_int_from_read<R>(source: &mut R, bytes_read: &mut u64) -> io::Result<i32>
 where
     R: Read,
 {
-    let mut bytes_read: u64 = 0;
-    let mut tmp = [0u8; 4];
-    source.read_exact(&mut tmp)?; // load_address
-    bytes_read += 4;
     let mut byte = [0u8; 1];
     source.read_exact(&mut byte)?;
-    bytes_read += 1;
+    *bytes_read += 1;
     let b0 = byte[0];
     let mut value: u32 = 0;
     if (b0 & 0x40) != 0 {
         source.read_exact(&mut byte)?;
-        bytes_read += 1;
+        *bytes_read += 1;
         let b1 = byte[0];
         if (b1 & 0x80) != 0 {
             source.read_exact(&mut byte)?;
-            bytes_read += 1;
+            *bytes_read += 1;
             let b2 = byte[0];
             if (b2 & 0x80) != 0 {
                 source.read_exact(&mut byte)?;
-                bytes_read += 1;
+                *bytes_read += 1;
                 let b3 = byte[0];
                 if (b3 & 0x80) != 0 {
                     source.read_exact(&mut byte)?;
-                    bytes_read += 1;
+                    *bytes_read += 1;
                     value = byte[0] as u32;
                 }
                 value = (value << 7) + ((b3 & 0x7f) as u32);
@@ -1513,14 +1640,66 @@ where
         value = (value << 7) + ((b1 & 0x7f) as u32);
     }
     value = (value << 6) + ((b0 & 0x3f) as u32);
+    let mut result = value as i32;
+    if (b0 & 0x80) != 0 {
+        result = -result;
+    }
+    Ok(result)
+}
+
+fn read_raw_ansi_string<R>(source: &mut R, bytes_read: &mut u64) -> io::Result<String>
+where
+    R: Read,
+{
+    let value = read_packed_int_from_read(source, bytes_read)?;
+    if value < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secondary LIN header name was unexpectedly UTF-16",
+        ));
+    }
     let mut name_buf = vec![0u8; value as usize];
     source.read_exact(&mut name_buf)?;
-    bytes_read += value as u64;
-    // Trim trailing NUL terminator from the ANSI name.
+    *bytes_read += value as u64;
     if name_buf.last() == Some(&0) {
         name_buf.pop();
     }
-    Ok((String::from_utf8_lossy(&name_buf).into_owned(), bytes_read))
+    Ok(String::from_utf8_lossy(&name_buf).into_owned())
+}
+
+/// Read past a secondary `.lin` source's LIN-format prefix. SC1 uses
+/// `u32 load_address + packed ANSI name`; PT stores only the packed
+/// ANSI name, then a small counted UTF-16 open-path list before the
+/// first package.
+fn skip_secondary_lin_header<R, E>(source: &mut R, game: Game) -> io::Result<(String, u64)>
+where
+    R: Read,
+    E: ByteOrder,
+{
+    let mut bytes_read: u64 = 0;
+    if matches!(game, Game::SplinterCell | Game::SplinterCellPrototype) {
+        let mut tmp = [0u8; 4];
+        source.read_exact(&mut tmp)?; // load_address
+        bytes_read += 4;
+    }
+
+    let name = read_raw_ansi_string(source, &mut bytes_read)?;
+
+    if game == Game::PandoraTomorrow {
+        let _unknown = source.read_u32::<E>()?;
+        bytes_read += 4;
+        let before_paths = bytes_read;
+        let paths = read_pt_open_path_list::<E, _>(source)?;
+        let path_bytes = paths
+            .iter()
+            .map(|path| 4 + ((path.encode_utf16().count() + 1) * 2) as u64)
+            .sum::<u64>()
+            + 4;
+        bytes_read = before_paths + path_bytes;
+        tracing::debug!(?paths, "skipped PT secondary LIN open path list");
+    }
+
+    Ok((name, bytes_read))
 }
 
 fn package_name_from_path(path: &str) -> Option<String> {

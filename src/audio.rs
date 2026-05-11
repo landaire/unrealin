@@ -2689,9 +2689,7 @@ pub mod sm2 {
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
-    use std::io::{
-        self,
-    };
+    use std::io::{self};
 
     pub const VERSION: u32 = 7;
     pub const RECORD_BYTES: usize = 0x30;
