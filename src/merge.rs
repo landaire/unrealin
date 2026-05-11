@@ -48,12 +48,21 @@ pub struct MergedLinkers {
     pub variants: HashMap<String, HashMap<String, Rc<RefCell<Linker>>>>,
 }
 
+/// Identifies which pair of linkers a diagnostic is about: the package
+/// name and the two pair labels (typically map-dir + session id).
+/// Shared by `BodyMismatch` and `TableSkew` so the three fields aren't
+/// listed on both structs.
 #[derive(Debug, Clone)]
-pub struct BodyMismatch {
+pub struct PairLabels {
     pub package: String,
-    pub export_index: usize,
     pub dst_label: String,
     pub src_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BodyMismatch {
+    pub pair: PairLabels,
+    pub export_index: usize,
     pub dst_len: usize,
     pub src_len: usize,
     pub first_diff_at: Option<usize>,
@@ -61,9 +70,7 @@ pub struct BodyMismatch {
 
 #[derive(Debug, Clone)]
 pub struct TableSkew {
-    pub package: String,
-    pub dst_label: String,
-    pub src_label: String,
+    pub pair: PairLabels,
     pub dst_counts: TableCounts,
     pub src_counts: TableCounts,
 }
@@ -607,11 +614,11 @@ fn write_diagnostics(path: &Path, merged: &MergedLinkers) -> io::Result<()> {
         writeln!(
             f,
             "{} | export[{}] | dst={} ({}B) src={} ({}B) first_diff_at={:?}",
-            m.package,
+            m.pair.package,
             m.export_index,
-            m.dst_label,
+            m.pair.dst_label,
             m.dst_len,
-            m.src_label,
+            m.pair.src_label,
             m.src_len,
             m.first_diff_at,
         )?;
@@ -624,7 +631,7 @@ fn write_diagnostics(path: &Path, merged: &MergedLinkers) -> io::Result<()> {
         writeln!(
             f,
             "{} | dst={} {:?} src={} {:?}",
-            s.package, s.dst_label, s.dst_counts, s.src_label, s.src_counts,
+            s.pair.package, s.pair.dst_label, s.dst_counts, s.pair.src_label, s.src_counts,
         )?;
     }
     Ok(())
@@ -801,9 +808,11 @@ pub fn fold_pair_into(
                 .cloned()
                 .unwrap_or_else(|| "<unknown>".to_string());
             merged.table_skews.push(TableSkew {
-                package: name.clone(),
-                dst_label,
-                src_label: pair_label.to_string(),
+                pair: PairLabels {
+                    package: name.clone(),
+                    dst_label,
+                    src_label: pair_label.to_string(),
+                },
                 dst_counts,
                 src_counts,
             });
@@ -848,14 +857,16 @@ pub fn fold_pair_into(
                             }
                         });
                     merged.body_mismatches.push(BodyMismatch {
-                        package: name.clone(),
+                        pair: PairLabels {
+                            package: name.clone(),
+                            dst_label: merged
+                                .origin_labels
+                                .get(name)
+                                .cloned()
+                                .unwrap_or_else(|| "<unknown>".to_string()),
+                            src_label: pair_label.to_string(),
+                        },
                         export_index: *idx,
-                        dst_label: merged
-                            .origin_labels
-                            .get(name)
-                            .cloned()
-                            .unwrap_or_else(|| "<unknown>".to_string()),
-                        src_label: pair_label.to_string(),
                         dst_len: existing.len(),
                         src_len: body.len(),
                         first_diff_at,
@@ -1137,9 +1148,9 @@ mod tests {
         assert_eq!(l.captured.bodies.get(&1), Some(&vec![0x01, 0x02, 0x03]));
         assert_eq!(merged.body_mismatches.len(), 1);
         let m = &merged.body_mismatches[0];
-        assert_eq!(m.package, "hud");
+        assert_eq!(m.pair.package, "hud");
         assert_eq!(m.export_index, 1);
-        assert_eq!(m.src_label, "pair-B");
+        assert_eq!(m.pair.src_label, "pair-B");
         assert_eq!(m.first_diff_at, Some(1));
     }
 
