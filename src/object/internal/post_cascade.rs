@@ -563,18 +563,15 @@ where
         ) {
             if let Some(Expr::Object(obj_idx)) = parsed_script.get(i + 1).cloned()
                 && let Some(class) = resolve_referent_class(obj_idx, func_linker, runtime)
-                    && is_asset_class(&class) {
-                        let name = resolve_referent_full_name(obj_idx, func_linker, runtime);
-                        if let Some(name) = name.as_deref() {
-                            runtime.begin_load();
-                            let _ = runtime.load_object_by_full_name::<E, _>(
-                                name,
-                                LoadKind::Load,
-                                reader,
-                            );
-                            let _ = runtime.end_load::<E, _>(reader);
-                        }
-                    }
+                && is_asset_class(&class)
+            {
+                let name = resolve_referent_full_name(obj_idx, func_linker, runtime);
+                if let Some(name) = name.as_deref() {
+                    runtime.begin_load();
+                    let _ = runtime.load_object_by_full_name::<E, _>(name, LoadKind::Load, reader);
+                    let _ = runtime.end_load::<E, _>(reader);
+                }
+            }
             i += 2;
             continue;
         }
@@ -604,7 +601,9 @@ where
         // FinalFunction at i, Object(idx) at i+1, args from i+2.
         let args = extract_load_args(parsed_script, i + 2);
         i = args.after;
-        let Some(bytes) = args.name_bytes else { continue };
+        let Some(bytes) = args.name_bytes else {
+            continue;
+        };
         let Some(name) = asset_path_from_string_const(bytes) else {
             continue;
         };
@@ -629,7 +628,9 @@ where
         // export of the same name, the wrong-typed body gets preloaded
         // out of disk order, and the cascade misaligns by hundreds of KB
         // (verified on `4_3_0ChineseEmbassy`).
-        let class_info = args.class_idx.and_then(|idx| resolve_class_arg(idx, func_linker));
+        let class_info = args
+            .class_idx
+            .and_then(|idx| resolve_class_arg(idx, func_linker));
         let class_info_pair = class_info
             .as_ref()
             .map(|cr| (cr.name.as_str(), cr.package.as_str()));

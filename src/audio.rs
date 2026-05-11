@@ -2078,7 +2078,9 @@ pub mod codec8 {
             unpack_nibbles_4bit(&input, &mut out);
             assert_eq!(
                 out,
-                [0x6, 0x7, 0x4, 0x5, 0x2, 0x3, 0x0, 0x1, 0xE, 0xF, 0xC, 0xD, 0xA, 0xB, 0x8, 0x9]
+                [
+                    0x6, 0x7, 0x4, 0x5, 0x2, 0x3, 0x0, 0x1, 0xE, 0xF, 0xC, 0xD, 0xA, 0xB, 0x8, 0x9
+                ]
             );
         }
 
@@ -2219,8 +2221,7 @@ pub mod codec8 {
         /// MB JSON on /var/tmp.
         #[test]
         fn kernel_transitions_byte_perfect() {
-            const GZ: &[u8] =
-                include_bytes!("../tests/fixtures/codec8_kernel_transitions.bin.gz");
+            const GZ: &[u8] = include_bytes!("../tests/fixtures/codec8_kernel_transitions.bin.gz");
             const RECORD_BYTES: usize = 1 + 52 + 52;
             let buf = decompress_fixture(GZ);
             let count = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
@@ -2293,10 +2294,8 @@ pub mod codec8 {
                 for (i, pair) in nibbles.chunks_exact(2).enumerate() {
                     let l = decode_nibble_4bit(&mut state_l, Nibble::new(pair[0]));
                     let r = decode_nibble_4bit(&mut state_r, Nibble::new(pair[1]));
-                    let want_l =
-                        i16::from_le_bytes([expected[4 * i], expected[4 * i + 1]]);
-                    let want_r =
-                        i16::from_le_bytes([expected[4 * i + 2], expected[4 * i + 3]]);
+                    let want_l = i16::from_le_bytes([expected[4 * i], expected[4 * i + 1]]);
+                    let want_r = i16::from_le_bytes([expected[4 * i + 2], expected[4 * i + 3]]);
                     if l != want_l {
                         if first_mismatch.is_none() {
                             first_mismatch = Some((call_idx, 2 * i, l, want_l));
@@ -3242,7 +3241,10 @@ pub mod sm2 {
             let r = record();
             let out = parse_sound_table_for(&desc, &r, None, Kind::Sm2).expect("parse");
             assert!(out[0].is_ls2_redirect);
-            assert_eq!(out[0].sample_rate.hz(), (16000u64 * 0xAADA / 0x10000) as u32);
+            assert_eq!(
+                out[0].sample_rate.hz(),
+                (16000u64 * 0xAADA / 0x10000) as u32
+            );
         }
 
         /// LM2 scales every entry regardless of LS2 tag (LM2 array_b
@@ -3256,7 +3258,10 @@ pub mod sm2 {
             let r = record();
             let out = parse_sound_table_for(&desc, &r, None, Kind::Lm2).expect("parse");
             assert!(!out[0].is_ls2_redirect);
-            assert_eq!(out[0].sample_rate.hz(), (16000u64 * 0xAADA / 0x10000) as u32);
+            assert_eq!(
+                out[0].sample_rate.hz(),
+                (16000u64 * 0xAADA / 0x10000) as u32
+            );
         }
 
         /// array_a entries with `ratio == 0` are sentinel/placeholder

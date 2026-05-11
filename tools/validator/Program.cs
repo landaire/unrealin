@@ -41,6 +41,16 @@ internal static class Program
             return DumpMip(args[1], args[2], args.Length >= 4 ? args[3] : ".");
         }
 
+        if (args[0] == "sizes" && args.Length == 2)
+        {
+            return Sizes(args[1]);
+        }
+
+        if (args[0] == "size-diff" && args.Length == 3)
+        {
+            return SizeDiff(args[1], args[2]);
+        }
+
         int errors = 0;
         foreach (string path in args)
         {
@@ -279,5 +289,103 @@ internal static class Program
         Console.WriteLine($"  deserialize errors: {errs}/{pkg.Exports.Count}; non-null ScriptText: {scriptTextDangling}; decompile errors: {decompileErrs}");
         foreach (var s in sample) Console.WriteLine(s);
         return errs + scriptTextDangling + decompileErrs;
+    }
+
+    private static int Sizes(string path)
+    {
+        var pkg = UnrealLoader.LoadPackage(path);
+        long fileSize = new FileInfo(path).Length;
+
+        long headerBytes = pkg.Summary.NameOffset;
+        long nameTableBytes = pkg.Summary.ImportOffset - pkg.Summary.NameOffset;
+        long importTableBytes = pkg.Summary.ExportOffset - pkg.Summary.ImportOffset;
+        long exportTableBytes = 0;
+        long exportBodyBytes = 0;
+        foreach (var exp in pkg.Exports)
+        {
+            exportBodyBytes += exp.SerialSize;
+        }
+        exportTableBytes = pkg.Exports.Min(e => (long)e.SerialOffset) - pkg.Summary.ExportOffset;
+        long accounted = headerBytes + nameTableBytes + importTableBytes + exportTableBytes + exportBodyBytes;
+        long unaccounted = fileSize - accounted;
+
+        Console.WriteLine($"=== {Path.GetFileName(path)} ({fileSize} bytes) ===");
+        Console.WriteLine($"  header:        {headerBytes,12} ({100.0 * headerBytes / fileSize:F2}%)");
+        Console.WriteLine($"  name table:    {nameTableBytes,12} ({100.0 * nameTableBytes / fileSize:F2}%) [{pkg.Names.Count} entries]");
+        Console.WriteLine($"  import table:  {importTableBytes,12} ({100.0 * importTableBytes / fileSize:F2}%) [{pkg.Imports.Count} entries]");
+        Console.WriteLine($"  export table:  {exportTableBytes,12} ({100.0 * exportTableBytes / fileSize:F2}%) [{pkg.Exports.Count} entries]");
+        Console.WriteLine($"  export bodies: {exportBodyBytes,12} ({100.0 * exportBodyBytes / fileSize:F2}%)");
+        Console.WriteLine($"  unaccounted:   {unaccounted,12} ({100.0 * unaccounted / fileSize:F2}%)");
+
+        var byClass = pkg.Exports
+            .GroupBy(e => e.ClassName ?? "Class")
+            .Select(g => new { Class = g.Key, Count = g.Count(), Bytes = g.Sum(e => (long)e.SerialSize) })
+            .OrderByDescending(x => x.Bytes)
+            .Take(30)
+            .ToList();
+        Console.WriteLine("\n  top export classes by total body bytes:");
+        Console.WriteLine($"    {"class",-30} {"count",10} {"bytes",14}");
+        foreach (var row in byClass)
+        {
+            Console.WriteLine($"    {row.Class,-30} {row.Count,10} {row.Bytes,14}");
+        }
+        return 0;
+    }
+
+    private static int SizeDiff(string oursPath, string refPath)
+    {
+        var ours = UnrealLoader.LoadPackage(oursPath);
+        var refPkg = UnrealLoader.LoadPackage(refPath);
+        Console.WriteLine($"=== {Path.GetFileName(oursPath)} vs {Path.GetFileName(refPath)} ===");
+
+        long oursFile = new FileInfo(oursPath).Length;
+        long refFile = new FileInfo(refPath).Length;
+        Console.WriteLine($"file size:    ours={oursFile} ref={refFile} delta={refFile - oursFile} ({100.0 * (refFile - oursFile) / oursFile:F1}%)");
+
+        Console.WriteLine($"header fields:  ours(name={ours.Summary.NameOffset} import={ours.Summary.ImportOffset} export={ours.Summary.ExportOffset})  ref(name={refPkg.Summary.NameOffset} import={refPkg.Summary.ImportOffset} export={refPkg.Summary.ExportOffset})");
+
+        long oursFirstBody = ours.Exports.Min(e => (long)e.SerialOffset);
+        long oursLastBody  = ours.Exports.Max(e => (long)e.SerialOffset + e.SerialSize);
+        long refFirstBody  = refPkg.Exports.Min(e => (long)e.SerialOffset);
+        long refLastBody   = refPkg.Exports.Max(e => (long)e.SerialOffset + e.SerialSize);
+        Console.WriteLine($"body span:      ours [{oursFirstBody}..{oursLastBody}]={oursLastBody - oursFirstBody}  ref [{refFirstBody}..{refLastBody}]={refLastBody - refFirstBody}");
+
+        long oursEB = ours.Exports.Sum(e => (long)e.SerialSize);
+        long refEB  = refPkg.Exports.Sum(e => (long)e.SerialSize);
+        Console.WriteLine($"export body sum (SerialSize):  ours={oursEB,12} ref={refEB,12} delta={refEB - oursEB,12} ({100.0 * (refEB - oursEB) / oursEB:F1}%)");
+
+        long oursBodyGap = oursLastBody - oursFirstBody - oursEB;
+        long refBodyGap = refLastBody - refFirstBody - refEB;
+        Console.WriteLine($"body inter-gap (slack within span):  ours={oursBodyGap} ref={refBodyGap}");
+
+        Console.WriteLine($"file-minus-body-span:  ours={oursFile - (oursLastBody - oursFirstBody)} ref={refFile - (refLastBody - refFirstBody)}");
+
+        // Group by class and diff.
+        var oursByClass = ours.Exports
+            .GroupBy(e => e.ClassName ?? "Class")
+            .ToDictionary(g => g.Key, g => new { Count = g.Count(), Bytes = g.Sum(e => (long)e.SerialSize) });
+        var refByClass = refPkg.Exports
+            .GroupBy(e => e.ClassName ?? "Class")
+            .ToDictionary(g => g.Key, g => new { Count = g.Count(), Bytes = g.Sum(e => (long)e.SerialSize) });
+        var allClasses = new HashSet<string>(oursByClass.Keys);
+        allClasses.UnionWith(refByClass.Keys);
+        var rows = allClasses.Select(c =>
+        {
+            oursByClass.TryGetValue(c, out var o);
+            refByClass.TryGetValue(c, out var r);
+            long oc = o?.Count ?? 0;
+            long ob = o?.Bytes ?? 0;
+            long rc = r?.Count ?? 0;
+            long rb = r?.Bytes ?? 0;
+            return new { Class = c, OursCount = oc, RefCount = rc, OursBytes = ob, RefBytes = rb, Delta = rb - ob };
+        }).OrderByDescending(x => Math.Abs(x.Delta)).Take(40).ToList();
+
+        Console.WriteLine("\nper-class body byte delta (ref - ours), top 40 by |delta|:");
+        Console.WriteLine($"  {"class",-30} {"ours_cnt",9} {"ref_cnt",9} {"ours_bytes",14} {"ref_bytes",14} {"delta",14}");
+        foreach (var r in rows)
+        {
+            Console.WriteLine($"  {r.Class,-30} {r.OursCount,9} {r.RefCount,9} {r.OursBytes,14} {r.RefBytes,14} {r.Delta,14}");
+        }
+        return 0;
     }
 }

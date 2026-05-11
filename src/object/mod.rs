@@ -49,18 +49,18 @@ use bitflags::bitflags;
 use byteorder::ByteOrder;
 use paste::paste;
 pub mod builtins {
-    
+
     pub use super::uclass::Class;
-    
+
     pub use super::uconst::Const;
     pub use super::uconvex_volume::ConvexVolume;
     pub use super::ucubemap::Cubemap;
-    
+
     pub use super::uenum::Enum;
     pub use super::ufield::Field;
     pub use super::ufont::Font;
     pub use super::ufunction::Function;
-    
+
     pub use super::ulevel::Level;
     pub use super::ulevel_base::LevelBase;
     pub use super::ulod_mesh::LodMesh;
@@ -82,10 +82,10 @@ pub mod builtins {
     pub use super::uproperty::NameProperty;
     pub use super::uproperty::ObjectProperty;
     pub use super::uproperty::Property;
-    
+
     pub use super::uproperty::StrProperty;
     pub use super::uproperty::StructProperty;
-    
+
     pub use super::uskel_mesh::SkeletalMesh;
     pub use super::usoft_body::ESBChain;
     pub use super::usoft_body::ESBPatch;
@@ -97,7 +97,7 @@ pub mod builtins {
     pub use super::ustatic_mesh::StaticMesh;
     pub use super::ustatic_mesh_instance::StaticMeshInstance;
     pub use super::ustruct::Struct;
-    
+
     pub use super::utext_buffer::TextBuffer;
     pub use super::utexture::Texture;
 }

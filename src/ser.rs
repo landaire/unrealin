@@ -320,7 +320,11 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     let neutral = crate::de::ObjectExport::neutral(none_idx);
     let mut entry_fixed_sizes: Vec<usize> = Vec::with_capacity(pkg.exports.len());
     for (i, export) in pkg.exports.iter().enumerate() {
-        let fields = if effective_size[i] == 0 { &neutral } else { export };
+        let fields = if effective_size[i] == 0 {
+            &neutral
+        } else {
+            export
+        };
         let mut sz = packed_int_size(fields.class_index);
         sz += packed_int_size(fields.super_index);
         sz += 4; // package_index (raw u32) -- neutralised to 0 below for empties
@@ -378,7 +382,11 @@ pub fn serialize_linker<W: Write + Seek, E: ByteOrder>(
     // change it to preserve the original schema "for visibility" --
     // recover missing bodies upstream instead.
     for (i, export) in pkg.exports.iter().enumerate() {
-        let fields = if effective_size[i] == 0 { &neutral } else { export };
+        let fields = if effective_size[i] == 0 {
+            &neutral
+        } else {
+            export
+        };
         write_packed_int(&mut writer, fields.class_index)?;
         write_packed_int(&mut writer, fields.super_index)?;
         writer.write_i32::<E>(fields.package_index)?;

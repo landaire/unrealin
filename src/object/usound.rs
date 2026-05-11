@@ -84,21 +84,23 @@ impl DeserializeUnrealObject for Sound {
             // single Read of `TotalSize` bytes immediately after the FString
             // bytes; mirroring it keeps the source cursor aligned with the
             // engine without resorting to draining trace ops.
-            if self.lipsynch_flag != 0 && !self.lipsynch_filename.is_empty()
-                && let Some(file_size) = runtime.find_file_by_suffix(&self.lipsynch_filename) {
-                    let mut buf = vec![0u8; file_size as usize];
-                    // The engine reads via a SEPARATE FArchive (the lipsynch
-                    // loader) sharing the same FFile, so the source cursor
-                    // advances but the outer linker's logical position
-                    // doesn't. `read_aliased` matches that: pops the trace
-                    // Read op, advances source bytes, leaves self.pos.
-                    reader.read_aliased(&mut buf)?;
-                    self.lipsynch_data = buf;
-                    debug!(
-                        "USound: inline-loaded lipsynch {:?} ({:#X} bytes)",
-                        self.lipsynch_filename, file_size
-                    );
-                }
+            if self.lipsynch_flag != 0
+                && !self.lipsynch_filename.is_empty()
+                && let Some(file_size) = runtime.find_file_by_suffix(&self.lipsynch_filename)
+            {
+                let mut buf = vec![0u8; file_size as usize];
+                // The engine reads via a SEPARATE FArchive (the lipsynch
+                // loader) sharing the same FFile, so the source cursor
+                // advances but the outer linker's logical position
+                // doesn't. `read_aliased` matches that: pops the trace
+                // Read op, advances source bytes, leaves self.pos.
+                reader.read_aliased(&mut buf)?;
+                self.lipsynch_data = buf;
+                debug!(
+                    "USound: inline-loaded lipsynch {:?} ({:#X} bytes)",
+                    self.lipsynch_filename, file_size
+                );
+            }
         }
 
         debug!(

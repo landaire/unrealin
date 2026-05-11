@@ -225,12 +225,13 @@ fn walk_audio_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
             if ft.is_dir() {
                 stack.push(path);
             } else if ft.is_file()
-                && let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    let ext_u = ext.to_ascii_uppercase();
-                    if matches!(ext_u.as_str(), "LS2" | "SS2" | "UAX" | "SM2" | "LM2") {
-                        out.push(path);
-                    }
+                && let Some(ext) = path.extension().and_then(|s| s.to_str())
+            {
+                let ext_u = ext.to_ascii_uppercase();
+                if matches!(ext_u.as_str(), "LS2" | "SS2" | "UAX" | "SM2" | "LM2") {
+                    out.push(path);
                 }
+            }
         }
     }
     out.sort();

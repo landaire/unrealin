@@ -443,7 +443,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    
 
     #[test]
     fn native_bin_allowlist() {
